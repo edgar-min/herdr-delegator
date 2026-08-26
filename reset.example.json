@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "reset_of": "/tmp/herdr-runs/source-run",
+  "source_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "worker_policy": "close-settled-preserve-active",
+  "evidence_policy": "revalidate-before-import",
+  "created_at": "2026-01-01T00:00:00.000Z"
+}

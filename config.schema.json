@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oh-my-pi.dev/schemas/herdr-delegator-config-v1.json",
+  "title": "Herdr Delegator Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "storage"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": {
+        "root": {
+          "type": "string",
+          "pattern": "^/",
+          "description": "Absolute deterministic run storage root. At least the user or project layer must configure it; a run layer may not change it."
+        }
+      }
+    },
+    "orchestrator": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "const": "@plan"
+        },
+        "thinking": {
+          "$ref": "#/$defs/thinking"
+        }
+      }
+    },
+    "worker_profiles": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/profileName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/profilePatch"
+      }
+    }
+  },
+  "$defs": {
+    "role": {
+      "type": "string",
+      "pattern": "^@[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "thinking": {
+      "enum": ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
+    },
+    "profileName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "profilePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "thinking": {
+          "$ref": "#/$defs/thinking"
+        }
+      }
+    }
+  }
+}

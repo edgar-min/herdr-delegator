@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oh-my-pi.dev/schemas/herdr-delegator-reset-v1.json",
+  "title": "Herdr Sibling Reset Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "reset_of",
+    "source_plan_sha256",
+    "worker_policy",
+    "evidence_policy",
+    "created_at"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "reset_of": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "source_plan_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "worker_policy": {
+      "const": "close-settled-preserve-active"
+    },
+    "evidence_policy": {
+      "const": "revalidate-before-import"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oh-my-pi.dev/schemas/herdr-delegator-run-v1.json",
+  "title": "Herdr Delegator Run Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "track_id", "run_id", "cwd", "run_path", "created_at"],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "track_id": {
+      "$ref": "#/$defs/coordinate"
+    },
+    "run_id": {
+      "$ref": "#/$defs/coordinate"
+    },
+    "cwd": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "run_path": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reset_of": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["track_id", "run_id", "path"],
+      "properties": {
+        "track_id": {
+          "$ref": "#/$defs/coordinate"
+        },
+        "run_id": {
+          "$ref": "#/$defs/coordinate"
+        },
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "coordinate": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/"
+    }
+  }
+}

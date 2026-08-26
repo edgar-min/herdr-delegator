@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "storage": {
+    "root": "/home/user/.local/share/herdr-delegator/runs"
+  },
+  "orchestrator": {
+    "role": "@plan",
+    "thinking": "inherit"
+  },
+  "worker_profiles": {
+    "default": {
+      "role": "@default",
+      "thinking": "inherit"
+    },
+    "slow": {
+      "role": "@slow",
+      "thinking": "inherit"
+    }
+  }
+}
