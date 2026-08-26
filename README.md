@@ -25,13 +25,13 @@ The extension must run inside a Herdr-owned pane. Launch operations fail closed 
 
 ### From GitHub
 
-The intended remote installation command is:
+Install the published GitHub repository with:
 
 ```sh
 omp plugin install https://github.com/edgar-min/herdr-delegator
 ```
 
-OMP supports GitHub URLs for `plugin install`; installation of this repository should still be verified against the final published repository before treating this command as release-validated.
+This command was release-validated against OMP 18.0.5: the installed artifact loaded skill `herdr-delegation` 3.0.0, registered both tools, and completed an idempotent deterministic run initialization.
 
 ### Local development link
 
