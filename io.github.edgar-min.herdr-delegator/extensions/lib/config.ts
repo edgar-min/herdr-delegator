@@ -21,7 +21,8 @@ const DEFAULT_CONFIG: DelegatorConfig = {
   orchestrator: { role: "@default", thinking: "inherit" },
   worker_profiles: {
     default: { role: "@default", thinking: "inherit" },
-    slow: { role: "@slow", thinking: "inherit" },
+    task: { role: "@default", thinking: "inherit" },
+    slow: { role: "@default", thinking: "inherit" },
   },
 };
 

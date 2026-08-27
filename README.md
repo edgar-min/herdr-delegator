@@ -71,12 +71,16 @@ Project values override user values. A run-local configuration may override prof
     "root": "/absolute/path/to/herdr-runs"
   },
   "orchestrator": {
-    "role": "@default",
-    "thinking": "inherit"
+    "role": "@plan",
+    "thinking": "high"
   },
   "worker_profiles": {
     "default": {
       "role": "@default",
+      "thinking": "inherit"
+    },
+    "task": {
+      "role": "@task",
       "thinking": "inherit"
     },
     "slow": {
@@ -87,7 +91,7 @@ Project values override user values. A run-local configuration may override prof
 }
 ```
 
-The orchestrator role is configuration-selected; it is not fixed to `@plan`. Configuration accepts bounded OMP role aliases, never concrete model IDs.
+The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
 
 ## Start
 

@@ -110,6 +110,8 @@ The model never supplies this path directly.
 <run>/
   run.json
   protocol.md
+  protocol-orch.md
+  protocol-worker.md
   plan.md
   evidence.md
   a2a/
@@ -220,9 +222,21 @@ A wait timeout does not mutate state. Potentially effected prompt, response, or 
 
 At terminal settlement the lane becomes idle, records the last assignment, and promotes the FIFO head. Lane close is a separate lifecycle transition.
 
+## Settlement observability
+
+At prompt, MCP persists the tool-owned `prompted_at` boundary. At terminal settlement it may persist nonnegative safe-integer `elapsed_ms`, a cumulative `token_usage` snapshot read from the verified official session's canonical OMP JSONL, and `advisory_unowned_changes`. JSONL is the token authority; tool timestamps are the elapsed/activity-time authority. These are cumulative session and wall-time observations, not per-assignment token attribution or budget enforcement.
+
+The unowned-change observation compares bounded Git porcelain paths with the union of active or settling assignment ownership. It is explicitly advisory, does not attribute changes to a worker, and fails open: non-git workspaces, timeout, oversized or malformed output, unsafe paths, and any command or ownership error omit the observation without affecting settlement.
+
+Worker inspection returns `staleness` from persisted pane-revision activity timing plus the exact queued-assignment `queue_depth`, excluding the active assignment. Track inspection returns lane count, exact counts across the unchanged seven assignment states, counts and cumulative elapsed/token observations, and a `saturated` flag. Cumulative values clamp to `Number.MAX_SAFE_INTEGER` only when addition would overflow; that clamping sets `saturated`.
+
+ORCH uses settlement actuals, staleness, queue depth, track totals, and unowned-change paths as bounded signals for possible over- or under-spend and scope drift. They never authorize mutation, prove attribution or correctness, impose a threshold, or replace ORCH judgment. Phase 1 adds no enforcement, hooks, resident monitor, budget configuration keys, or money units.
+
 ## Model and session verification
 
-The built-in orchestrator role is `@default`; configuration may select any bounded OMP role alias. Worker profiles are similarly configuration-selected.
+The built-in orchestrator role is `@default`; a planning-grade role such as `@plan` with elevated thinking is recommended when judgment quality takes priority over cost. The built-in worker profiles are exactly `default`, `task`, and `slow`, all selecting `@default` so they resolve without user configuration. Configured installations may map `task` to `@task`, `slow` to `@slow`, or select another bounded OMP role alias.
+
+ORCH selects the assignment profile from work characteristics: `default` for dialogue-faithful, meticulous language work; `task` for the best artifact under a clear specification; and `slow` for the deepest, most careful reasoning on hard problems where cost is secondary. Cost-efficient small mechanical work routes to host OMP task/subagents under RTE-002, so no persistent lane profile exists for it.
 
 1. The bridge resolves configured roles inside OMP and publishes current session/model/thinking facts.
 2. MCP derives the fact coordinate from the verified caller pane and active OMP agent directory.

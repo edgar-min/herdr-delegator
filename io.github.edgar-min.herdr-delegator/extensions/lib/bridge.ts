@@ -10,6 +10,9 @@ import { isThinkingLevel, loadDelegatorConfig } from "./config";
 
 export const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
 export const BOOTSTRAP_METADATA_TTL_MS = 60_000;
+// Re-issued comfortably inside the TTL so pane tokens and the fact nonce stay
+// fresh across a long turn that never reaches another lifecycle boundary.
+export const BOOTSTRAP_REFRESH_INTERVAL_MS = 25_000;
 export const BOOTSTRAP_TOKEN_PREFIX = "herdr-delegator-";
 export const BOOTSTRAP_TOKENS = {
   sessionId: `${BOOTSTRAP_TOKEN_PREFIX}session`,
@@ -22,6 +25,7 @@ export const BOOTSTRAP_TOKENS = {
 const MAX_PATH_BYTES = 4_096;
 let lastBootstrapSequence = 0;
 let activeBridgeRefresh: AbortController | undefined;
+let activeBridgeLoop: AbortController | undefined;
 
 type ConcreteModel = { provider: string; model: string };
 
@@ -451,11 +455,51 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   }
 }
 
+function loopDelay(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(finish, ms);
+    timer.unref();
+    signal.addEventListener("abort", abort, { once: true });
+    function finish(): void {
+      signal.removeEventListener("abort", abort);
+      resolve(true);
+    }
+    function abort(): void {
+      clearTimeout(timer);
+      resolve(false);
+    }
+  });
+}
+
+function stopBridgeRefreshLoop(): void {
+  activeBridgeLoop?.abort();
+  activeBridgeLoop = undefined;
+}
+
+function startBridgeRefreshLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  const aborter = new AbortController();
+  activeBridgeLoop = aborter;
+  void (async () => {
+    while (await loopDelay(BOOTSTRAP_REFRESH_INTERVAL_MS, aborter.signal)) {
+      if (activeBridgeLoop !== aborter) return;
+      await refreshOmpBridge(pi, ctx);
+    }
+  })();
+}
+
 export function registerOmpBridge(pi: ExtensionAPI): void {
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
+    stopBridgeRefreshLoop();
     await refreshOmpBridge(pi, ctx);
+    startBridgeRefreshLoop(pi, ctx);
   };
   pi.on("session_start", refresh);
   pi.on("session_switch", refresh);
   pi.on("before_agent_start", refresh);
+  pi.on("session_shutdown", async () => {
+    stopBridgeRefreshLoop();
+    activeBridgeRefresh?.abort();
+    activeBridgeRefresh = undefined;
+  });
 }

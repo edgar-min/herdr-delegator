@@ -17,7 +17,7 @@ const LIST_SECTIONS = ["Completion conditions", "Write ownership", "Dependencies
 const MAX_ARTIFACT_BYTES = 64 * 1024;
 
 const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
-const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "report_sha256", "completed_at", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
+const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -42,6 +42,36 @@ function validSeparation(value: unknown): boolean {
     value.reason.length <= 500 &&
     typeof value.conflicts_with_worker_id === "string" &&
     WORKER_RE.test(value.conflicts_with_worker_id)
+  );
+}
+
+function validOptionalSafeInteger(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value >= 0);
+}
+
+function validTokenUsage(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !onlyKeys(value, ["source", "session_id", "observed_at", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens"])) return false;
+  const counts = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens"] as const;
+  return value.source === "omp-jsonl" &&
+    typeof value.session_id === "string" &&
+    value.session_id.length >= 1 &&
+    value.session_id.length <= 256 &&
+    typeof value.observed_at === "string" &&
+    value.observed_at.length <= 64 &&
+    counts.some((key) => value[key] !== undefined) &&
+    counts.every((key) => validOptionalSafeInteger(value[key]));
+}
+
+function validAdvisoryUnownedChanges(value: unknown): boolean {
+  return value === undefined || (
+    isRecord(value) &&
+    exactKeys(value, ["advisory", "paths", "truncated"]) &&
+    value.advisory === true &&
+    Array.isArray(value.paths) &&
+    value.paths.length <= 64 &&
+    value.paths.every((item) => typeof item === "string" && item.length >= 1 && Buffer.byteLength(item) <= 1_024) &&
+    typeof value.truncated === "boolean"
   );
 }
 function assertMode600(mode: number, coordinate: string): void {
@@ -107,7 +137,26 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
     if (!WORKER_RE.test(workerId) || !isRecord(lane) || !onlyKeys(lane, LANE_KEYS) || lane.worker_id !== workerId || lane.lane_generation !== 1 || !RESPONSIBILITY_RE.test(String(lane.responsibility_key)) || !validSeparation(lane.separation) || !Array.isArray(lane.queued_assignment_ids) || lane.queued_assignment_ids.some((id) => typeof id !== "string" || !ASSIGNMENT_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A worker lane is malformed.", "storage", "Repair the lane from verified lifecycle facts.");
   }
   for (const [assignmentId, assignment] of Object.entries(value.assignments)) {
-    if (!ASSIGNMENT_RE.test(assignmentId) || !isRecord(assignment) || !onlyKeys(assignment, ASSIGNMENT_KEYS) || assignment.assignment_id !== assignmentId || typeof assignment.responsibility_key !== "string" || !RESPONSIBILITY_RE.test(assignment.responsibility_key) || typeof assignment.worker_id !== "string" || !WORKER_RE.test(assignment.worker_id) || typeof assignment.state !== "string" || !ASSIGNMENT_STATES[assignment.state as AssignmentState] || typeof assignment.instructions_sha256 !== "string" || !SHA256_RE.test(assignment.instructions_sha256) || (assignment.report_sha256 !== undefined && (typeof assignment.report_sha256 !== "string" || !SHA256_RE.test(assignment.report_sha256)))) throw new McpContractError("delegation_registry_invalid", "An assignment route or settlement record is malformed.", "storage", "Repair it from the immutable Markdown and worker report.");
+    const validIdentity = ASSIGNMENT_RE.test(assignmentId) &&
+      isRecord(assignment) &&
+      onlyKeys(assignment, ASSIGNMENT_KEYS) &&
+      assignment.assignment_id === assignmentId &&
+      typeof assignment.responsibility_key === "string" &&
+      RESPONSIBILITY_RE.test(assignment.responsibility_key) &&
+      typeof assignment.worker_id === "string" &&
+      WORKER_RE.test(assignment.worker_id) &&
+      typeof assignment.state === "string" &&
+      !!ASSIGNMENT_STATES[assignment.state as AssignmentState] &&
+      typeof assignment.instructions_sha256 === "string" &&
+      SHA256_RE.test(assignment.instructions_sha256);
+    const validSettlement = isRecord(assignment) &&
+      (assignment.prompted_at === undefined || (typeof assignment.prompted_at === "string" && assignment.prompted_at.length <= 64)) &&
+      (assignment.report_sha256 === undefined || (typeof assignment.report_sha256 === "string" && SHA256_RE.test(assignment.report_sha256))) &&
+      (assignment.completed_at === undefined || typeof assignment.completed_at === "string") &&
+      validOptionalSafeInteger(assignment.elapsed_ms) &&
+      validTokenUsage(assignment.token_usage) &&
+      validAdvisoryUnownedChanges(assignment.advisory_unowned_changes);
+    if (!validIdentity || !validSettlement) throw new McpContractError("delegation_registry_invalid", "An assignment record is malformed.", "storage", "Repair the assignment from its immutable artifact and verified settlement evidence.");
   }
 }
 

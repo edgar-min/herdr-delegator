@@ -12,6 +12,11 @@ export const BOUNDED_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/;
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 300_000;
+// MCP clients abort a single call at 30s, so a longer schema-legal `wait.timeout_ms`
+// can only surface as a transport error. The server clamps every effective
+// single-call wait below that bound; longer logical waits are composed by
+// repeating bounded `wait` calls.
+export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 export const MAX_RESPONSE_TEXT = 8_000;
 export const DELEGATION_VERSION = 1 as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
@@ -28,6 +33,54 @@ export type Separation = {
   kind: "direction" | "ownership" | "dependency";
   reason: string;
   conflicts_with_worker_id: string;
+};
+
+export type TokenUsageObservation = {
+  source: "omp-jsonl";
+  session_id: string;
+  observed_at: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  reasoning_tokens?: number;
+  total_tokens?: number;
+};
+
+export type AdvisoryUnownedChanges = {
+  advisory: true;
+  paths: string[];
+  truncated: boolean;
+};
+
+export type AssignmentSettlementObservation = {
+  elapsed_ms?: number;
+  token_usage?: TokenUsageObservation;
+  advisory_unowned_changes?: AdvisoryUnownedChanges;
+  observation_warning?: string;
+};
+
+export type WorkerStalenessObservation = {
+  observed_at: string;
+  last_activity_at: string;
+  queue_depth: number;
+};
+
+export type TrackTotals = {
+  lane_count: number;
+  assignments_by_state: Record<AssignmentState, number>;
+  settled_elapsed_ms: number;
+  settled_elapsed_observations: number;
+  settled_token_usage: {
+    observations: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    reasoning_tokens: number;
+    total_tokens: number;
+  };
+  saturated: boolean;
 };
 
 export type AssignmentArtifact = {
@@ -47,8 +100,12 @@ export type AssignmentRecord = {
   worker_id: string;
   state: AssignmentState;
   instructions_sha256: string;
+  prompted_at?: string;
   report_sha256?: string;
   completed_at?: string;
+  elapsed_ms?: number;
+  token_usage?: TokenUsageObservation;
+  advisory_unowned_changes?: AdvisoryUnownedChanges;
   ambiguous_operation?: "prompt" | "respond" | "resume";
   ambiguous_state_change_seq?: number;
   created_at: string;
@@ -121,7 +178,7 @@ export type McpResult<T = unknown> = {
   retryable: boolean;
   registry_revision?: number;
   worker?: Partial<WorkerLaneRecord>;
-  assignment?: { assignment_id: string; state: AssignmentState };
+  assignment?: { assignment_id: string; state: AssignmentState; settlement?: AssignmentSettlementObservation };
   data?: T;
   error?: { code: string; phase: ErrorPhase; message: string; recovery: string; ambiguous_effect: boolean };
 };
@@ -130,7 +187,10 @@ const coordinate = z.string().regex(COORDINATE_RE);
 const assignmentId = z.string().regex(ASSIGNMENT_RE);
 const workerId = z.string().regex(WORKER_RE);
 const hash = z.string().regex(SHA256_RE);
-const wait = z.object({ until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional(), timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional() }).strict().optional();
+const wait = z.object({
+  until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional().describe("Agent states that satisfy the wait; an already-current state satisfies it immediately."),
+  timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested wait budget. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms; achieve a longer logical wait by repeating bounded wait calls.`),
+}).strict().optional();
 const run = { track_id: coordinate, run_id: coordinate };
 const separation = z.object({
   kind: z.enum(["direction", "ownership", "dependency"]),

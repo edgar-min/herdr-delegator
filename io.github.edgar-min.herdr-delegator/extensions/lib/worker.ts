@@ -6,7 +6,12 @@ import type { FocusRestoration, Operation, RegistryRecord, SessionVerification, 
 import { ContractError, DEDUPE_STATES, KEY_ALLOWLIST, MAX_TEXT_RESPONSE, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { canonicalInstruction, canonicalWorkerId, isFile, normalizeTimeout, resolveLaunchProfile, resolveRunCoordinate } from "./config";
 import type { BootstrapSessionVerification, CommandResult, OwnedFocus } from "./runtime";
-import { assertAgentBelongsToRecord, assertLaunchProfile, assertPersistedMatchesBootstrap, assertRecordIdentity, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, observeOrchestrator, publicState, publicWorker, readRegistry, reconcileDeterministicIdentity, registryPaths, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, startWorkerAgent, uniqueBy, updateRecordFromObservation, verifyWorkerSession, withRegistryLock, writeRegistryAtomic } from "./runtime";
+import { MAX_EFFECTIVE_WAIT_MS, assertAgentBelongsToRecord, assertLaunchProfile, assertPersistedMatchesBootstrap, assertRecordIdentity, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, observeOrchestrator, publicState, publicWorker, readRegistry, reconcileDeterministicIdentity, registryPaths, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, startWorkerAgent, uniqueBy, updateRecordFromObservation, verifyWorkerSession, waitForAgentStatus, withRegistryLock, writeRegistryAtomic } from "./runtime";
+
+type StalenessRecord = RegistryRecord & {
+  last_activity_revision?: number;
+  last_activity_at?: string;
+};
 
 type BootstrapWorkerRecord = RegistryRecord & {
   bootstrap_attestation?: string;
@@ -488,7 +493,8 @@ export async function promptWait(params: ToolParams, signal?: AbortSignal): Prom
       };
     } else {
       const prompt = `Read ${instructionPath} and carry out every instruction in it.`;
-      const prompted = await runHerdr(
+      const promptWaitMs = Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS);
+      let prompted = await runHerdr(
         binary,
         [
           "agent",
@@ -503,11 +509,22 @@ export async function promptWait(params: ToolParams, signal?: AbortSignal): Prom
           "--until",
           "blocked",
           "--timeout",
-          String(timeoutMs),
+          String(promptWaitMs),
         ],
-        timeoutMs + 1_000,
+        promptWaitMs + 1_000,
         signal,
       );
+      let statusWaitRecovery: string | undefined;
+      if (!prompted.ok && /waiting for agent status|agent_wait_timeout|status_wait_timeout/i.test(`${prompted.code} ${prompted.message}`)) {
+        // Herdr accepted the prompt and then failed observing the status stream.
+        // Prove the effect with a bounded fresh inspection rather than reporting
+        // an effective mutation as an error.
+        const observed = await getLiveAgent(binary, preparation.record.agent_name, 5_000, signal);
+        if (observed.ok) {
+          statusWaitRecovery = firstString(observed.data, ["agent_status", "state", "status"]) ?? "unknown";
+          prompted = observed;
+        }
+      }
       if (!prompted.ok) {
         const ambiguous =
           prompted.timedOut || /stalled|timeout/i.test(`${prompted.code} ${prompted.message}`);
@@ -565,6 +582,7 @@ export async function promptWait(params: ToolParams, signal?: AbortSignal): Prom
             status: "persisted-verified",
             ...completed.persisted,
           },
+          ...(statusWaitRecovery === undefined ? {} : { status_wait_recovered_state: statusWaitRecovery }),
         },
       };
     }
@@ -643,8 +661,9 @@ export async function inspectWorker(params: ToolParams, signal?: AbortSignal): P
   }
 
   assertRecordIdentity(existing, runPath, workerId, workerKey);
-  const [agent, output] = await Promise.all([
+  const [agent, pane, output] = await Promise.all([
     getLiveAgent(binary, existing.agent_name, timeoutMs, signal),
+    runHerdr(binary, ["pane", "get", existing.root_pane_id], timeoutMs, signal, false),
     runHerdr(
       binary,
       [
@@ -664,15 +683,22 @@ export async function inspectWorker(params: ToolParams, signal?: AbortSignal): P
     ),
   ]);
   if (!agent.ok) throw commandError(agent, "inspect", "Reconcile the identity with ensure_worker.");
+  if (!pane.ok) throw commandError(pane, "inspect", "Check the registry root pane, then retry pane observation.");
   assertAgentBelongsToRecord(existing, agent.data);
   if (!output.ok) throw commandError(output, "inspect", "Check the registry root pane, then retry pane read.");
 
+  const observedAt = nowIso();
+  const activityRevision = firstNumber(pane.data, ["revision"]);
   const reportPath = path.join(runPath, "a2a", `${workerId}-report.md`);
   const reportExists = await isFile(reportPath);
   const record = await withRegistryLock(runPath, timeoutMs, async (latest, targetRegistryPath) => {
-    const current = latest.workers[workerKey];
+    const current = latest.workers[workerKey] as StalenessRecord | undefined;
     if (!current) throw new ContractError("worker_missing", "The registry record disappeared during inspection.", "registry");
     await assertRunWorkspaceLive(binary, latest, timeoutMs, signal, runPath, coordinate.manifest.cwd);
+    if (current.last_activity_revision !== activityRevision || !current.last_activity_at) {
+      if (activityRevision !== undefined) current.last_activity_revision = activityRevision;
+      current.last_activity_at = observedAt;
+    }
     await updateRecordFromObservation(current, agent.data);
     await writeRegistryAtomic(targetRegistryPath, latest);
     return current;
@@ -691,6 +717,10 @@ export async function inspectWorker(params: ToolParams, signal?: AbortSignal): P
       output_lines: outputLines,
       report_exists: reportExists,
       report_path: reportPath,
+      staleness: {
+        observed_at: observedAt,
+        last_activity_at: record.last_activity_at,
+      },
     },
   };
 }
@@ -828,28 +858,18 @@ export async function resolveBlock(params: ToolParams, signal?: AbortSignal): Pr
       );
     }
 
-    const workingWait = await runHerdr(
+    const workingWait = await waitForAgentStatus(
       binary,
-      ["agent", "wait", prepared.agent_name, "--until", "working", "--timeout", String(Math.min(timeoutMs, 5_000))],
-      Math.min(timeoutMs, 6_000),
+      prepared.agent_name,
+      ["working"],
+      Math.min(timeoutMs, 5_000),
       signal,
     );
-    const settled = await runHerdr(
+    const settled = await waitForAgentStatus(
       binary,
-      [
-        "agent",
-        "wait",
-        prepared.agent_name,
-        "--until",
-        "idle",
-        "--until",
-        "done",
-        "--until",
-        "blocked",
-        "--timeout",
-        String(timeoutMs),
-      ],
-      timeoutMs + 1_000,
+      prepared.agent_name,
+      ["idle", "done", "blocked"],
+      timeoutMs,
       signal,
     );
     if (!settled.ok) {

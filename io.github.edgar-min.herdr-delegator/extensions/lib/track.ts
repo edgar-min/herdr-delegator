@@ -9,6 +9,8 @@ import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, withRegistryLock, writeRegistryAtomic } from "./runtime";
 import { verifiedHerdrSidebarAuxiliaryPane } from "./worker";
 
+const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
+
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
   const trackId = canonicalCoordinate(params.track_id, "track_id");
@@ -18,7 +20,11 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
   const storageRoot = await storageRootFromConfig(loaded.config, true);
   const runPath = path.join(storageRoot, trackId, runId);
   const runKey = sha256(runPath);
-  const template = await readFile(PROTOCOL_TEMPLATE_PATH);
+  const protocolTemplateDirectory = path.dirname(PROTOCOL_TEMPLATE_PATH);
+  const protocolDocuments = await Promise.all(PROTOCOL_DOCUMENT_NAMES.map(async (name) => {
+    const templatePath = path.join(protocolTemplateDirectory, name);
+    return { name, templatePath, template: await readFile(templatePath) };
+  }));
   let resetCoordinate: { track_id: string; run_id: string; path: string } | undefined;
   let sourcePlanPath: string | undefined;
   let sourcePlanHash: string | undefined;
@@ -126,35 +132,48 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         throw new ContractError("run_init_conflict", "Existing a2a is missing or not a canonical directory.", "storage");
       }
 
-      const protocolPath = path.join(runPath, "protocol.md");
-      if (await isFile(protocolPath)) {
-        if ((await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(template)) {
-          throw new ContractError(
-            "run_init_conflict",
-            "Existing protocol.md is not canonical or differs from the bundled template.",
-            "storage",
-          );
+      const missingProtocols: typeof protocolDocuments = [];
+      for (const protocol of protocolDocuments) {
+        const protocolPath = path.join(runPath, protocol.name);
+        try {
+          const protocolStat = await lstat(protocolPath);
+          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(protocol.template)) {
+            throw new ContractError(
+              "run_init_conflict",
+              `Existing ${protocol.name} is not canonical or differs from the bundled template.`,
+              "storage",
+            );
+          }
+        } catch (error: unknown) {
+          if (error instanceof ContractError) throw error;
+          if (!isObject(error) || error.code !== "ENOENT") {
+            throw new ContractError("run_init_conflict", `Existing ${protocol.name} cannot be inspected safely.`, "storage");
+          }
+          missingProtocols.push(protocol);
         }
-      } else {
+      }
+      if (missingProtocols.length > 0) {
         const entries = (await readdir(runPath)).sort();
         const a2aEntries = await readdir(a2aPath);
-        if (
-          resetCoordinate !== undefined ||
-          existingRow !== undefined ||
-          entries.length !== 2 ||
-          entries[0] !== "a2a" ||
-          entries[1] !== "run.json" ||
-          a2aEntries.length !== 0
-        ) {
+        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true };
+        const recoverableIncompleteTarget =
+          resetCoordinate === undefined &&
+          existingRow === undefined &&
+          entries.every((entry) => boundedRecoveryEntries[entry]) &&
+          a2aEntries.length === 0;
+        if (!existingRow && !recoverableIncompleteTarget) {
           throw new ContractError(
             "run_init_conflict",
-            "An incomplete target is not the bounded manifest-plus-empty-a2a recovery layout.",
+            "Missing role-scoped protocols are not in an index-owned run or the bounded manifest-plus-empty-a2a recovery layout.",
             "storage",
           );
         }
-        await copyAtomic(PROTOCOL_TEMPLATE_PATH, protocolPath);
-        if ((await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(template)) {
-          throw new ContractError("storage_write_failed", "Recovered protocol.md failed byte verification.", "storage");
+        for (const protocol of missingProtocols) {
+          const protocolPath = path.join(runPath, protocol.name);
+          await copyAtomic(protocol.templatePath, protocolPath);
+          if ((await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(protocol.template)) {
+            throw new ContractError("storage_write_failed", `Recovered ${protocol.name} failed byte verification.`, "storage");
+          }
         }
       }
 
@@ -219,7 +238,9 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
       };
       await mkdir(path.join(stagingPath, "a2a"), { mode: 0o700 });
       await writeAtomic(path.join(stagingPath, "run.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-      await copyAtomic(PROTOCOL_TEMPLATE_PATH, path.join(stagingPath, "protocol.md"));
+      for (const protocol of protocolDocuments) {
+        await copyAtomic(protocol.templatePath, path.join(stagingPath, protocol.name));
+      }
 
       let sourcePlan: Buffer | undefined;
       let reset: ResetLineage | undefined;
@@ -245,15 +266,18 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
       }
 
       const stagedManifest = await readRunManifest(stagingPath);
+      const stagedProtocolMatches = await Promise.all(protocolDocuments.map(async (protocol) =>
+        (await readFile(path.join(stagingPath!, protocol.name))).equals(protocol.template)
+      ));
       const expectedEntries = resetCoordinate
-        ? ["a2a", "plan.md", "protocol.md", "reset.json", "run.json"]
-        : ["a2a", "protocol.md", "run.json"];
+        ? ["a2a", "plan.md", "protocol-orch.md", "protocol-worker.md", "protocol.md", "reset.json", "run.json"]
+        : ["a2a", "protocol-orch.md", "protocol-worker.md", "protocol.md", "run.json"];
       if (
         JSON.stringify(stagedManifest) !== JSON.stringify(manifest) ||
         JSON.stringify((await readdir(stagingPath)).sort()) !== JSON.stringify(expectedEntries) ||
         (await realpath(path.join(stagingPath, "a2a"))) !== path.join(stagingPath, "a2a") ||
         (await readdir(path.join(stagingPath, "a2a"))).length !== 0 ||
-        !(await readFile(path.join(stagingPath, "protocol.md"))).equals(template) ||
+        stagedProtocolMatches.some((matches) => !matches) ||
         (sourcePlan !== undefined && !(await readFile(path.join(stagingPath, "plan.md"))).equals(sourcePlan)) ||
         (reset !== undefined &&
           JSON.stringify(JSON.parse(await readFile(path.join(stagingPath, "reset.json"), "utf8"))) !==
@@ -884,6 +908,21 @@ async function startOrchestrator(
   const lineage = await validateOrchestratorRun(coordinate);
   const cwd = coordinate.manifest.cwd;
   const instructionPath = await canonicalOrchestratorInstruction(runPath);
+  const orchestratorProtocolPath = path.join(runPath, "protocol-orch.md");
+  const orchestratorProtocolTemplatePath = path.join(path.dirname(PROTOCOL_TEMPLATE_PATH), "protocol-orch.md");
+  try {
+    const protocolStat = await lstat(orchestratorProtocolPath);
+    if (
+      !protocolStat.isFile() ||
+      protocolStat.isSymbolicLink() ||
+      (await realpath(orchestratorProtocolPath)) !== orchestratorProtocolPath ||
+      !(await readFile(orchestratorProtocolPath)).equals(await readFile(orchestratorProtocolTemplatePath))
+    ) {
+      throw new Error("protocol mismatch");
+    }
+  } catch {
+    throw new ContractError("invalid_instruction_path", "protocol-orch.md is missing, non-canonical, or differs from its bundled template.", "validate");
+  }
   const instructionFingerprint = sha256(await readFile(instructionPath));
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
@@ -1058,7 +1097,7 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      const prompt = `Read ${instructionPath} and carry out every instruction in it.`;
+      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.`;
       const prompted = await runHerdr(
         binary,
         [

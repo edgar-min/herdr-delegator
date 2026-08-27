@@ -16,7 +16,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
-- **ID-007**: The license MUST be Apache-2.0 with copyright 2026 Jisung Min.
+- **ID-007**: The license MUST be Apache-2.0 with copyright 2026 Edgar Min.
 - **ID-008**: A run MUST be identified by `(track_id, run_id)`, never by a model-supplied path.
 - **ID-009**: Track, run, and responsibility IDs MUST match `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`.
 - **ID-010**: Assignment IDs MUST match `^A-(?!0+$)[0-9]{3,}$`.
@@ -38,8 +38,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 2.2 Roles and bridge facts
 
-- **CFG-010**: The built-in orchestrator profile MUST select role `@default` with thinking `inherit`; configuration MAY select another bounded OMP role alias.
-- **CFG-011**: Built-in worker profiles MUST be `default` → `@default` and `slow` → `@slow`, both with thinking `inherit`.
+- **CFG-010**: The built-in orchestrator profile MUST select role `@default` with thinking `inherit`; configuration MAY select another bounded OMP role alias. A planning-grade role such as `@plan` with elevated thinking SHOULD be configured when judgment quality takes priority over cost.
+- **CFG-011**: Built-in worker profiles MUST be exactly `default`, `task`, and `slow`; each MUST select `@default` with thinking `inherit` so it resolves without user configuration. Configuration SHOULD map `task` to `@task` and `slow` to `@slow` when those roles are configured. Cost-efficient small mechanical work MUST route to host OMP task/subagents under RTE-002 rather than to a persistent lane profile.
 - **CFG-012**: Profile names MUST match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 - **CFG-013**: Role aliases MUST match `^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
 - **CFG-014**: Configured thinking MUST be one of `inherit`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `auto`.
@@ -55,9 +55,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **STO-001**: The canonical run path MUST be `<storage.root>/<track_id>/<run_id>` and MUST be derived rather than accepted from callers.
 - **STO-002**: Canonical directory identity MUST be verified; symlink and path conflicts MUST fail closed.
 - **STO-003**: `run.json` MUST conform to [`run.schema.json`](../run.schema.json), bind run coordinates to canonical `cwd` and `run_path`, and reject unknown fields.
-- **STO-004**: `herdr_track {action:"init"}` MUST create or exactly reconcile only the run manifest, bundled protocol, `a2a/`, storage index row, and reset artifacts when requested.
+- **STO-004**: `herdr_track {action:"init"}` MUST create or exactly reconcile only the run manifest, the bundled protocol set (`protocol.md`, `protocol-orch.md`, and `protocol-worker.md`), `a2a/`, the storage index row, and reset artifacts when requested.
 - **STO-005**: Initialization MUST NOT create placeholder plans, assignments, reports, evidence, registries, workspaces, tabs, panes, or OMP sessions.
-- **STO-006**: Existing `protocol.md` MUST be byte-identical to the bundled template.
+- **STO-006**: Existing `protocol.md`, `protocol-orch.md`, and `protocol-worker.md` MUST each be byte-identical to their corresponding bundled template.
 - **STO-007**: `<storage.root>/index.json` MUST be strict version 1, atomic, lock-guarded, and consistent with the run manifest.
 - **STO-008**: `a2a/herdr-workers.json` version 3 MUST remain lifecycle identity authority; `a2a/delegation.json` version 1 MUST remain responsibility and assignment routing authority.
 - **STO-009**: Tool-owned manifests, indexes, registries, and locks MUST NOT be manually edited, moved, copied, or unlocked.
@@ -151,11 +151,26 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **COM-001**: Documents MUST carry contracts, ownership, user boundaries, decisions, durable results, completion, verification, reset lineage, and handoff.
 - **COM-002**: MCP prompt/control MUST carry canonical coordinates and hashes, waits, bounded blocked responses, resume, and close.
 - **COM-003**: Herdr metadata MUST carry display-only responsibility, assignment, assignment state, bootstrap identity, and live observation.
-- **COM-004**: Herdr metadata and terminal output MUST NOT be treated as contract, judgment, settlement, or session authority by themselves.
+- **COM-004**: Herdr metadata, terminal output, public settlement/staleness/total observations, and advisory ownership observations MUST NOT be treated as contract, judgment, settlement, attribution, or session authority by themselves.
 - **COM-005**: Observation metadata source MUST be `herdr-delegator:observation` and tokens MUST be limited to `responsibility`, `assignment`, and `assignment-state`.
 - **COM-006**: Observation reporting MUST NOT overwrite Herdr semantic agent state.
 - **COM-007**: Workers MUST append only to their own reports; ORCH decisions and acceptance SHOULD use `[ORCH Response]` blocks.
 - **COM-008**: Peer files MAY carry existing artifact, readiness, dependency, quiet-window, reproduction, and interface facts; ORCH alone changes scope, ownership, priority, approval, or completion conditions.
+
+### 6.1 Settlement observability
+
+- **OBS-001**: An applicable assignment record MAY persist `prompted_at` as an ISO-8601 tool timestamp of at most 64 characters captured immediately before prompt, and a terminal assignment MAY persist `elapsed_ms` as the nonnegative safe-integer difference between the tool settlement timestamp and `prompted_at`; `elapsed_ms` MUST be absent when that boundary cannot be proved.
+- **OBS-002**: A terminal assignment MAY persist `token_usage` as a cumulative canonical OMP session-JSONL snapshot with fixed `source: "omp-jsonl"`, verified `session_id` of 1–256 characters, ISO-8601 tool `observed_at` of at most 64 characters, and at least one of optional `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, or `total_tokens`, each a nonnegative safe integer. The snapshot MUST NOT claim per-assignment attribution.
+- **OBS-003**: A terminal assignment MAY persist `advisory_unowned_changes` with exact fields `advisory: true`, `paths`, and `truncated`; `paths` MUST be sorted project-relative paths outside the union of declared ownership for active or settling assignments, limited to 64 entries of 1–1,024 UTF-8 bytes each, and `truncated` MUST report exclusion by the entry-count or entry-length bound.
+- **OBS-004**: The unowned-change audit MUST run as a best-effort, fail-open `git status --porcelain=v1 -z --untracked-files=normal` observation with optional locks and terminal prompts disabled, a 2,000 ms abort boundary, a 128 KiB output acceptance bound, and both source and destination paths checked for renames and copies. Any non-git directory, command error, timeout, malformed or ambiguous output, unsafe path, or ownership-artifact error MUST omit the observation without blocking settlement or changing terminal state, and the audit MUST NOT attribute a path to any worker.
+- **OBS-005**: Lifecycle state MAY persist `last_activity_revision` as a nonnegative safe integer and `last_activity_at` as the at-most-64-character ISO-8601 tool timestamp when the current pane revision was first observed. Strict compatibility parsing MAY accept `last_output_sha256` and at-most-64-character `last_output_at`, but current public observations MUST NOT emit or expose those compatibility fields.
+- **OBS-006**: A terminal `herdr_assignment` result MAY expose `assignment.settlement` containing optional `elapsed_ms`, `token_usage`, and `advisory_unowned_changes` with the same meanings and bounds as the persisted fields; nonterminal assignment results MUST NOT expose settlement actuals.
+- **OBS-007**: `herdr_worker inspect` MAY expose `data.observation.staleness` with at-most-64-character ISO-8601 `observed_at` and `last_activity_at` plus `queue_depth`, the exact nonnegative safe-integer count of `queued_assignment_ids` excluding the active assignment.
+- **OBS-008**: `herdr_track inspect` MUST expose `data.totals` with nonnegative safe-integer `lane_count`; `assignments_by_state` exact counts for all seven ASN-024 states; nonnegative safe-integer `settled_elapsed_ms` and `settled_elapsed_observations`; `settled_token_usage.observations`; nonnegative safe-integer cumulative `settled_token_usage.input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, and `total_tokens`; and boolean `saturated`.
+- **OBS-009**: Track elapsed and token cumulatives MUST clamp to `Number.MAX_SAFE_INTEGER` when an addition would overflow; `saturated` MUST become `true` when such clamping occurs.
+- **OBS-010**: Persisted canonical OMP JSONL MUST be the only token-usage authority and tool-owned prompt/settlement/activity timestamps MUST be the only elapsed/staleness time authority. Public settlement, staleness, totals, and unowned-change observations are bounded advisory views for ORCH judgment, not mutation, attribution, correctness, or budget authority.
+- **OBS-011**: Settlement observability MUST add no public action or assignment state; the state vocabulary remains exactly the seven ASN-024 values.
+- **OBS-012**: Phase 1 settlement observability MUST define no enforcement, budget or staleness threshold, hook, resident monitor, budget configuration key, or money unit.
 
 ## 7. Model, session, workspace, and focus safety
 
@@ -229,7 +244,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 13. Observable acceptance scenarios
 
-- **ACC-001 — Clean initialization**: `herdr_track init` derives deterministic storage, creates only owned initialization artifacts, and creates no worker or placeholder work artifact.
+- **ACC-001 — Clean initialization**: `herdr_track init` derives deterministic storage, creates the byte-identical three-document bundled protocol set plus only owned initialization artifacts, and creates no worker or placeholder work artifact.
 - **ACC-002 — Three-tool boundary**: MCP initialization lists exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the extension registers none of them.
 - **ACC-003 — Exact responsibility reuse**: Two sequential assignments with the same responsibility route to the same worker ID, workspace, tab, root pane, and official OMP session.
 - **ACC-004 — Context retention**: The second reused assignment can report a nonce or fact established only by the first assignment in that same official session.
@@ -257,6 +272,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **NG-008**: Automatically trusting evidence from a source reset run.
 - **NG-009**: Secret management, credential transport, redaction, privacy classification, or sandboxing.
 - **NG-010**: Guessing through malformed state, manually repairing registries, or bypassing conflicts with replacement identities.
+- **NG-011**: Phase 1 settlement observability enforcement, thresholds, hooks, resident monitoring, budget configuration keys, and money units.
 
 ## Review checklist
 
@@ -274,6 +290,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Root `plugin.json`/`mcp.json`, executable plugin-relative launcher, namespaced extension path, publish allowlist, and direct runtime dependencies match Agent Plugins and compatibility metadata.
 - [ ] Documents, MCP control, and Herdr observation carry only their assigned authority.
 - [ ] Public artifacts contain no local machine path, secret, product dependency outside OMP/Herdr, or implementation history.
+- [ ] Persisted `prompted_at`, `elapsed_ms`, `token_usage`, `advisory_unowned_changes`, lifecycle activity fields, and compatibility parsing match registry and lifecycle source bounds.
+- [ ] Public `assignment.settlement`, worker `staleness`, and track `totals` fields match `mcp/contracts.ts` and `mcp/tools.ts`, including overflow-triggered saturation.
+- [ ] The ownership audit command, 2-second/128-KiB/64-path bounds, fail-open behavior, and no-attribution contract match source.
 
 ### Live behavior to verify
 
@@ -284,12 +303,16 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] An ambiguous blocked response is inspected, never replayed blindly, and may settle only after the advanced sequence and report completion are proved.
 - [ ] Completion stores the report hash, returns the lane to idle, promotes FIFO, and retains the tab/session.
 - [ ] Track and worker close refuse active, blocked, ambiguous, stale-session, stale-sequence, or unsafe-topology state.
+- [ ] Terminal assignment results expose bounded settlement actuals without changing settlement prerequisites or the seven assignment states.
+- [ ] Worker staleness and track totals remain advisory observations; audit failure never blocks settlement.
 
 ### Reviewer decisions to approve or request changes
 
 - [ ] Approve OMP-only scope and refusal to predesign another runtime adapter.
 - [ ] Approve the three-tool composite MCP boundary and bridge-only extension.
-- [ ] Approve configuration-selected orchestrator role with built-in `@default`.
+- [ ] Approve built-in orchestrator role `@default`, with a planning-grade role such as `@plan` and elevated thinking recommended for judgment-intensive orchestration.
+- [ ] Approve built-in worker profiles `default`, `task`, and `slow`, all safely resolving through `@default` unless configured otherwise, with small mechanical work routed to host OMP task/subagents.
+- [ ] Approve Phase 1 actuals as observation-only, with no enforcement, thresholds, hooks, monitor, budget configuration, or money units.
 - [ ] Approve persistent responsibility reuse, no fixed lane ceiling, and simple separation without scoring.
 - [ ] Approve one immutable assignment Markdown and report-hash settlement without contract/receipt sidecars.
 - [ ] Approve exactly seven assignment states and observe-before-retry ambiguity handling.
@@ -306,7 +329,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] [`docs/ARCHITECTURE.md`](ARCHITECTURE.md): process boundary, authority, assignment state, recovery, and trust boundaries.
 - [ ] `docs/SPEC.md`: unique normative IDs, current actions, acceptance scenarios, non-goals, and this checklist.
 - [ ] [`skills/herdr-delegation/SKILL.md`](../skills/herdr-delegation/SKILL.md): ORCH procedure and public contract.
-- [ ] [`skills/herdr-delegation/templates/protocol.md`](../skills/herdr-delegation/templates/protocol.md): deployed run protocol.
+- [ ] [`skills/herdr-delegation/templates/protocol.md`](../skills/herdr-delegation/templates/protocol.md), [`protocol-orch.md`](../skills/herdr-delegation/templates/protocol-orch.md), and [`protocol-worker.md`](../skills/herdr-delegation/templates/protocol-worker.md): deployed role-scoped run protocol set.
 - [ ] [`skills/herdr-delegation/templates/handoff.md`](../skills/herdr-delegation/templates/handoff.md): responsibility and assignment handoff.
 - [ ] [`config.schema.json`](../config.schema.json), [`run.schema.json`](../run.schema.json), and [`reset.schema.json`](../reset.schema.json): strict public data contracts.
 - [ ] [`LICENSE`](../LICENSE): canonical Apache License 2.0 text and copyright notice.

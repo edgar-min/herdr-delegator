@@ -4,12 +4,16 @@
     "root": "/home/user/.local/share/herdr-delegator/runs"
   },
   "orchestrator": {
-    "role": "@default",
-    "thinking": "inherit"
+    "role": "@plan",
+    "thinking": "high"
   },
   "worker_profiles": {
     "default": {
       "role": "@default",
+      "thinking": "inherit"
+    },
+    "task": {
+      "role": "@task",
       "thinking": "inherit"
     },
     "slow": {

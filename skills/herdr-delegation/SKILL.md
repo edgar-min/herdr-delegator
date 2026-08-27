@@ -35,9 +35,23 @@ The built-in profiles are:
 
 - orchestrator: role `@default`, thinking `inherit`;
 - worker `default`: role `@default`, thinking `inherit`;
-- worker `slow`: role `@slow`, thinking `inherit`.
+- worker `task`: role `@default`, thinking `inherit`;
+- worker `slow`: role `@default`, thinking `inherit`.
 
-Configuration may select another bounded OMP role alias or worker profile. It never stores a concrete model ID. The OMP bridge resolves configured roles to concrete provider/model facts and publishes the current session, model, thinking, configuration hashes, and nonce through a session-scoped mode-0600 fact file. MCP derives that file from the verified caller pane and active OMP agent directory; callers never supply its path.
+`@task` and `@slow` are recognized OMP role names but do not resolve without a corresponding `modelRoles` setting, so the built-ins fail safely to `@default`. Configuration may select another bounded OMP role alias or worker profile. It never stores a concrete model ID. The OMP bridge resolves configured roles to concrete provider/model facts and publishes the current session, model, thinking, configuration hashes, and nonce through a session-scoped mode-0600 fact file. MCP derives that file from the verified caller pane and active OMP agent directory; callers never supply its path.
+
+### Profile selection
+
+ORCH picks `profile` for each assignment from the assignment's work characteristics:
+
+| Surface | Selection criterion |
+|---|---|
+| orchestrator | Top-tier planning and judgment intelligence; decision quality over cost |
+| `default` | Dialogue-faithful and meticulous; turns observations into language |
+| `task` | Best artifact under a clear specification; language quality is secondary |
+| `slow` | Deepest, most careful reasoning for hard problems where cost is secondary |
+
+Cost-efficient small mechanical work routes to host OMP task/subagents, so no persistent lane profile exists for it.
 
 Launches remain fail-closed behind two gates:
 
@@ -60,12 +74,14 @@ Call:
 {"track_id":"example-track","run_id":"implementation","action":"init","cwd":"/absolute/project/path"}
 ```
 
-`herdr_track` resolves `<storage.root>/<track_id>/<run_id>` and initializes:
+`herdr_track` resolves `<storage.root>/<track_id>/<run_id>` and materializes the three protocol documents byte-identically from their bundled templates:
 
 ```text
 <run>/
   run.json
   protocol.md
+  protocol-orch.md
+  protocol-worker.md
   a2a/
 ```
 
@@ -168,7 +184,7 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 
 `wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000.
 
-`add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends only a pointer to the canonical assignment, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active.
+`add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends pointers to the canonical assignment and `protocol-worker.md`, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active.
 
 Assignment state is exactly:
 
@@ -191,6 +207,8 @@ Use worker operations for lane observation and lifecycle only. Assignment delive
 
 When MCP verifies a report completion block, it stores `report_sha256`, marks the assignment `completed` or `failed`, returns the lane to `idle`, and promotes the FIFO head. The worker tab and official OMP session remain open for the next assignment.
 
+Terminal `herdr_assignment` results may include `assignment.settlement` with elapsed time, cumulative session token usage, and advisory unowned-change paths. `herdr_worker inspect` reports activity timing and queue depth; `herdr_track inspect` reports lane/state totals and cumulative settled observations. Treat these as bounded signals for possible over- or under-spend and scope drift. ORCH judges them against the assignment and verified evidence; they never enforce a threshold, attribute work automatically, authorize mutation, or replace settlement and correctness checks.
+
 Close only when the responsibility lane or track is finished. Fresh inspection must prove registry identity, official session, state sequence, and safe topology. A worker tab may contain only its registry root pane and verified Herdr Sidebar panes. An ambiguous close is never replayed blindly.
 
 Focus restoration is guarded: restore only displacement onto registry-owned coordinates, never unrelated user focus. Record partial restoration as a warning, not operation failure.
@@ -209,7 +227,7 @@ Workers self-resolve from their assignment, `plan.md`, canonical project documen
 
 ORCH independently reproduces material worker claims and runs integration verification once at the integration boundary. Record acceptance or recovery in `[ORCH Response]` and `evidence.md` when used.
 
-For a handoff, create a sibling run, preserve active or unsafe source lanes, revalidate inherited evidence, complete `templates/handoff.md`, and start the target with `herdr_track {action:"start_orchestrator"}`. The configured orchestrator role is resolved through the same OMP bridge; it is not fixed to `@plan`.
+For a handoff, create a sibling run, preserve active or unsafe source lanes, revalidate inherited evidence, complete `templates/handoff.md`, and start the target with `herdr_track {action:"start_orchestrator"}`. The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended.
 
 `/reload-plugins` refreshes the skill and MCP server. Validate a changed extension module in a new OMP session.
 

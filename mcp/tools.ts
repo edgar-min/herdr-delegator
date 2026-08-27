@@ -1,6 +1,9 @@
-import { lstat, readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { isUtf8 } from "node:buffer";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { closeWorker, ensureWorker, inspectWorker, resolveBlock, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -8,7 +11,7 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AssignmentRecord, type DelegationRegistry, type ErrorPhase, type HerdrAssignmentInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type OmpRuntimeFacts, type RunRef, type ToolName, type WorkerLaneRecord } from "./contracts";
+import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type HerdrAssignmentInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 
 function field(value: unknown, names: readonly string[]): unknown {
   if (!value || typeof value !== "object") return undefined;
@@ -19,9 +22,184 @@ function field(value: unknown, names: readonly string[]): unknown {
 }
 function stringField(value: unknown, names: readonly string[]): string | undefined { const found = field(value, names); return typeof found === "string" ? found : undefined; }
 function numberField(value: unknown, names: readonly string[]): number | undefined { const found = field(value, names); return typeof found === "number" && Number.isFinite(found) ? found : undefined; }
-function timeout(value: { wait?: { timeout_ms?: number } }): number { const candidate = value.wait?.timeout_ms ?? DEFAULT_TIMEOUT_MS; return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, candidate)); }
+// The public schema still accepts up to MAX_TIMEOUT_MS, but a single server-side
+// call is clamped under the 30s MCP client transport bound; a longer logical wait
+// is composed by repeating bounded `wait` calls.
+function timeout(value: { wait?: { timeout_ms?: number } }): number { const candidate = value.wait?.timeout_ms ?? DEFAULT_TIMEOUT_MS; return Math.min(MAX_EFFECTIVE_WAIT_MS, Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, candidate))); }
 function runRef(input: { track_id: string; run_id: string }): RunRef { return { track_id: input.track_id, run_id: input.run_id }; }
 function laneState(raw: string | undefined): LaneState { if (raw === "blocked") return "blocked"; if (raw === "working" || raw === "prompted") return "working"; if (raw === "closed") return "closed"; if (raw === "failed") return "failed"; if (raw === "resume-needed") return "resume-needed"; return "idle"; }
+
+const ASSIGNMENT_STATE_ORDER: readonly AssignmentState[] = ["queued", "prompting", "working", "blocked", "completed", "failed", "ambiguous"];
+const ACTIVE_SETTLEMENT_STATES: Partial<Record<AssignmentState, true>> = { prompting: true, working: true, blocked: true, ambiguous: true };
+const TOKEN_FIELDS = [
+  ["input", "input_tokens"],
+  ["output", "output_tokens"],
+  ["cacheRead", "cache_read_tokens"],
+  ["cacheWrite", "cache_write_tokens"],
+  ["reasoningTokens", "reasoning_tokens"],
+  ["totalTokens", "total_tokens"],
+] as const;
+const MAX_ADVISORY_PATHS = 64;
+const MAX_ADVISORY_PATH_BYTES = 1_024;
+const MAX_GIT_OUTPUT_BYTES = 128 * 1024;
+const GIT_AUDIT_TIMEOUT_MS = 2_000;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Promise<TokenUsageObservation | undefined> {
+  if (!lane.official_session_id || !lane.official_session_path) return undefined;
+  try {
+    const file = await lstat(lane.official_session_path);
+    if (!file.isFile() || file.isSymbolicLink()) return undefined;
+    const sums: Partial<Record<(typeof TOKEN_FIELDS)[number][1], number>> = {};
+    let sawUsage = false;
+    const lines = createInterface({ input: createReadStream(lane.official_session_path), crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (Buffer.byteLength(line) > 1024 * 1024) return undefined;
+      let parsed: unknown;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      if (!isObject(parsed) || !isObject(parsed.message) || parsed.message.role !== "assistant" || !isObject(parsed.message.usage)) continue;
+      for (const [source, target] of TOKEN_FIELDS) {
+        const value = parsed.message.usage[source];
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) continue;
+        const next = (sums[target] ?? 0) + value;
+        if (!Number.isSafeInteger(next)) return undefined;
+        sums[target] = next;
+        sawUsage = true;
+      }
+    }
+    return sawUsage ? { source: "omp-jsonl", session_id: lane.official_session_id, observed_at: observedAt, ...sums } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function declaredActiveOwnership(store: DelegationStore, registry: DelegationRegistry): Promise<string[] | undefined> {
+  const owned: string[] = [];
+  try {
+    for (const assignment of Object.values(registry.assignments)) {
+      if (!ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
+      const artifact = await store.assignmentFile(assignment.assignment_id, assignment.responsibility_key, assignment.instructions_sha256);
+      for (const declaration of artifact.assignment.write_ownership) {
+        if (declaration.includes("\0") || Buffer.byteLength(declaration) > 4_096) return undefined;
+        owned.push(path.resolve(store.cwd, declaration));
+      }
+    }
+    return owned;
+  } catch {
+    return undefined;
+  }
+}
+
+async function observeAdvisoryUnownedChanges(store: DelegationStore, registry: DelegationRegistry): Promise<AdvisoryUnownedChanges | undefined> {
+  const ownership = await declaredActiveOwnership(store, registry);
+  if (!ownership) return undefined;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GIT_AUDIT_TIMEOUT_MS);
+  try {
+    const process = Bun.spawn(["git", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], {
+      cwd: store.cwd,
+      env: { ...globalThis.process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+      stdout: "pipe",
+      stderr: "pipe",
+      signal: controller.signal,
+    });
+    const [stdout, exitCode] = await Promise.all([new Response(process.stdout).arrayBuffer(), process.exited]);
+    if (exitCode !== 0 || stdout.byteLength > MAX_GIT_OUTPUT_BYTES) return undefined;
+    const bytes = Buffer.from(stdout);
+    if (!isUtf8(bytes)) return undefined;
+    const entries = bytes.toString("utf8").split("\0");
+    if (entries.at(-1) !== "") return undefined;
+    entries.pop();
+    const modified: string[] = [];
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index];
+      if (entry.length < 4 || entry[2] !== " ") return undefined;
+      const candidates = [entry.slice(3)];
+      if (entry[0] === "R" || entry[1] === "R" || entry[0] === "C" || entry[1] === "C") {
+        const original = entries[index + 1];
+        if (!original) return undefined;
+        candidates.push(original);
+        index += 1;
+      }
+      for (const candidate of candidates) {
+        if (!candidate || candidate.includes("\0") || path.isAbsolute(candidate) || Buffer.byteLength(candidate) > 4_096) return undefined;
+        const absolute = path.resolve(store.cwd, candidate);
+        const relative = path.relative(store.cwd, absolute);
+        if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`)) return undefined;
+        const covered = ownership.some((owned) => absolute === owned || absolute.startsWith(`${owned}${path.sep}`));
+        if (!covered && !modified.includes(relative)) modified.push(relative);
+      }
+    }
+    modified.sort();
+    const boundedPaths: string[] = [];
+    let truncated = false;
+    for (const modifiedPath of modified) {
+      if (boundedPaths.length === MAX_ADVISORY_PATHS || Buffer.byteLength(modifiedPath) > MAX_ADVISORY_PATH_BYTES) {
+        truncated = true;
+        continue;
+      }
+      boundedPaths.push(modifiedPath);
+    }
+    return { advisory: true, paths: boundedPaths, truncated };
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function settlementObservation(assignment: AssignmentRecord, warning?: string): AssignmentSettlementObservation | undefined {
+  if (assignment.state !== "completed" && assignment.state !== "failed") return undefined;
+  const observation: AssignmentSettlementObservation = {};
+  if (assignment.elapsed_ms !== undefined) observation.elapsed_ms = assignment.elapsed_ms;
+  if (assignment.token_usage !== undefined) observation.token_usage = assignment.token_usage;
+  if (assignment.advisory_unowned_changes !== undefined) observation.advisory_unowned_changes = assignment.advisory_unowned_changes;
+  if (warning !== undefined) observation.observation_warning = warning.length <= 300 ? warning : `${warning.slice(0, 297)}...`;
+  return observation;
+}
+
+function trackTotals(registry: DelegationRegistry): TrackTotals {
+  const assignmentsByState = Object.fromEntries(ASSIGNMENT_STATE_ORDER.map((state) => [state, 0])) as Record<AssignmentState, number>;
+  const tokenTotals: TrackTotals["settled_token_usage"] = { observations: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, total_tokens: 0 };
+  let settledElapsedMs = 0;
+  let settledElapsedObservations = 0;
+  let saturated = false;
+  for (const assignment of Object.values(registry.assignments)) {
+    assignmentsByState[assignment.state] += 1;
+    if (assignment.state !== "completed" && assignment.state !== "failed") continue;
+    if (assignment.elapsed_ms !== undefined) {
+      const nextElapsedMs = settledElapsedMs + assignment.elapsed_ms;
+      if (Number.isSafeInteger(nextElapsedMs)) settledElapsedMs = nextElapsedMs;
+      else {
+        settledElapsedMs = Number.MAX_SAFE_INTEGER;
+        saturated = true;
+      }
+      settledElapsedObservations += 1;
+    }
+    if (assignment.token_usage) {
+      tokenTotals.observations += 1;
+      for (const [, fieldName] of TOKEN_FIELDS) {
+        const nextTokenTotal = tokenTotals[fieldName] + (assignment.token_usage[fieldName] ?? 0);
+        if (Number.isSafeInteger(nextTokenTotal)) tokenTotals[fieldName] = nextTokenTotal;
+        else {
+          tokenTotals[fieldName] = Number.MAX_SAFE_INTEGER;
+          saturated = true;
+        }
+      }
+    }
+  }
+  return {
+    lane_count: Object.keys(registry.lanes).length,
+    assignments_by_state: assignmentsByState,
+    settled_elapsed_ms: settledElapsedMs,
+    settled_elapsed_observations: settledElapsedObservations,
+    settled_token_usage: tokenTotals,
+    saturated,
+  };
+}
 
 function matchingObjects(
   value: unknown,
@@ -176,7 +354,7 @@ async function updateLaneFromWorker(store: DelegationStore, workerId: string, re
   });
 }
 
-async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord): Promise<DelegationRegistry> {
+export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord): Promise<DelegationRegistry> {
   if (lane.state !== "idle" && lane.state !== "failed") return registry;
   let report: Buffer;
   try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); }
@@ -185,13 +363,26 @@ async function settleIfReported(store: DelegationStore, registry: DelegationRegi
   const statuses = completion?.[1].match(/^status: (completed|failed)$/gm) ?? [];
   if (!completion || statuses.length !== 1 || !lane.official_session_id || !Number.isSafeInteger(lane.state_change_seq)) return registry;
   const terminal = statuses[0] === "status: failed" ? "failed" as const : "completed" as const;
+  const settledAt = nowIso();
+  const [tokenUsage, advisoryUnownedChanges] = await Promise.all([
+    observeTokenUsage(lane, settledAt),
+    observeAdvisoryUnownedChanges(store, registry),
+  ]);
+  const promptedAt = assignment.prompted_at === undefined ? undefined : Date.parse(assignment.prompted_at);
+  const settledAtMs = Date.parse(settledAt);
+  const elapsedMs = promptedAt !== undefined && Number.isSafeInteger(promptedAt) && promptedAt <= settledAtMs
+    ? settledAtMs - promptedAt
+    : undefined;
   return store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
     const currentLane = next.lanes[lane.worker_id];
     const current = next.assignments[assignment.assignment_id];
     current.state = terminal;
     current.report_sha256 = sha256(report);
-    current.completed_at = nowIso();
-    current.updated_at = current.completed_at;
+    current.completed_at = settledAt;
+    current.updated_at = settledAt;
+    if (elapsedMs !== undefined && Number.isSafeInteger(elapsedMs)) current.elapsed_ms = elapsedMs;
+    if (tokenUsage !== undefined) current.token_usage = tokenUsage;
+    if (advisoryUnownedChanges !== undefined) current.advisory_unowned_changes = advisoryUnownedChanges;
     currentLane.last_completed_assignment_id = assignment.assignment_id;
     delete currentLane.active_assignment_id;
     currentLane.state = "idle";
@@ -202,17 +393,27 @@ async function settleIfReported(store: DelegationStore, registry: DelegationRegi
 }
 
 
-async function reportTerminalObservation(
+/**
+ * Terminal observation of an already-committed settlement. It is a display-only
+ * side effect, so every failure degrades to a bounded warning: a settled
+ * assignment is never re-reported as an error or as ambiguous.
+ */
+export async function reportTerminalObservation(
   adapter: HerdrAdapter,
   registry: DelegationRegistry,
   assignmentId: string,
   previousState: string,
   paneId: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const assignment = registry.assignments[assignmentId];
-  if (assignment.state === previousState || (assignment.state !== "completed" && assignment.state !== "failed")) return;
-  if (!paneId) throw new McpContractError("worker_identity_conflict", "Settled assignment has no canonical pane for terminal observation.", "settlement", "Inspect the worker pane before retrying settlement observation.");
-  await adapter.reportObservation(paneId, assignment.responsibility_key, assignmentId, assignment.state, registry.revision, 10_000);
+  if (assignment.state === previousState || (assignment.state !== "completed" && assignment.state !== "failed")) return undefined;
+  if (!paneId) return "Settlement observation skipped: the settled assignment has no canonical worker pane.";
+  try {
+    const observed = await adapter.reportObservation(paneId, assignment.responsibility_key, assignmentId, assignment.state, registry.revision, 10_000);
+    return observed.warning;
+  } catch (error) {
+    return `Settlement observation failed after the settlement committed: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 function assertLiveWorkerSession(
   lane: WorkerLaneRecord,
@@ -256,7 +457,7 @@ export class CompositeTools {
         const registry = await store.read();
         let orchestrator: unknown;
         try { const runtime = await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator } };
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry) } };
       }
       const runtime = await loadFacts(this.adapter);
       if (input.action === "start_orchestrator") {
@@ -286,6 +487,15 @@ export class CompositeTools {
     try {
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
       if (input.action === "add") {
+        const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
+        try {
+          const protocolStat = await lstat(workerProtocolPath);
+          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(workerProtocolPath)) !== workerProtocolPath) {
+            throw new Error("protocol path is not canonical");
+          }
+        } catch {
+          throw new McpContractError("invalid_run_layout", "protocol-worker.md is missing or not a canonical regular file.", "validate", "Re-initialize and reconcile the exact run before dispatching an assignment.");
+        }
         const runtime = await loadFacts(this.adapter);
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
@@ -319,13 +529,20 @@ export class CompositeTools {
         const agentName = stringField(ensured.worker, ["agent_name"]);
         const paneId = stringField(ensured.worker, ["root_pane_id"]);
         if (!agentName || !paneId) throw new McpContractError("worker_identity_conflict", "Ensured worker lacks canonical agent or pane coordinates.", "attest", "Inspect the lifecycle registry before prompting.");
+        const promptedAt = nowIso();
         registry = await store.mutate(timeout(input), (next) => {
           next.assignments[input.assignment_id].state = "prompting";
-          next.assignments[input.assignment_id].updated_at = nowIso();
+          next.assignments[input.assignment_id].prompted_at = promptedAt;
+          next.assignments[input.assignment_id].updated_at = promptedAt;
           next.lanes[lane.worker_id].state = "working";
         });
-        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}. Append [Assignment Completion: ${input.assignment_id}] to ${path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)} and remain idle.`;
-        try { await this.adapter.prompt(agentName, pointer, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input)); }
+        const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
+        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle.`;
+        const warnings: string[] = [];
+        try {
+          const prompted = await this.adapter.prompt(agentName, pointer, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
+          if (prompted.warning) warnings.push(prompted.warning);
+        }
         catch (error) {
           if (error instanceof McpContractError && error.ambiguousEffect) await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
             const assignment = next.assignments[input.assignment_id];
@@ -345,26 +562,32 @@ export class CompositeTools {
           next.assignments[input.assignment_id].state = observedState === "blocked" ? "blocked" : "working";
           next.assignments[input.assignment_id].updated_at = nowIso();
         });
-        await this.adapter.reportObservation(paneId, input.responsibility_key, input.assignment_id, registry.assignments[input.assignment_id].state, registry.revision, 10_000);
+        const progress = await this.adapter.reportObservation(paneId, input.responsibility_key, input.assignment_id, registry.assignments[input.assignment_id].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
+        if (progress) warnings.push(progress);
         const beforeSettlement = registry.assignments[input.assignment_id].state;
         registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
-        await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, paneId);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: registry.assignments[input.assignment_id].state } };
+        const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, paneId);
+        if (terminal) warnings.push(terminal);
+        const settledAssignment = registry.assignments[input.assignment_id];
+        const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
       }
 
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
       if (assignment.state === "queued") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
-      if (assignment.state === "completed" || assignment.state === "failed") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: assignment.assignment_id, state: assignment.state } };
+      if (assignment.state === "completed" || assignment.state === "failed") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment) } };
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");
       const inspected = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, ...(input.action === "wait" ? { timeout_ms: timeout(input) } : {}) });
       registry = await updateLaneFromWorker(store, lane.worker_id, inspected);
+      const tailWarnings: string[] = [];
       if (input.action === "wait") {
         const agentName = stringField(inspected.worker, ["agent_name"]);
         if (!agentName) throw new McpContractError("worker_identity_conflict", "Assignment lane has no canonical agent name.", "wait", "Reconcile lifecycle identity before waiting.");
-        await this.adapter.wait(agentName, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
+        const waited = await this.adapter.wait(agentName, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
+        if (waited.warning) tailWarnings.push(waited.warning);
       } else {
         await loadFacts(this.adapter);
         const currentLane = registry.lanes[lane.worker_id];
@@ -392,8 +615,11 @@ export class CompositeTools {
       });
       const beforeSettlement = registry.assignments[input.assignment_id].state;
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
-      await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: registry.assignments[input.assignment_id].state } };
+      const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
+      if (terminal) tailWarnings.push(terminal);
+      const settledAssignment = registry.assignments[input.assignment_id];
+      const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
@@ -404,8 +630,21 @@ export class CompositeTools {
       if (input.action === "list") { const lanes = Object.values(registry.lanes).filter((lane) => !input.responsibility_key || lane.responsibility_key === input.responsibility_key); return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { lanes } }; }
       const lane = registry.lanes[input.worker_id]; if (!lane) throw new McpContractError("worker_identity_conflict", "Worker is not registry-owned.", "select", "Use list and inspect the canonical registry.");
       if (input.action === "inspect") {
-        const result = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, output_lines: input.output_lines }); registry = await updateLaneFromWorker(store, input.worker_id, result);
-        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: result };
+        const result = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, output_lines: input.output_lines });
+        registry = await updateLaneFromWorker(store, input.worker_id, result);
+        const rawStaleness = isObject(result.observation?.staleness) ? result.observation.staleness : undefined;
+        const lastActivityAt = stringField(rawStaleness, ["last_activity_at"]);
+        const observedAt = stringField(rawStaleness, ["observed_at"]);
+        let data: WorkerResult = result;
+        if (lastActivityAt && observedAt) {
+          const staleness: WorkerStalenessObservation = {
+            observed_at: observedAt,
+            last_activity_at: lastActivityAt,
+            queue_depth: registry.lanes[input.worker_id].queued_assignment_ids.length,
+          };
+          data = { ...result, observation: { ...result.observation, staleness } };
+        }
+        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data };
       }
       const runtime = await loadFacts(this.adapter);
       const live = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id });

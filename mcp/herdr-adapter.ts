@@ -1,10 +1,14 @@
 import { access, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
-import { McpContractError, OBSERVATION_SOURCE, type AssignmentState } from "./contracts";
+import { MAX_EFFECTIVE_WAIT_MS, McpContractError, OBSERVATION_SOURCE, type AssignmentState } from "./contracts";
 
-export type HerdrCommandResult = { data: unknown; stdout: string };
+export type HerdrCommandResult = { data: unknown; stdout: string; warning?: string };
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const REQUIRED_CAPABILITIES = ["agent.prompt", "agent.wait", "agent.start", "pane.wait_for_output", "pane.report_metadata"] as const;
+// Ordered most specific first: `agent get` reports the lifecycle state under one of these.
+const AGENT_STATUS_KEYS = ["agent_status", "state", "status"] as const;
+// A bounded read used only to prove an already-satisfied wait or a delivered prompt.
+const STATUS_READ_TIMEOUT_MS = 5_000;
 
 function bounded(value: string): string { return value.length <= 500 ? value : `${value.slice(0, 497)}...`; }
 function valuesForKey(value: unknown, key: string, out: unknown[] = []): unknown[] {
@@ -15,6 +19,24 @@ function valuesForKey(value: unknown, key: string, out: unknown[] = []): unknown
     valuesForKey(child, key, out);
   }
   return out;
+}
+
+function agentStatusOf(data: unknown): string | undefined {
+  for (const key of AGENT_STATUS_KEYS) {
+    const found = valuesForKey(data, key).find((value) => typeof value === "string" && value.length > 0 && value.length <= 64);
+    if (typeof found === "string") return found;
+  }
+  return undefined;
+}
+
+/**
+ * True only for a failure that proves Herdr accepted the prompt and then failed
+ * while observing the status stream. Delivery failures and our own mutation
+ * timeout stay ambiguous and are never recovered here.
+ */
+function isStatusWaitFailure(error: unknown): boolean {
+  if (!(error instanceof McpContractError) || error.ambiguousEffect) return false;
+  return /waiting for agent status|agent_wait_timeout|status_wait_timeout/i.test(`${error.code} ${error.message}`);
 }
 
 export class HerdrAdapter {
@@ -38,7 +60,7 @@ export class HerdrAdapter {
     return adapter;
   }
 
-  private async execute(args: readonly string[], timeoutMs: number, mutating: boolean): Promise<HerdrCommandResult> {
+  private async execute(args: readonly string[], timeoutMs: number, mutating: boolean, tolerateNonJson = false): Promise<HerdrCommandResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -51,7 +73,13 @@ export class HerdrAdapter {
         throw new McpContractError(code, bounded(stderr || stdout || `Herdr exited ${exitCode}.`), mutating ? "prompt" : "wait", mutating ? "Inspect the exact target and registry journal before any replay." : "Retry the read-only observation.", false, !mutating);
       }
       let data: unknown;
-      try { data = JSON.parse(stdout); } catch { throw new McpContractError("invalid_herdr_response", "Herdr stdout was not JSON.", mutating ? "prompt" : "wait", "Verify the installed Herdr 0.8.2 schema and binary selection.", mutating, false); }
+      try { data = JSON.parse(stdout); }
+      catch {
+        // Some bounded Herdr commands (e.g. `pane report-metadata`) report success
+        // with a zero exit code and no JSON body; accept that shape explicitly.
+        if (!tolerateNonJson) throw new McpContractError("invalid_herdr_response", "Herdr stdout was not JSON.", mutating ? "prompt" : "wait", "Verify the installed Herdr 0.8.2 schema and binary selection.", mutating, false);
+        return { data: undefined, stdout, warning: stdout.trim() ? `Herdr returned a non-JSON success body: ${bounded(stdout.trim())}` : undefined };
+      }
       return { data, stdout };
     } catch (error: unknown) {
       if (controller.signal.aborted) throw new McpContractError(mutating ? "herdr_mutation_timeout" : "wait_timeout", `Herdr ${mutating ? "mutation" : "observation"} timed out.`, mutating ? "prompt" : "wait", mutating ? "Treat the effect as ambiguous and inspect before replay." : "The observation had no effect and may be retried.", mutating, !mutating);
@@ -72,12 +100,33 @@ export class HerdrAdapter {
 
   getAgent(target: string, timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["agent", "get", target], timeoutMs, false); }
   listAgents(timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["agent", "list"], timeoutMs, false); }
-  prompt(target: string, text: string, until: string[], timeoutMs: number): Promise<HerdrCommandResult> {
-    const args = ["agent", "prompt", target, text, "--wait", ...until.flatMap((state) => ["--until", state]), "--timeout", String(timeoutMs)];
-    return this.execute(args, timeoutMs + 1_000, true);
+  /**
+   * Prompts and waits for a requested terminal state. A failure that proves only
+   * the status observation broke resolves against a bounded fresh inspection: the
+   * prompt already landed, so it is reported as the effective mutation it is.
+   */
+  async prompt(target: string, text: string, until: string[], timeoutMs: number): Promise<HerdrCommandResult> {
+    const waitMs = Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS);
+    const args = ["agent", "prompt", target, text, "--wait", ...until.flatMap((state) => ["--until", state]), "--timeout", String(waitMs)];
+    try { return await this.execute(args, waitMs + 1_000, true); }
+    catch (error) {
+      if (!isStatusWaitFailure(error)) throw error;
+      const observed = await this.getAgent(target, STATUS_READ_TIMEOUT_MS);
+      const status = agentStatusOf(observed.data);
+      if (!status) throw error;
+      return { data: observed.data, stdout: observed.stdout, warning: `Prompt landed but the status wait did not settle; the agent was freshly observed as ${bounded(status)}.` };
+    }
   }
-  wait(target: string, until: string[], timeoutMs: number): Promise<HerdrCommandResult> {
-    return this.execute(["agent", "wait", target, ...until.flatMap((state) => ["--until", state]), "--timeout", String(timeoutMs)], timeoutMs + 1_000, false);
+  /**
+   * Waits for one of `until`. An already-satisfied state is proved by a fresh read
+   * before subscribing, so a current state never times out.
+   */
+  async wait(target: string, until: string[], timeoutMs: number): Promise<HerdrCommandResult> {
+    const waitMs = Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS);
+    const current = await this.getAgent(target, Math.min(waitMs, STATUS_READ_TIMEOUT_MS));
+    const status = agentStatusOf(current.data);
+    if (status !== undefined && until.includes(status)) return current;
+    return this.execute(["agent", "wait", target, ...until.flatMap((state) => ["--until", state]), "--timeout", String(waitMs)], waitMs + 1_000, false);
   }
   startAgent(name: string, paneId: string, args: readonly string[], timeoutMs: number): Promise<HerdrCommandResult> {
     return this.execute(["agent", "start", name, "--kind", "omp", "--pane", paneId, "--", ...args], timeoutMs, true);
@@ -86,9 +135,14 @@ export class HerdrAdapter {
   sendKeys(paneId: string, keys: readonly string[], timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["pane", "send-keys", paneId, ...keys], timeoutMs, true); }
   closeTab(tabId: string, timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["tab", "close", tabId], timeoutMs, true); }
   getPane(paneId: string, timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["pane", "get", paneId], timeoutMs, false); }
+  /**
+   * Terminal/progress observation. `pane report-metadata` is bounded and may emit
+   * no JSON on success, so the parse is tolerant; callers degrade any residual
+   * failure to a warning rather than ambiguating a committed mutation.
+   */
   reportObservation(paneId: string, responsibility: string, assignment: string, state: AssignmentState, sequence: number, timeoutMs: number): Promise<HerdrCommandResult> {
     const title = `${responsibility} · ${assignment}`.slice(0, 80);
     const visibleState = state === "completed" || state === "failed" || state === "blocked" || state === "queued" ? state : "working";
-    return this.execute(["pane", "report-metadata", paneId, "--source", OBSERVATION_SOURCE, "--title", title, "--seq", String(sequence), "--token", `responsibility=${responsibility}`, "--token", `assignment=${assignment}`, "--token", `assignment-state=${visibleState}`], timeoutMs, true);
+    return this.execute(["pane", "report-metadata", paneId, "--source", OBSERVATION_SOURCE, "--title", title, "--seq", String(sequence), "--token", `responsibility=${responsibility}`, "--token", `assignment=${assignment}`, "--token", `assignment-state=${visibleState}`], timeoutMs, true, true);
   }
 }

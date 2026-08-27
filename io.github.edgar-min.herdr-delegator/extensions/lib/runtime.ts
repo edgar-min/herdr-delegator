@@ -11,7 +11,7 @@ import {
 } from "./bridge";
 export type { BootstrapSessionVerification } from "./bridge";
 import type { FocusRestoration, Operation, OrchestratorRecord, Registry, RegistryRecord, ResolvedLaunchProfile, RunRecord, SessionVerification, ThinkingLevel, WorkerState } from "./contracts";
-import { ContractError, FOCUS_TIMEOUT_MS, LOCK_STALE_MS, LOCK_WAIT_MAX_MS, MAX_SESSION_BYTES, OPERATIONS, PROFILE_RE, PUBLIC_WORKER_STATES, REGISTRY_OWNER, REGISTRY_STATES, REGISTRY_VERSION, ROLE_RE, RUN_GENERATION, WORKER_RE, compactMessage, isObject, nowIso, sha256, sleep } from "./contracts";
+import { ContractError, FOCUS_TIMEOUT_MS, LOCK_STALE_MS, LOCK_WAIT_MAX_MS, MAX_SESSION_BYTES, OPERATIONS, PROFILE_RE, PUBLIC_WORKER_STATES, REGISTRY_OWNER, REGISTRY_STATES, REGISTRY_VERSION, ROLE_RE, RUN_GENERATION, SHA256_RE, WORKER_RE, compactMessage, isObject, nowIso, sha256, sleep } from "./contracts";
 import { isConfigSource, isFile, isResetLineage, isTargetOrchestratorRecord, isThinkingLevel } from "./config";
 
 type BootstrapExpectedProfile = Pick<
@@ -171,11 +171,15 @@ function isRegistry(value: unknown): value is Registry {
       record.bootstrap_attestation,
       record.bootstrap_attested_at,
       record.bootstrap_verified_at,
+      record.last_output_sha256,
+      record.last_output_at,
+      record.last_activity_at,
     ];
     const optionalNumbers = [
       record.revision,
       record.state_change_seq,
       record.resolving_state_change_seq,
+      record.last_activity_revision,
     ];
     return (
       record.worker_key === workerKey &&
@@ -206,6 +210,10 @@ function isRegistry(value: unknown): value is Registry {
       typeof record.updated_at === "string" &&
       optionalStrings.every((item) => item === undefined || typeof item === "string") &&
       optionalNumbers.every((item) => item === undefined || Number.isSafeInteger(item)) &&
+      (record.last_output_sha256 === undefined || (typeof record.last_output_sha256 === "string" && SHA256_RE.test(record.last_output_sha256))) &&
+      (record.last_output_at === undefined || (typeof record.last_output_at === "string" && record.last_output_at.length <= 64)) &&
+      (record.last_activity_at === undefined || (typeof record.last_activity_at === "string" && record.last_activity_at.length <= 64)) &&
+      (record.last_activity_revision === undefined || (typeof record.last_activity_revision === "number" && Number.isSafeInteger(record.last_activity_revision) && record.last_activity_revision >= 0)) &&
       hasValidBootstrapFacts(record)
     );
   });
@@ -1508,6 +1516,40 @@ export async function getLiveAgent(
   signal?: AbortSignal,
 ): Promise<CommandResult> {
   return runHerdr(binary, ["agent", "get", agentName], timeoutMs, signal);
+}
+
+/**
+ * MCP clients abort a single call at 30s, so every effective server-side status
+ * wait is clamped below that bound; longer logical waits are composed by
+ * repeating bounded waits.
+ */
+export const MAX_EFFECTIVE_WAIT_MS = 25_000;
+const STATUS_READ_TIMEOUT_MS = 5_000;
+
+/**
+ * Waits for the agent to reach one of `until`. The current status is read before
+ * subscribing, so a state that is already satisfied resolves immediately instead
+ * of timing out against a status stream that will never re-emit it.
+ */
+export async function waitForAgentStatus(
+  binary: string,
+  agentName: string,
+  until: readonly string[],
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<CommandResult> {
+  const waitMs = Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS);
+  const current = await getLiveAgent(binary, agentName, Math.min(waitMs, STATUS_READ_TIMEOUT_MS), signal);
+  if (current.ok) {
+    const status = firstString(current.data, ["agent_status", "state", "status"]);
+    if (status !== undefined && until.includes(status)) return current;
+  }
+  return runHerdr(
+    binary,
+    ["agent", "wait", agentName, ...until.flatMap((state) => ["--until", state]), "--timeout", String(waitMs)],
+    waitMs + 1_000,
+    signal,
+  );
 }
 
 export function assertAgentBelongsToRecord(record: RegistryRecord, data: unknown): void {
