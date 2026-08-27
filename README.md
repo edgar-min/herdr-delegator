@@ -91,7 +91,9 @@ Project values override user values. A run-local configuration may override prof
 }
 ```
 
-The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
+Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
+
+If the live session does not match the configured orchestrator role, mutations fail closed with `orchestrator_model_mismatch`; the error names the expected identity and the remedies. Run `/herdr-align` in the session to switch it (session-only) to the configured role and refresh bridge attestation in one step.
 
 ## Start
 
@@ -154,6 +156,8 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 - `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation and wait.
 - `wait`: assignment ID and optional wait.
 - `respond`: assignment ID, fresh blocked sequence, and bounded text or allowlisted keys.
+
+`wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
 
 Assignment state is exactly:
 
