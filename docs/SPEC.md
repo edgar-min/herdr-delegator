@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 0.5.0 and the bundled `herdr-delegation` skill 4.0.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.0.0 and the bundled `herdr-delegation` skill 1.0.0.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,8 +11,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package version MUST be `0.5.0`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `4.0.0`.
+- **ID-002**: The package and plugin version MUST be `1.0.0`.
+- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.0.0` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -209,17 +209,17 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: `package.json` MUST retain plugin version 0.5.0, the extension entry, Bun-compatible sources, scripts, and direct runtime dependencies.
-- **PKG-002**: The publish allowlist MUST include `extensions/**/*.ts`, `mcp/**/*.ts`, package-root `.mcp.json`, the bundled skill, schemas/examples, README, LICENSE, and docs.
-- **PKG-003**: Package-root `.mcp.json` MUST advertise one `herdr-delegator` stdio server using Bun with package-root `cwd`.
-- **PKG-004**: README prerequisites MUST require OMP, Herdr, and `herdr integration install omp`.
-- **PKG-005**: README MUST document GitHub installation, local development linking, and `bun install` plus `bun run check`.
-- **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed extension cutover MUST be verified in a new OMP session.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.0.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server using bare command `sh`, sole arg `${PLUGIN_ROOT}/bin/herdr-delegator-mcp`, and `${PLUGIN_ROOT}` as `cwd`; `.mcp.json` MUST NOT exist.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.0.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, LICENSE, and docs.
+- **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
+- **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
 
 ## 12. Module architecture
 
-- **ARC-001**: `extensions/herdr-delegator.ts` MUST remain a bridge-only entry and MUST NOT register public MCP tools.
-- **ARC-002**: `extensions/lib/bridge.ts` MUST own OMP fact publication and bootstrap metadata reporting.
+- **ARC-001**: `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` MUST remain a bridge-only entry and MUST NOT register public MCP tools.
+- **ARC-002**: `io.github.edgar-min.herdr-delegator/extensions/lib/bridge.ts` MUST own OMP fact publication and bootstrap metadata reporting.
 - **ARC-003**: `mcp/server.ts` MUST own stdio transport and exactly three public registrations.
 - **ARC-004**: `mcp/contracts.ts` MUST own strict public schemas and bounded shared MCP contracts.
 - **ARC-005**: `mcp/herdr-adapter.ts` MUST expose fixed, bounded Herdr operations and MUST NOT accept raw public argv.
@@ -262,8 +262,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Package `herdr-delegator` is 0.5.0 and skill `herdr-delegation` is 4.0.0.
-- [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the OMP extension is bridge-only.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.0.0.
+- [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the namespaced OMP extension is bridge-only.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.
 - [ ] Exact responsibility reuse, one active assignment, FIFO queueing, ordinal reservation, and simple separation match routing source.
@@ -271,7 +271,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Pre-prompt bootstrap and post-prompt JSONL gates preserve exact provider/model/thinking/session identity.
 - [ ] Prompt/response/resume ambiguity prohibits replay and converges on the single public `ambiguous` state.
 - [ ] Worker resume and close exact-session/sequence gates match composite and lifecycle source.
-- [ ] Package-root `.mcp.json`, publish allowlist, Bun stdio command, and direct runtime dependencies match package metadata.
+- [ ] Root `plugin.json`/`mcp.json`, executable plugin-relative launcher, namespaced extension path, publish allowlist, and direct runtime dependencies match Agent Plugins and compatibility metadata.
 - [ ] Documents, MCP control, and Herdr observation carry only their assigned authority.
 - [ ] Public artifacts contain no local machine path, secret, product dependency outside OMP/Herdr, or implementation history.
 

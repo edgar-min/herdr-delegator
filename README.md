@@ -2,8 +2,8 @@
 
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
-- Package/plugin: `herdr-delegator` 0.5.0
-- Skill: `herdr-delegation` 4.0.0
+- Package/plugin: `herdr-delegator` 1.0.0
+- Skill: `herdr-delegation` 1.0.0
 - Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`
 - Official runtime: OMP only
 - License: Apache-2.0
@@ -12,20 +12,22 @@ The plugin does not replace ORCH planning or review, choose responsibility bound
 
 ## Package
 
-Plugin 0.5.0 contains:
+The package follows Agent Plugins 1.0.0:
 
-- a bridge-only OMP extension for current session/model/thinking facts and bootstrap pane attestation;
-- a package-root `.mcp.json` advertising one Bun stdio MCP server;
-- three composite MCP tools;
-- the bundled `herdr-delegation` skill and protocol templates.
+- `plugin.json` is the portable package manifest;
+- `mcp.json` declares one Bun stdio MCP server;
+- `skills/herdr-delegation/SKILL.md` is the portable Agent Skill;
+- `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` is the bridge-only OMP client extension;
+- `package.json#omp.extensions` retains the namespaced entry solely for current OMP extension-module compatibility.
 
-The MCP server has direct runtime dependencies on `@modelcontextprotocol/sdk` and `zod`. `.mcp.json` starts `bun run mcp/server.ts` with the package root as `cwd`.
+The MCP server has direct runtime dependencies on `@modelcontextprotocol/sdk` and `zod`. For OMP 18.0.5 compatibility, `mcp.json` launches bare `sh` with `${PLUGIN_ROOT}/bin/herdr-delegator-mcp` as its sole argument and `${PLUGIN_ROOT}` as `cwd`; OMP validates plugin-relative commands but does not resolve them before `posix_spawn`. The quiet bundled launcher prefers `bun` on `PATH`, then checks `${BUN_INSTALL}/bin/bun` and `${HOME}/.bun/bin/bun`, and otherwise exits 127 with one stderr diagnostic. `plugin.json`, the fixed `skills/` directory, and `mcp.json` are the portable manifest authority; `package.json` remains npm and current-OMP compatibility metadata.
 
 ## Prerequisites
 
 1. [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi).
 2. [Herdr](https://github.com/edgar-min/herdr).
-3. The official OMP integration:
+3. [Bun](https://bun.sh/) on `PATH`, under `BUN_INSTALL/bin`, or at `~/.bun/bin/bun`.
+4. The official OMP integration:
 
 ```sh
 herdr integration install omp
@@ -40,6 +42,8 @@ From GitHub:
 ```sh
 omp plugin install https://github.com/edgar-min/herdr-delegator
 ```
+
+OMP 18.0.5 discovers the Agent Plugins `plugin.json`, skill, and `mcp.json`; its compatibility package metadata loads the namespaced OMP bridge entry.
 
 For local development:
 

@@ -1,7 +1,7 @@
 import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { acquireLock, readRegistry, releaseLock } from "../extensions/lib/runtime";
-import { resolveRunCoordinate, writeAtomic } from "../extensions/lib/config";
+import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
+import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { ASSIGNMENT_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {

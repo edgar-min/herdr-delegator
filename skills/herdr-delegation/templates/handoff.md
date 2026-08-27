@@ -32,7 +32,7 @@ Tool calls continue to use track/run IDs. Resolved paths are audit observations 
 - Canonical project `cwd`: `<absolute path>`
 - Resolved storage root: `<absolute path observation>`
 - Storage index observation: `<version/row; never hand-edit>`
-- Plugin version and discovery: `<package version; package-root .mcp.json status>`
+- Plugin version and discovery: `<plugin.json/package version; package-root mcp.json status>`
 - OMP bridge status: `<bridge-only extension; session fact path derivation/status>`
 - Public MCP surface: `<exactly herdr_track, herdr_assignment, herdr_worker>`
 - Reload boundary: `<skill/MCP reloaded; extension verified in a new OMP session or pending>`

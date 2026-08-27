@@ -1,14 +1,18 @@
 ---
 name: herdr-delegation
 description: Delegate substantial independent work from OMP to persistent Herdr responsibility lanes with deterministic storage, immutable assignments, verified sessions, recovery, and guarded closure.
-version: 4.0.0
+license: Apache-2.0
+compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
+metadata:
+  author: edgar-min
+  version: "1.0.0"
 ---
 
 # Herdr delegation
 
 The session using this skill is the orchestrator (**ORCH**). ORCH owns decomposition, routing, judgment, verification, and recovery. Herdr workers are persistent responsibility lanes: an assignment is work routed to a lane, not the worker's identity.
 
-Official support is OMP-only. The plugin package contains a bridge-only OMP extension, a Bun stdio MCP server advertised by the package-root `.mcp.json`, and this bundled skill. Do not design or infer another agent adapter.
+Official support is OMP-only. The Agent Plugins package contains a bridge-only OMP extension under `io.github.edgar-min.herdr-delegator/`, one Bun stdio MCP server declared by package-root `mcp.json`, and this bundled skill. Do not design or infer another agent adapter.
 
 ## 1. Choose the execution surface
 

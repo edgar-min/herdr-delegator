@@ -1,0 +1,28 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "herdr-delegator",
+  "version": "1.0.0",
+  "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
+  "author": {
+    "name": "edgar-min"
+  },
+  "homepage": "https://github.com/edgar-min/herdr-delegator#readme",
+  "repository": "https://github.com/edgar-min/herdr-delegator.git",
+  "license": "Apache-2.0",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "herdr",
+    "delegation",
+    "orchestration",
+    "agent",
+    "persistent-workers"
+  ],
+  "extensions": {
+    "io.github.edgar-min.herdr-delegator": {
+      "extensions": [
+        "./io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts"
+      ]
+    }
+  }
+}

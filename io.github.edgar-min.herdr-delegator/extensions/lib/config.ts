@@ -27,7 +27,7 @@ const DEFAULT_CONFIG: DelegatorConfig = {
 
 export const PROTOCOL_TEMPLATE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../skills/herdr-delegation/templates/protocol.md",
+  "../../../skills/herdr-delegation/templates/protocol.md",
 );
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {

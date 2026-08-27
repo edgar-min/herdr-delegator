@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if bun_path=$(command -v bun 2>/dev/null) && [ -n "$bun_path" ] && [ -x "$bun_path" ]; then
+  :
+elif [ -n "${BUN_INSTALL:-}" ] && [ -x "${BUN_INSTALL}/bin/bun" ]; then
+  bun_path="${BUN_INSTALL}/bin/bun"
+elif [ -n "${HOME:-}" ] && [ -x "${HOME}/.bun/bin/bun" ]; then
+  bun_path="${HOME}/.bun/bin/bun"
+else
+  echo "herdr-delegator: Bun executable not found" >&2
+  exit 127
+fi
+
+exec "$bun_path" run "${PLUGIN_ROOT}/mcp/server.ts"

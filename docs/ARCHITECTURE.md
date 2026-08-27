@@ -4,7 +4,7 @@
 
 `herdr-delegator` is an OMP-only plugin for routing substantial independent work to persistent Herdr responsibility lanes. It separates durable contract, live control, and observation while preserving deterministic storage and verified OMP session identity.
 
-The 0.5.0 package contains a bridge-only OMP extension, one Bun stdio MCP server advertised by the package-root `.mcp.json`, and the bundled skill.
+The 1.0.0 package follows Agent Plugins 1.0.0: portable `plugin.json`, `skills/`, and `mcp.json` components plus one bridge-only OMP client extension under `io.github.edgar-min.herdr-delegator/`.
 
 ## Core model
 
@@ -42,11 +42,15 @@ The plugin does not:
 
 ## Package and process boundaries
 
+### Portable package core
+
+`plugin.json` is the Agent Plugins 1.0.0 manifest. The fixed `skills/` directory and root `mcp.json` are the portable components. `package.json` remains npm metadata and preserves current OMP extension-module compatibility; it is not portable manifest authority.
+
 ### OMP extension
 
-`extensions/herdr-delegator.ts` registers only the OMP bridge. It does not register public delegation tools.
+`io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` registers only the OMP bridge. It does not register public delegation tools.
 
-`extensions/lib/bridge.ts`:
+`io.github.edgar-min.herdr-delegator/extensions/lib/bridge.ts`:
 
 - refreshes on OMP session start, session switch, and before agent start;
 - resolves configured OMP role aliases to concrete provider/model facts;
@@ -54,11 +58,11 @@ The plugin does not:
 - writes an owner-only session-scoped fact under the active OMP agent directory;
 - reports matching bootstrap metadata to the verified Herdr caller pane.
 
-The bridge is not a model-visible tool and does not execute worker lifecycle.
+The reverse-domain directory and matching `plugin.json#extensions` member contain client-specific OMP data. Current OMP loads the entry through `package.json#omp.extensions`. The bridge is not a model-visible tool and does not execute worker lifecycle.
 
 ### MCP server
 
-The package-root `.mcp.json` starts `bun run mcp/server.ts` with `cwd` set to the package root. `mcp/server.ts` registers exactly:
+The Agent Plugins root `mcp.json` starts bare `sh` with `${PLUGIN_ROOT}/bin/herdr-delegator-mcp` as its sole argument and `cwd` `${PLUGIN_ROOT}`, avoiding OMP 18.0.5's unresolved plugin-relative `posix_spawn` command. The POSIX launcher resolves Bun from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, then quietly execs `${PLUGIN_ROOT}/mcp/server.ts`. `mcp/server.ts` registers exactly:
 
 - `herdr_track`
 - `herdr_assignment`
@@ -75,10 +79,10 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `mcp/herdr-adapter.ts` | verified Herdr binary and schema, fixed bounded argv, prompt/wait/response/metadata primitives |
 | `mcp/registry.ts` | immutable assignment parsing, responsibility routing, lane queueing, minimal delegation registry and lock |
 | `mcp/tools.ts` | composite track/assignment/worker transactions, bridge verification, settlement, observation, close preparation |
-| `extensions/lib/config.ts` | layered configuration, deterministic run coordinates, manifests, atomic file authority |
-| `extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session/model verification, resume, focus, and guarded close |
-| `extensions/lib/worker.ts` | internal worker ensure/inspect/respond/close operations consumed by MCP |
-| `extensions/lib/track.ts` | internal run initialization and target-ORCH lifecycle consumed by MCP |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` | layered configuration, deterministic run coordinates, manifests, atomic file authority |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session/model verification, resume, focus, and guarded close |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/respond/close operations consumed by MCP |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization and target-ORCH lifecycle consumed by MCP |
 
 Public calls terminate at the three MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
 
