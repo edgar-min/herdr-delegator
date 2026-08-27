@@ -399,6 +399,57 @@ export function compactMessage(value: unknown, fallback: string): string {
   return text.replace(/[\r\n\t]+/g, " ").slice(0, MAX_ERROR_MESSAGE);
 }
 
+// Identity coordinates are already bounded upstream (role regex, model registry
+// tokens, thinking enum), but the mismatch message is the one place two
+// independently-sourced identities meet, so each value is clamped again here
+// before it reaches an error string.
+const MAX_IDENTITY_VALUE = 64;
+
+export type OrchestratorIdentity = {
+  provider: string;
+  model: string;
+  thinking: string;
+};
+
+function boundedIdentityValue(value: string): string {
+  const printable = value.replace(/[^\x21-\x7e]+/g, "");
+  if (!printable) return "unknown";
+  return printable.length > MAX_IDENTITY_VALUE ? `${printable.slice(0, MAX_IDENTITY_VALUE - 1)}~` : printable;
+}
+
+function boundedIdentity(identity: OrchestratorIdentity): { model: string; thinking: string } {
+  return {
+    model: `${boundedIdentityValue(identity.provider)}/${boundedIdentityValue(identity.model)}`,
+    thinking: boundedIdentityValue(identity.thinking),
+  };
+}
+
+/**
+ * The single `orchestrator_model_mismatch` constructor. Code, phase, retryable
+ * and ambiguous-effect stay exactly as the fail-closed gates always set them;
+ * only the bounded message and recovery text are enriched, so both sides of the
+ * comparison and the three available remedies are visible at the callsite.
+ */
+export function orchestratorMismatchError(subject: string, role: string, expected: OrchestratorIdentity, live: OrchestratorIdentity): ContractError {
+  const want = boundedIdentity(expected);
+  const have = boundedIdentity(live);
+  const boundedRole = boundedIdentityValue(role);
+  return new ContractError(
+    "orchestrator_model_mismatch",
+    compactMessage(
+      `${subject} does not match configured orchestrator role ${boundedRole}: expected ${want.model} thinking=${want.thinking}, live ${have.model} thinking=${have.thinking}.`,
+      "The live ORCH model or thinking level does not match its configured OMP role.",
+    ),
+    "model_verify",
+    {
+      recovery: compactMessage(
+        `Run /herdr-align in the caller OMP session, or /switch to ${want.model} with thinking ${want.thinking}, or relaunch with omp --model ${want.model} --thinking ${want.thinking}.`,
+        "Select the configured orchestrator role and thinking level before mutating Herdr state.",
+      ),
+    },
+  );
+}
+
 export function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }

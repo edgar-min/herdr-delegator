@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, sha256 } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -219,11 +219,11 @@ export async function resolveLaunchProfile(
     resolvedOrchestrator.model !== currentOrchestrator.model ||
     orchestratorThinking !== currentThinking
   ) {
-    throw new ContractError(
-      "orchestrator_model_mismatch",
-      "The live ORCH model or thinking level does not match its configured OMP role.",
-      "model_verify",
-      { recovery: "Select the configured ORCH role and thinking level before creating or reconciling workers." },
+    throw orchestratorMismatchError(
+      "The live ORCH identity",
+      config.orchestrator.role,
+      { ...resolvedOrchestrator, thinking: orchestratorThinking },
+      { ...currentOrchestrator, thinking: currentThinking },
     );
   }
   if (typeof params.profile !== "string" || !PROFILE_RE.test(params.profile)) {
@@ -288,11 +288,11 @@ export async function resolveOrchestratorProfile(
     resolved.model !== current.model ||
     effectiveThinking !== currentThinking
   ) {
-    throw new ContractError(
-      "orchestrator_model_mismatch",
-      "The live caller ORCH model or thinking level does not match the configured orchestrator OMP role.",
-      "model_verify",
-      { recovery: "Select the configured orchestrator role and thinking level before mutating Herdr state." },
+    throw orchestratorMismatchError(
+      "The live caller ORCH identity",
+      config.orchestrator.role,
+      { ...resolved, thinking: effectiveThinking },
+      { ...current, thinking: currentThinking },
     );
   }
   const profile = {

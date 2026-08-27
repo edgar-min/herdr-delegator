@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises";
@@ -9,9 +9,13 @@ import { ROLE_RE, SHA256_RE, compactMessage, isObject } from "./contracts";
 import { isThinkingLevel, loadDelegatorConfig } from "./config";
 
 export const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
-export const BOOTSTRAP_METADATA_TTL_MS = 60_000;
-// Re-issued comfortably inside the TTL so pane tokens and the fact nonce stay
-// fresh across a long turn that never reaches another lifecycle boundary.
+// Freshness window a published pane-token set and fact nonce stay attestable for.
+// Wide enough that a long turn which never reaches another lifecycle boundary
+// still attests, and the MCP freshness gate (mcp/tools.ts) reads the same value
+// so publication and verification can never disagree.
+export const BOOTSTRAP_METADATA_TTL_MS = 300_000;
+// Re-issued an order of magnitude more often than the TTL above, so a live
+// session's published facts never sit near the edge of the freshness window.
 export const BOOTSTRAP_REFRESH_INTERVAL_MS = 25_000;
 export const BOOTSTRAP_TOKEN_PREFIX = "herdr-delegator-";
 export const BOOTSTRAP_TOKENS = {
@@ -488,6 +492,96 @@ function startBridgeRefreshLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   })();
 }
 
+// OMP's session thinking selector is a `const enum`-backed union carrying exactly
+// the string values this extension already models, minus the coding-agent-local
+// "auto" sentinel, which the session-level setter has no counterpart for. Reading
+// the parameter type off the API keeps the two unions tied together without
+// importing coding-agent runtime code into the MCP server process, which shares
+// this module.
+type SessionThinkingLevel = Parameters<ExtensionAPI["setThinkingLevel"]>[0];
+
+function sessionThinkingLevel(level: ThinkingLevel): SessionThinkingLevel {
+  if (level === "auto") {
+    throw new Error('Configured orchestrator thinking "auto" has no session-level equivalent to switch to.');
+  }
+  return level as SessionThinkingLevel;
+}
+
+// Consented one-action alignment. This resolves the SAME configured orchestrator
+// role the MCP fail-closed gate compares against, switches only the current
+// session's model and thinking, and republishes the bridge so the alignment is
+// immediately attestable. It never touches delegation, worker, or MCP state, and
+// it runs only from the user-invoked command below.
+async function alignOrchestratorSession(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+): Promise<string> {
+  const cwd = ctx.cwd;
+  assertBoundedPath(cwd, "cwd");
+  const { config } = await loadDelegatorConfig(undefined, cwd);
+  const role = config.orchestrator.role;
+  if (role.length > 80 || !ROLE_RE.test(role)) {
+    throw new Error(`Configured orchestrator role ${JSON.stringify(role)} is not bounded.`);
+  }
+  const target = ctx.models.resolve(role);
+  if (!target) throw new Error(`Configured orchestrator role ${role} did not resolve to a model.`);
+  const expected = concreteModel(target, `role ${role}`);
+  const live = concreteModel(ctx.models.current(), "current model");
+  const liveThinking = pi.getThinkingLevel();
+  if (!isThinkingLevel(liveThinking)) {
+    throw new Error("OMP did not expose a bounded session thinking level.");
+  }
+  // `inherit` means the configured role imposes no thinking level of its own, so
+  // the live level is already the expected one and alignment leaves it alone.
+  const expectedThinking: ThinkingLevel = config.orchestrator.thinking === "inherit"
+    ? liveThinking
+    : config.orchestrator.thinking;
+  const modelAligned = expected.provider === live.provider && expected.model === live.model;
+  const previous = `${live.provider}/${live.model} thinking=${liveThinking}`;
+  const next = `${expected.provider}/${expected.model} thinking=${expectedThinking}`;
+  if (modelAligned && expectedThinking === liveThinking) {
+    return `herdr-align: already aligned with ${role} — ${next}.`;
+  }
+
+  await ctx.waitForIdle();
+  if (!modelAligned && !(await pi.setModel(target))) {
+    throw new Error(`OMP declined to switch to ${next}; no API key is available for that provider.`);
+  }
+  if (expectedThinking !== liveThinking) pi.setThinkingLevel(sessionThinkingLevel(expectedThinking));
+
+  const applied = concreteModel(ctx.models.current(), "current model");
+  const appliedThinking = pi.getThinkingLevel();
+  if (
+    applied.provider !== expected.provider ||
+    applied.model !== expected.model ||
+    !isThinkingLevel(appliedThinking) ||
+    appliedThinking !== expectedThinking
+  ) {
+    throw new Error(`OMP did not adopt ${next}; the session still reports a different identity.`);
+  }
+  // Republish immediately so the alignment is attestable without waiting for the next tick.
+  await refreshOmpBridge(pi, ctx);
+  return `herdr-align: ${previous} -> ${next} (role ${role}); bridge attestation refreshed.`;
+}
+
+function registerAlignCommand(pi: ExtensionAPI): void {
+  pi.registerCommand("herdr-align", {
+    description: "Switch this session's model and thinking to the configured Herdr orchestrator role",
+    handler: async (_args, ctx) => {
+      try {
+        ctx.ui.notify(compactMessage(await alignOrchestratorSession(pi, ctx), "herdr-align completed."), "info");
+      } catch (error) {
+        const message = compactMessage(
+          error instanceof Error ? error.message : error,
+          "Orchestrator alignment failed.",
+        );
+        pi.logger.warn("herdr-delegator orchestrator alignment failed", { error: message });
+        ctx.ui.notify(`herdr-align: ${message}`, "error");
+      }
+    },
+  });
+}
+
 export function registerOmpBridge(pi: ExtensionAPI): void {
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
     stopBridgeRefreshLoop();
@@ -497,6 +591,7 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
   pi.on("session_start", refresh);
   pi.on("session_switch", refresh);
   pi.on("before_agent_start", refresh);
+  registerAlignCommand(pi);
   pi.on("session_shutdown", async () => {
     stopBridgeRefreshLoop();
     activeBridgeRefresh?.abort();
