@@ -4,7 +4,7 @@
     "root": "/home/user/.local/share/herdr-delegator/runs"
   },
   "orchestrator": {
-    "role": "@plan",
+    "role": "@default",
     "thinking": "inherit"
   },
   "worker_profiles": {

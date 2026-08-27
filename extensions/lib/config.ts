@@ -14,10 +14,11 @@ type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attested_at?: string;
   bootstrap_verified_at?: string;
 };
+const MAX_OMP_ROLE_ALIAS_LENGTH = 65;
 
 const DEFAULT_CONFIG: DelegatorConfig = {
   version: 1,
-  orchestrator: { role: "@plan", thinking: "inherit" },
+  orchestrator: { role: "@default", thinking: "inherit" },
   worker_profiles: {
     default: { role: "@default", thinking: "inherit" },
     slow: { role: "@slow", thinking: "inherit" },
@@ -42,7 +43,14 @@ function parseProfilePatch(value: unknown, coordinate: string): Partial<ModelPro
     throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
   }
   assertExactKeys(value, ["role", "thinking"], coordinate);
-  if (value.role !== undefined && (typeof value.role !== "string" || !ROLE_RE.test(value.role))) {
+  if (
+    value.role !== undefined &&
+    (
+      typeof value.role !== "string" ||
+      value.role.length > MAX_OMP_ROLE_ALIAS_LENGTH ||
+      !ROLE_RE.test(value.role)
+    )
+  ) {
     throw new ContractError("invalid_config", `${coordinate}.role: expected an OMP role such as @default.`, "config");
   }
   if (value.thinking !== undefined && !isConfigThinkingLevel(value.thinking)) {
@@ -71,13 +79,6 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
   const patch: ConfigPatch = {};
   if (value.orchestrator !== undefined) {
     patch.orchestrator = parseProfilePatch(value.orchestrator, `${coordinate}.orchestrator`);
-    if (patch.orchestrator.role !== undefined && patch.orchestrator.role !== "@plan") {
-      throw new ContractError(
-        "invalid_config",
-        `${coordinate}.orchestrator.role: the main ORCH role is fixed at @plan.`,
-        "config",
-      );
-    }
   }
   if (value.worker_profiles !== undefined) {
     if (!isObject(value.worker_profiles)) {

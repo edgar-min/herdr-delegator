@@ -1,6 +1,6 @@
 {
   "name": "herdr-delegator",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
   "type": "module",
   "private": false,
@@ -24,6 +24,8 @@
   ],
   "files": [
     "extensions/**/*.ts",
+    "mcp/**/*.ts",
+    ".mcp.json",
     "skills/herdr-delegation/**",
     "*.schema.json",
     "*.example.json",
@@ -33,6 +35,10 @@
   ],
   "scripts": {
     "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.0.5",

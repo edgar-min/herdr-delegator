@@ -1,158 +1,18 @@
-// Runtime responsibilities for the Herdr delegator extension.
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+// Runtime responsibilities for the Herdr delegator MCP migration.
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, lstat, open, readFile, realpath, rename, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import path from "node:path";
+import {
+  BOOTSTRAP_METADATA_TTL_MS,
+  BOOTSTRAP_TOKEN_PREFIX,
+  BOOTSTRAP_TOKENS,
+  type BootstrapSessionVerification,
+} from "./bridge";
+export type { BootstrapSessionVerification } from "./bridge";
 import type { FocusRestoration, Operation, OrchestratorRecord, Registry, RegistryRecord, ResolvedLaunchProfile, RunRecord, SessionVerification, ThinkingLevel, WorkerState } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, LOCK_STALE_MS, LOCK_WAIT_MAX_MS, MAX_SESSION_BYTES, OPERATIONS, PROFILE_RE, PUBLIC_WORKER_STATES, REGISTRY_OWNER, REGISTRY_STATES, REGISTRY_VERSION, ROLE_RE, RUN_GENERATION, WORKER_RE, compactMessage, isObject, nowIso, sha256, sleep } from "./contracts";
 import { isConfigSource, isFile, isResetLineage, isTargetOrchestratorRecord, isThinkingLevel } from "./config";
-
-const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
-const BOOTSTRAP_METADATA_TTL_MS = 60_000;
-const BOOTSTRAP_TOKEN_PREFIX = "herdr-delegator-";
-const BOOTSTRAP_TOKENS = {
-  sessionId: `${BOOTSTRAP_TOKEN_PREFIX}session`,
-  provider: `${BOOTSTRAP_TOKEN_PREFIX}provider`,
-  model: `${BOOTSTRAP_TOKEN_PREFIX}model`,
-  thinking: `${BOOTSTRAP_TOKEN_PREFIX}thinking`,
-  attestation: `${BOOTSTRAP_TOKEN_PREFIX}attestation`,
-} as const;
-let lastBootstrapSequence = 0;
-let activeBootstrapReport: AbortController | undefined;
-
-function sessionValueIdentifiesId(value: string, sessionId: string): boolean {
-  if (value === sessionId) return true;
-  const filename = path.basename(value);
-  const stem = filename.endsWith(".jsonl") ? filename.slice(0, -".jsonl".length) : filename;
-  return stem === sessionId || stem.endsWith(`_${sessionId}`);
-}
-
-function officialOmpSessionValue(candidate: Record<string, unknown>): string | undefined {
-  const session = candidate.agent_session;
-  if (
-    !isObject(session) ||
-    session.source !== "herdr:omp" ||
-    session.agent !== "omp" ||
-    typeof session.value !== "string"
-  ) {
-    return undefined;
-  }
-  return session.value;
-}
-
-function matchingOfficialOmpPaneIds(
-  data: unknown,
-  sessionId: string,
-  expectedPaneId?: string,
-): string[] {
-  return [
-    ...new Set(
-      collectMatchingObjects(
-        data,
-        (candidate) => {
-          const paneId = candidate.pane_id;
-          const sessionValue = officialOmpSessionValue(candidate);
-          return (
-            candidate.agent === "omp" &&
-            typeof paneId === "string" &&
-            (expectedPaneId === undefined || paneId === expectedPaneId) &&
-            sessionValue !== undefined &&
-            sessionValueIdentifiesId(sessionValue, sessionId)
-          );
-        },
-      ).map((candidate) => candidate.pane_id as string),
-    ),
-  ];
-}
-
-async function abortSafeDelay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) throw new Error("Bootstrap attestation was superseded.");
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(finish, ms);
-    signal.addEventListener("abort", abort, { once: true });
-    function finish(): void {
-      signal.removeEventListener("abort", abort);
-      resolve();
-    }
-    function abort(): void {
-      clearTimeout(timer);
-      reject(new Error("Bootstrap attestation was superseded."));
-    }
-  });
-}
-
-async function resolveBootstrapPane(
-  binary: string,
-  sessionId: string,
-  environmentPaneId: string | undefined,
-  signal: AbortSignal,
-): Promise<string> {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    if (signal.aborted) throw new Error("Bootstrap attestation was superseded.");
-    const commandTimeout = Math.max(1, Math.min(1_000, deadline - Date.now()));
-    if (environmentPaneId) {
-      const environmentPane = await runHerdr(
-        binary,
-        ["pane", "get", environmentPaneId],
-        commandTimeout,
-        signal,
-      );
-      if (
-        environmentPane.ok &&
-        matchingOfficialOmpPaneIds(environmentPane.data, sessionId, environmentPaneId).length === 1
-      ) {
-        const confirmed = await runHerdr(
-          binary,
-          ["pane", "get", environmentPaneId],
-          Math.max(1, Math.min(1_000, deadline - Date.now())),
-          signal,
-        );
-        if (
-          confirmed.ok &&
-          matchingOfficialOmpPaneIds(confirmed.data, sessionId, environmentPaneId).length === 1
-        ) {
-          return environmentPaneId;
-        }
-      }
-    }
-
-    const agents = await runHerdr(binary, ["agent", "list"], commandTimeout, signal);
-    const candidatePaneIds = agents.ok
-      ? matchingOfficialOmpPaneIds(agents.data, sessionId)
-      : [];
-    const [candidatePaneId] = candidatePaneIds;
-    if (candidatePaneIds.length === 1 && candidatePaneId) {
-      const confirmed = await runHerdr(
-        binary,
-        ["pane", "get", candidatePaneId],
-        Math.max(1, Math.min(1_000, deadline - Date.now())),
-        signal,
-      );
-      if (
-        confirmed.ok &&
-        matchingOfficialOmpPaneIds(confirmed.data, sessionId, candidatePaneId).length === 1
-      ) {
-        return candidatePaneId;
-      }
-    }
-
-    const delayMs = Math.min(100, deadline - Date.now());
-    if (delayMs > 0) await abortSafeDelay(delayMs, signal);
-  }
-  throw new Error("No unique Herdr pane converged on this official OMP session within 10 seconds.");
-}
-
-export type BootstrapSessionVerification = {
-  session_id: string;
-  reported_path: string;
-  provider: string;
-  model: string;
-  thinking: ThinkingLevel;
-  attestation: string;
-  attested_at: string;
-};
 
 type BootstrapExpectedProfile = Pick<
   RegistryRecord,
@@ -172,84 +32,6 @@ function isBoundedAttestationToken(value: unknown): value is string {
     value.length <= 80 &&
     /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/.test(value)
   );
-}
-
-function nextBootstrapSequence(): number {
-  const clockSequence = Date.now() * 1_000;
-  lastBootstrapSequence = Math.max(lastBootstrapSequence + 1, clockSequence);
-  return lastBootstrapSequence;
-}
-
-export async function reportBootstrapAttestation(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-): Promise<void> {
-  activeBootstrapReport?.abort();
-  activeBootstrapReport = undefined;
-  if (process.env.HERDR_ENV !== "1") return;
-  const aborter = new AbortController();
-  activeBootstrapReport = aborter;
-  let targetPaneId: string | undefined;
-  try {
-    const model = ctx.models.current();
-    const thinking = pi.getThinkingLevel();
-    const sessionId = ctx.sessionManager.getSessionId();
-    const provider = model?.provider;
-    const modelId = model?.id;
-    if (
-      !isBoundedAttestationToken(sessionId) ||
-      !isBoundedAttestationToken(provider) ||
-      !isBoundedAttestationToken(modelId) ||
-      !isThinkingLevel(thinking)
-    ) {
-      throw new Error("OMP did not expose a bounded concrete session/model/thinking identity.");
-    }
-    const binary = await findHerdrBinary();
-    targetPaneId = await resolveBootstrapPane(
-      binary,
-      sessionId,
-      process.env.HERDR_PANE_ID,
-      aborter.signal,
-    );
-    const attestation = `${Date.now()}.${randomBytes(8).toString("hex")}`;
-    const tokenValues = [
-      [BOOTSTRAP_TOKENS.sessionId, sessionId],
-      [BOOTSTRAP_TOKENS.provider, provider],
-      [BOOTSTRAP_TOKENS.model, modelId],
-      [BOOTSTRAP_TOKENS.thinking, thinking],
-      [BOOTSTRAP_TOKENS.attestation, attestation],
-    ] as const;
-    const args = [
-      "pane",
-      "report-metadata",
-      targetPaneId,
-      "--source",
-      BOOTSTRAP_METADATA_SOURCE,
-      "--agent",
-      "omp",
-      "--applies-to-source",
-      "herdr:omp",
-      ...tokenValues.flatMap(([name]) => ["--clear-token", name]),
-      ...tokenValues.flatMap(([name, value]) => ["--token", `${name}=${value}`]),
-      "--seq",
-      String(nextBootstrapSequence()),
-      "--ttl-ms",
-      String(BOOTSTRAP_METADATA_TTL_MS),
-    ];
-    const result = await runHerdr(binary, args, 5_000, aborter.signal);
-    if (!result.ok) {
-      throw new Error(`${result.code}: ${result.message}`);
-    }
-  } catch (error) {
-    if (!aborter.signal.aborted) {
-      pi.logger.warn("herdr-delegator bootstrap attestation failed", {
-        error: compactMessage(error, "Bootstrap attestation failed."),
-        pane_id: targetPaneId,
-      });
-    }
-  } finally {
-    if (activeBootstrapReport === aborter) activeBootstrapReport = undefined;
-  }
 }
 
 export function deepValues(value: unknown, key: string, out: unknown[] = []): unknown[] {

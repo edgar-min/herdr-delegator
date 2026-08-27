@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "herdr-delegator": {
+      "command": "bun",
+      "args": ["run", "mcp/server.ts"],
+      "cwd": "."
+    }
+  }
+}

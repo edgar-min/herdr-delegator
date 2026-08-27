@@ -1,8 +1,8 @@
 // Worker responsibilities for the Herdr delegator extension.
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { FocusRestoration, Operation, RegistryRecord, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
+import type { FocusRestoration, Operation, RegistryRecord, SessionVerification, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
 import { ContractError, DEDUPE_STATES, KEY_ALLOWLIST, MAX_TEXT_RESPONSE, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { canonicalInstruction, canonicalWorkerId, isFile, normalizeTimeout, resolveLaunchProfile, resolveRunCoordinate } from "./config";
 import type { BootstrapSessionVerification, CommandResult, OwnedFocus } from "./runtime";
@@ -101,7 +101,7 @@ export async function ensureWorker(
   const owned: OwnedFocus = { tab_ids: new Set(), pane_ids: new Set() };
   const agentName = `herdr-${workerId}-${workerKey.slice(0, 12)}`;
   let record!: RegistryRecord;
-  let bootstrapVerification!: BootstrapSessionVerification;
+  let modelVerification!: Record<string, unknown>;
   let focusRestoration: FocusRestoration = "unchanged";
 
   try {
@@ -285,25 +285,75 @@ export async function ensureWorker(
       await writeRegistryAtomic(targetRegistryPath, registry);
       return current;
     });
-    bootstrapVerification = await verifyWorkerBootstrap(binary, record, timeoutMs, signal);
-    record = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
-      const current = registry.workers[workerKey];
-      if (!current) throw new ContractError("worker_missing", "The registry record disappeared during model verification.", "registry");
-      assertLaunchProfile(current, resolved.launch);
-      if (
-        current.agent_session_path !== undefined &&
-        current.agent_session_path !== bootstrapVerification.reported_path
-      ) {
+    const storedBootstrap = storedWorkerBootstrap(record);
+    let persistedSessionExists = false;
+    if (record.agent_session_path !== undefined) {
+      try {
+        const sessionFile = await lstat(record.agent_session_path);
+        if (!sessionFile.isFile() || sessionFile.isSymbolicLink() || !record.agent_session_path.endsWith(".jsonl")) {
+          throw new ContractError("session_identity_mismatch", "The official persisted session path is not a regular JSONL file.", "session_verify");
+        }
+        persistedSessionExists = true;
+      } catch (error: unknown) {
+        if (error instanceof ContractError) throw error;
+        if (!isObject(error) || error.code !== "ENOENT") {
+          throw new ContractError("session_identity_mismatch", "The official persisted session path cannot be verified safely.", "session_verify");
+        }
+      }
+    }
+    if (persistedSessionExists) {
+      if (!storedBootstrap) {
         throw new ContractError(
-          "session_identity_mismatch",
-          "The registry session path changed during bootstrap verification.",
-          "registry",
+          "session_verification_incomplete",
+          "The persisted worker session has no complete stored bootstrap identity.",
+          "session_verify",
+          { recovery: "Preserve the worker and session; do not infer or replace missing bootstrap facts." },
         );
       }
-      storeWorkerBootstrap(current, bootstrapVerification);
-      await writeRegistryAtomic(targetRegistryPath, registry);
-      return current;
-    });
+      const persisted: SessionVerification = await verifyWorkerSession(binary, record, timeoutMs, signal);
+      assertPersistedMatchesBootstrap(persisted, storedBootstrap);
+      record = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
+        const current = registry.workers[workerKey];
+        if (!current) throw new ContractError("worker_missing", "The registry record disappeared during persisted model verification.", "registry");
+        assertLaunchProfile(current, resolved.launch);
+        const currentBootstrap = storedWorkerBootstrap(current);
+        if (
+          current.agent_session_path !== record.agent_session_path ||
+          (current.verified_session_id !== undefined && current.verified_session_id !== persisted.session_id) ||
+          JSON.stringify(currentBootstrap) !== JSON.stringify(storedBootstrap)
+        ) {
+          throw new ContractError("session_identity_mismatch", "The registry session or bootstrap identity changed during persisted model verification.", "registry");
+        }
+        current.agent_session_path = record.agent_session_path;
+        current.verified_session_id = persisted.session_id;
+        current.resolved_model_is_fallback = persisted.resolved_model_is_fallback;
+        current.verified_at = record.verified_at;
+        await writeRegistryAtomic(targetRegistryPath, registry);
+        return current;
+      });
+      modelVerification = { status: "persisted-verified", ...persisted, verified_at: record.verified_at };
+    } else {
+      const bootstrapVerification = await verifyWorkerBootstrap(binary, record, timeoutMs, signal);
+      record = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
+        const current = registry.workers[workerKey];
+        if (!current) throw new ContractError("worker_missing", "The registry record disappeared during bootstrap model verification.", "registry");
+        assertLaunchProfile(current, resolved.launch);
+        if (current.agent_session_path !== undefined && current.agent_session_path !== bootstrapVerification.reported_path) {
+          throw new ContractError("session_identity_mismatch", "The registry session path changed during bootstrap verification.", "registry");
+        }
+        storeWorkerBootstrap(current, bootstrapVerification);
+        await writeRegistryAtomic(targetRegistryPath, registry);
+        return current;
+      });
+      modelVerification = {
+        status: "bootstrap-verified",
+        session_id: bootstrapVerification.session_id,
+        provider: bootstrapVerification.provider,
+        model: bootstrapVerification.model,
+        thinking: bootstrapVerification.thinking,
+        attested_at: bootstrapVerification.attested_at,
+      };
+    }
   } finally {
     focusRestoration = await restoreFocus(binary, focusBefore, owned);
   }
@@ -318,14 +368,7 @@ export async function ensureWorker(
     worker: publicWorker(record),
     observation: {
       focus_restoration: focusRestoration,
-      model_verification: {
-        status: "bootstrap-verified",
-        session_id: bootstrapVerification.session_id,
-        provider: bootstrapVerification.provider,
-        model: bootstrapVerification.model,
-        thinking: bootstrapVerification.thinking,
-        attested_at: bootstrapVerification.attested_at,
-      },
+      model_verification: modelVerification,
     },
   };
 }
@@ -533,6 +576,51 @@ export async function promptWait(params: ToolParams, signal?: AbortSignal): Prom
     focus_restoration: focusRestoration,
   };
   return result;
+}
+
+export async function verifyPromptedWorker(
+  params: ToolParams,
+  signal?: AbortSignal,
+): Promise<Pick<WorkerResult, "state" | "worker" | "observation">> {
+  const timeoutMs = normalizeTimeout(params.timeout_ms);
+  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id);
+  const runPath = coordinate.runPath;
+  const workerId = canonicalWorkerId(params.worker_id);
+  const workerKey = sha256(`${runPath}\0${workerId}`);
+  const { registryPath } = registryPaths(runPath);
+  const { binary } = await requireHerdrEnvironment();
+  const verified = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
+    await assertRunWorkspaceLive(binary, registry, timeoutMs, signal, runPath, coordinate.manifest.cwd);
+    const current = registry.workers[workerKey];
+    if (!current?.root_pane_id || !current.agent_name) {
+      throw new ContractError("worker_not_ensured", "No registry-owned worker exists for post-prompt verification.", "session_verify");
+    }
+    assertRecordIdentity(current, runPath, workerId, workerKey);
+    const bootstrap = storedWorkerBootstrap(current);
+    if (!bootstrap) {
+      throw new ContractError("session_verification_incomplete", "The prompted worker has no retained bootstrap attestation.", "session_verify");
+    }
+    const persisted = await verifyWorkerSession(binary, current, timeoutMs, signal);
+    assertPersistedMatchesBootstrap(persisted, bootstrap);
+    const live = await getLiveAgent(binary, current.agent_name, Math.min(timeoutMs, 15_000), signal);
+    if (!live.ok) throw commandError(live, "session_verify", "Re-read the prompted worker before settlement.");
+    assertAgentBelongsToRecord(current, live.data);
+    await updateRecordFromObservation(current, live.data, "prompted");
+    current.updated_at = nowIso();
+    await writeRegistryAtomic(targetRegistryPath, registry);
+    return { record: current, persisted };
+  });
+  return {
+    state: publicState(verified.record.state),
+    worker: publicWorker(verified.record),
+    observation: {
+      model_verification: {
+        status: "persisted-verified",
+        ...verified.persisted,
+        verified_at: verified.record.verified_at,
+      },
+    },
+  };
 }
 
 export async function inspectWorker(params: ToolParams, signal?: AbortSignal): Promise<WorkerResult> {

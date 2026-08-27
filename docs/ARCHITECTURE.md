@@ -2,214 +2,249 @@
 
 ## Purpose
 
-`herdr-delegator` connects an OMP planning session to persistent Herdr worker tabs while keeping deterministic files as the audit source of truth. The design separates judgment, bounded host delegation, durable execution, and reset handoff.
+`herdr-delegator` is an OMP-only plugin for routing substantial independent work to persistent Herdr responsibility lanes. It separates durable contract, live control, and observation while preserving deterministic storage and verified OMP session identity.
 
-## Actors
+The 0.5.0 package contains a bridge-only OMP extension, one Bun stdio MCP server advertised by the package-root `.mcp.json`, and the bundled skill.
 
-- **ORCH**: the current OMP session under fixed role `@plan`. It decomposes work, owns judgment, writes plans and instructions, resolves decisions, verifies results independently, and performs recovery and closure.
-- **Host task/subagents**: short-lived OMP delegation for bounded mechanical or light work. They are outside the Herdr registry and this plugin does not select or verify their models.
-- **Herdr workers**: persistent OMP sessions, one registry-owned tab per worker, for substantial independent slices. They operate in the run's canonical project `cwd`.
-- **Target reset ORCH**: a fresh or reconciled `@plan` session launched for a sibling run. It uses the target run's own identity and official session; it never resumes the source ORCH context as the target.
+## Core model
+
+- A **responsibility** is durable direction, ownership, and context.
+- A **worker lane** is one persistent registry-owned Herdr tab and official OMP session serving a responsibility.
+- An **assignment** is one immutable unit of work routed to a lane.
+- An **ORCH** is the OMP session that decomposes, routes, decides, verifies, and recovers.
+
+Exact responsibility reuse is the default. Each lane has one active assignment and a FIFO queue. Assignment completion returns the lane to idle without closing its tab or OMP session.
 
 ```mermaid
 flowchart LR
-  U[User] --> O[ORCH @plan]
-  O --> S[Host task/subagents]
-  O --> T[herdr_track]
-  O --> W[herdr_worker]
-  T --> R[Deterministic run files]
-  W --> R
-  T --> H[Herdr workspace and target ORCH]
-  W --> H
-  H --> P[Persistent worker tabs]
+  O[OMP ORCH] -->|contract| D[Deterministic documents]
+  O -->|3 composite tools| M[Bun stdio MCP]
+  X[Bridge-only OMP extension] -->|session/model facts| M
+  M -->|bounded lifecycle| H[Herdr]
+  H --> W[Persistent responsibility lanes]
+  W -->|results| D
+  H -->|live observation| O
 ```
 
-Herdr transports prompts and observations. The registry binds those live objects to deterministic run identity; neither labels nor terminal output alone establish ownership.
+## Product boundaries
 
-## Deterministic storage and authority
+Official support is OMP-only. The design does not predefine an adapter interface for another agent runtime.
 
-Configuration resolves `storage.root` from strict user and project layers. A run-local layer may change model-profile leaves but may not move its own storage root. The canonical run path is derived, never supplied directly by a model:
+The plugin does not:
+
+- perform automatic decomposition or responsibility scoring;
+- impose a fixed worker ceiling;
+- create a lane merely because a matching lane is busy;
+- expose raw Herdr socket, pane, tab, workspace, argv, or command control;
+- verify host OMP task/subagent models;
+- make overlapping shared-directory edits safe;
+- close the retained Herdr workspace.
+
+## Package and process boundaries
+
+### OMP extension
+
+`extensions/herdr-delegator.ts` registers only the OMP bridge. It does not register public delegation tools.
+
+`extensions/lib/bridge.ts`:
+
+- refreshes on OMP session start, session switch, and before agent start;
+- resolves configured OMP role aliases to concrete provider/model facts;
+- records current provider/model/thinking separately from configured roles;
+- writes an owner-only session-scoped fact under the active OMP agent directory;
+- reports matching bootstrap metadata to the verified Herdr caller pane.
+
+The bridge is not a model-visible tool and does not execute worker lifecycle.
+
+### MCP server
+
+The package-root `.mcp.json` starts `bun run mcp/server.ts` with `cwd` set to the package root. `mcp/server.ts` registers exactly:
+
+- `herdr_track`
+- `herdr_assignment`
+- `herdr_worker`
+
+It emits JSON-RPC on stdout and diagnostics on stderr.
+
+### MCP modules
+
+| Module | Responsibility |
+|---|---|
+| `mcp/server.ts` | stdio transport, three registrations, strict action parsing, structured results |
+| `mcp/contracts.ts` | public schemas, bounded identifiers, seven assignment states, result/error shapes, bridge schema |
+| `mcp/herdr-adapter.ts` | verified Herdr binary and schema, fixed bounded argv, prompt/wait/response/metadata primitives |
+| `mcp/registry.ts` | immutable assignment parsing, responsibility routing, lane queueing, minimal delegation registry and lock |
+| `mcp/tools.ts` | composite track/assignment/worker transactions, bridge verification, settlement, observation, close preparation |
+| `extensions/lib/config.ts` | layered configuration, deterministic run coordinates, manifests, atomic file authority |
+| `extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session/model verification, resume, focus, and guarded close |
+| `extensions/lib/worker.ts` | internal worker ensure/inspect/respond/close operations consumed by MCP |
+| `extensions/lib/track.ts` | internal run initialization and target-ORCH lifecycle consumed by MCP |
+
+Public calls terminate at the three MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
+
+## Three-channel authority
+
+| Channel | Carries | Does not carry |
+|---|---|---|
+| Documents | goal, ownership, dependencies, user boundaries, decisions, durable results, completion, verification, handoff | live terminal control |
+| MCP prompt/control | canonical IDs and hashes, waits, fresh blocked responses, resume/close gates | ad hoc duplicated contracts or raw Herdr commands |
+| Herdr metadata/UI | responsibility, assignment, assignment state, live status, bootstrap observation | contract, settlement, judgment, or session authority by itself |
+
+Terminal output is a bounded observation, not a durable result.
+
+## Deterministic storage
+
+Run identity is `(track_id, run_id)` and resolves to:
 
 ```text
 <storage.root>/<track_id>/<run_id>
 ```
 
-The identity is `(track_id, run_id)`, with canonical lowercase coordinates. `run.json` binds those coordinates to the canonical project `cwd` and resolved run path.
+The model never supplies this path directly.
 
-Authority is divided deliberately:
-
-| Authority | Files or state |
-| --- | --- |
-| Storage tool | `<storage.root>/index.json`, run initialization transaction, run manifest, bundled protocol copy, reset lineage |
-| Worker tool | `a2a/herdr-workers.json`, registry lock, workspace/tab/pane/session bindings, prompt fingerprints, state sequences |
-| ORCH | `plan.md`, `evidence.md`, orchestrator instructions, worker instructions, responses, closure judgments |
-| Worker or target ORCH | Its own report; declared directional peer file only when authorized |
-| Herdr | Workspace, tab, pane, relay, focus, and live-agent observations |
-| OMP | Role/model resolution, official session JSONL, host task/subagent execution |
-
-Tool-owned indexes, registries, and locks are never manually edited, moved, copied, or unlocked. Runtime output is an observation, not a substitute for an authored report or independent verification.
-
-## Module responsibilities
-
-| Module | Responsibility |
-| --- | --- |
-| `extensions/herdr-delegator.ts` | Registration-focused entry: registers strict `herdr_worker` and `herdr_track` public tools, validates operation-specific inputs, dispatches to lifecycle modules, emits bounded summaries/details, and wires session-start/session-switch bootstrap-attestation reporting. |
-| `extensions/lib/contracts.ts` | Dependency-free shared constants, public/internal states, TypeScript contracts, identifiers, limits, hashing, and contract errors. |
-| `extensions/lib/config.ts` | Strict layered configuration and role-profile resolution; canonical coordinate/path validation; manifest/reset/registry validation; instruction constraints; atomic files; storage index parsing. Configuration represents roles and thinking, never concrete model IDs. |
-| `extensions/lib/runtime.ts` | Herdr process boundary, registry locks, workspace/pane/session reconciliation, child launch with caller-resolved concrete model/thinking, in-process bootstrap attestation, official JSONL verification, duplicate protection, focus restoration, and agent start/resume mechanics. |
-| `extensions/lib/worker.ts` | Worker lifecycle: ensure, prompt/wait, inspect, block response, guarded Sidebar-aware close, deduplication, and worker recovery. |
-| `extensions/lib/track.ts` | Run initialization, sibling reset artifacts, target ORCH start/reconciliation, target inspection, prompt deduplication, persisted recovery verification, and track-level results. |
-
-### Dependency direction
-
-```mermaid
-flowchart TD
-  E[entry] --> W[worker]
-  E --> T[track]
-  E --> R[runtime]
-  E --> C[config]
-  E --> K[contracts]
-  W --> R
-  W --> C
-  W --> K
-  T --> R
-  T --> C
-  T --> K
-  R --> C
-  R --> K
-  C --> K
+```text
+<run>/
+  run.json
+  protocol.md
+  plan.md
+  evidence.md
+  a2a/
+    assignments/
+      A-NNN.md
+    delegation.json
+    .delegation.lock
+    herdr-workers.json
+    .herdr-workers.lock
+    w<N>-report.md
 ```
 
-Dependencies flow from the registration entry through lifecycle orchestration toward shared mechanisms and contracts. `contracts` has no dependency on the other extension modules. The graph is acyclic; lifecycle ownership remains in `worker` and `track` rather than accumulating in the entry.
+`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders.
 
-## State machines
+`delegation.json` is the minimal responsibility/assignment routing authority. `herdr-workers.json` remains the lifecycle identity/session/workspace authority. Both and their locks are tool-owned, mode-0600 control-plane files.
 
-### Run initialization
+## Immutable assignment contract
+
+The only assignment artifact is `<run>/a2a/assignments/A-NNN.md`.
+
+It has strict frontmatter:
+
+1. `assignment_id`
+2. `responsibility_key`
+3. `profile`
+
+and strict sections:
+
+1. Goal
+2. Completion conditions
+3. Write ownership
+4. Dependencies
+5. User boundaries
+
+The artifact becomes immutable when its SHA-256 is submitted as `instructions_sha256`. No contract JSON or receipt JSON exists.
+
+Settlement requires an exact `[Assignment Completion: A-NNN]` block with one `status: completed|failed` line in the bound worker report. MCP stores the full report hash and completion timestamp in `delegation.json`.
+
+## Responsibility routing
+
+For `herdr_assignment.add`:
+
+1. verify the assignment file, grammar, coordinates, and hash;
+2. find the exact responsibility's primary or matching separated lane;
+3. queue FIFO when that lane is active;
+4. create a lane only when none exists or a valid separation requires one;
+5. reserve worker ordinals already present in delegation state, lifecycle state, or canonical worker artifacts;
+6. ensure and verify the selected lane before prompt;
+7. send only a pointer to the immutable artifact and report coordinate.
+
+Additional same-responsibility lanes require:
+
+```text
+kind: direction | ownership | dependency
+reason: bounded non-empty text
+conflicts_with_worker_id: existing lane
+```
+
+There is no fixed number of lanes and no complex scoring policy.
+
+## Public actions
+
+### `herdr_track`
+
+- `init {cwd, reset_of?}`
+- `inspect`
+- `start_orchestrator`
+- `close {expected_registry_revision}`
+
+### `herdr_assignment`
+
+- `add {assignment_id, responsibility_key, instructions_sha256, separation?, wait?}`
+- `wait {assignment_id, wait?}`
+- `respond {assignment_id, expected_state_change_seq, response}`
+
+### `herdr_worker`
+
+- `list {responsibility_key?}`
+- `inspect {worker_id, output_lines?}`
+- `resume {worker_id, expected_session_id}`
+- `close {worker_id, expected_session_id, expected_state_change_seq}`
+
+Every action also includes `track_id` and `run_id`. Strict discriminated schemas reject extra or action-inappropriate fields.
+
+## State and transitions
+
+Assignment state is exactly:
+
+```text
+queued | prompting | working | blocked | completed | failed | ambiguous
+```
 
 ```mermaid
 stateDiagram-v2
-  [*] --> Validate
-  Validate --> Initialize: coordinate, cwd, config valid
-  Initialize --> Initialized: manifest/protocol/a2a/index reconciled
-  Validate --> Failed: conflict or invalid authority
-  Initialize --> Failed: atomic transaction conflict
-  Initialized --> Initialized: same identity reconciled
+  [*] --> queued
+  queued --> prompting: lane available
+  prompting --> working: prompt effect verified
+  working --> blocked: worker requests input
+  blocked --> working: exact-sequence response
+  working --> completed: completed report verified
+  working --> failed: failed report verified
+  prompting --> ambiguous: prompt effect uncertain
+  blocked --> ambiguous: response effect uncertain
+  working --> ambiguous: active resume effect uncertain
 ```
 
-`init_run` creates the run and `a2a` directories, strict `run.json`, a byte-for-byte bundled `protocol.md`, and the storage index row. Existing content must reconcile exactly. An uninitialized directory containing unowned files fails instead of being adopted.
+A wait timeout does not mutate state. Potentially effected prompt, response, or active-assignment resume ambiguity converges on `ambiguous`. Internal operation details do not become additional public assignment states.
 
-For a sibling reset, the target coordinate must differ from the source. The source manifest and canonical `plan.md` are validated; the plan is copied byte-for-byte, its SHA-256 is recorded, and fixed worker/evidence policies are written to `reset.json`.
+At terminal settlement the lane becomes idle, records the last assignment, and promotes the FIFO head. Lane close is a separate lifecycle transition.
 
-### Worker
+## Model and session verification
 
-```mermaid
-stateDiagram-v2
-  [*] --> planned
-  planned --> pane-created
-  pane-created --> agent-ready
-  agent-ready --> prompted
-  prompted --> working
-  working --> idle
-  working --> done
-  working --> blocked
-  blocked --> working: resolve_block at exact sequence
-  idle --> closed: guarded close
-  done --> closed: guarded close
-  failed --> closed: only if fresh proof permits
-  planned --> failed
-  pane-created --> failed
-  agent-ready --> failed
-  prompted --> failed
-  working --> failed
-```
+The built-in orchestrator role is `@default`; configuration may select any bounded OMP role alias. Worker profiles are similarly configuration-selected.
 
-The registry also uses transient `prompting` and `closing` states. Public observations normalize internal state where appropriate. Every transition is bound to the same run, worker key, workspace, tab, root pane, configured profile, and official session evidence.
+1. The bridge resolves configured roles inside OMP and publishes current session/model/thinking facts.
+2. MCP derives the fact coordinate from the verified caller pane and active OMP agent directory.
+3. MCP verifies owner, non-symlink type, modes, strict schema, session/pane correspondence, nonce, timestamp, and metadata exact match.
+4. Child launch uses the resolved concrete provider/model and effective thinking.
+5. After prompt, canonical JSONL verifies official session, model, thinking, and fallback.
 
-### Target ORCH
+Resume uses only this verified official session. Missing, stale, unsafe, mismatched, or credibly duplicated sessions fail closed.
 
-A target starts only after canonical `plan.md` and `orchestrator-instructions.md` exist. `start_orch` resolves the instruction itself, verifies the caller and target against configured `@plan` identity, creates or reconciles the run workspace, fingerprints delivery, and records target identity. `inspect_orch` is required before judgment or recovery. A dead ORCH cannot start itself; a live predecessor or native control surface is required.
-Target recovery is fingerprint-first. If an ambiguous first return persisted `prompt_state: prompting`, that value may remain permanently as a never-replay guard. Recovery does not need to rewrite it to `prompted`: `verified_at` plus persisted fallback/model facts establishes persisted verification and settled state after exact JSONL reconciliation.
+## Focus, ambiguity, and close
 
-### Close, resume, and reset
+Focus restoration only reverses displacement onto registry-owned coordinates. Unrelated current user focus is preserved.
 
-- **Resume**: only the exact registry-recorded official OMP session path whose JSONL exists and whose persisted identity has been verified is eligible. A path reported during bootstrap may precede file creation and is not yet resume authority. Native Herdr restoration is preferred. A manual resume requires a proved owned interactive shell or one owned replacement tab plus duplicate checks.
-- **Close**: only after fresh inspection proves a settled state and exact registry ownership. The worker tab may contain only its root pane and strictly verified Herdr Sidebar auxiliaries. After close, `inspect_worker` may return `agent_not_found`; the registry `closed` record is authoritative and the retained run anchor remains. The retained workspace is never closed by a public operation.
-- **Reset**: a sibling run receives copied planning context but not trusted old evidence. Settled source workers may close through the normal guarded path; active, blocked, unknown, conflicted, ambiguous, or unsafe workers remain preserved at the source coordinate.
+Mutating timeout handling is observe-before-retry:
 
-## Model-role resolution and session verification
+1. inspect assignment, lane, and lifecycle identity;
+2. verify state sequence, prompt/response fingerprint, report, session, and topology;
+3. continue from a proved effect or retry only after proved absence;
+4. preserve coordinates when ambiguity remains.
 
-Built-in routing fixes ORCH at `@plan` with inherited thinking and provides `default` (`@default`) and `slow` (`@slow`) worker profiles. Configuration can override worker role/thinking leaves or add bounded profiles. It accepts role aliases, never concrete model IDs, and `ensure_worker` always receives an explicit profile.
+Worker close requires a fresh expected session ID and state sequence. Safe topology permits only the registry root pane and structurally verified Herdr Sidebar panes. Track close first verifies a fresh registry revision and all candidates; any active or unsafe lane rejects the whole close.
 
-Launch pinning precedes a two-stage session gate:
+Assignment completion never implies worker or track closure.
 
-The calling OMP process first resolves the configured role to the exact concrete provider/model and effective thinking. The child OMP process launches with those captured concrete values, eliminating cross-process role-alias drift.
+## Reset and reload boundaries
 
-1. **Pre-prompt gate:** before any work prompt, the child extension reports session-bound in-process bootstrap attestation through Herdr pane metadata: official session ID and reported path, concrete provider/model, thinking, nonce, and timestamp. The controller proves the intended pane/session and compares every expected fact exactly.
-2. **Persisted gate:** the reported session path may precede JSONL creation and is not resume-eligible at that point. After the first prompt boundary, persisted JSONL must exist and match bootstrap/session/model/thinking/fallback before the operation succeeds or the session becomes resume-eligible.
+A sibling reset uses a different run coordinate, copies the source plan, and fixes policies to `close-settled-preserve-active` and `revalidate-before-import`. It does not import evidence as truth or mutate source workers.
 
-Attestation/report failure is fail-closed. The controller never sends a synthetic prompt merely to create JSONL. Reconciliation also rejects missing, corrupt, oversized, mismatched, concurrently resumed, or credibly duplicated sessions. Host task/subagents remain outside this model-verification contract.
-
-## Focus and Sidebar concurrency
-
-Focus handling is ownership-aware:
-
-1. Capture the current Herdr focus before mutation.
-2. Record only registry-owned tabs/panes created or selected by the operation.
-3. Restore focus only if the operation displaced it onto those owned coordinates.
-4. Skip restoration if focus moved elsewhere, treating that as possible concurrent user action.
-
-`focus_restoration: partial` is surfaced as a warning and does not erase the operation's proven effect.
-
-Safe close treats auxiliary panes as a proof problem. A Sidebar is accepted only when it shares the worker's workspace/tab and canonical run `cwd`, has exact label `Sidebar`, has no non-null `agent` or `agent_session`, and exposes a non-empty token object whose every key starts with `herdr-sidebar-`. Any additional or ambiguous pane prevents closure.
-
-## Prompt, block, and deduplication
-
-`prompt_wait` accepts only the canonical `<run>/a2a/<worker_id>-instructions.md`. The tool fingerprints the instruction and records intent before delivery. Matching fingerprints in prompting, prompted, working, idle, done, or blocked states are deduplication evidence; the ORCH inspects rather than resends.
-
-After delivery, new information is appended as an `[ORCH Addendum]` for consumption at a natural boundary rather than rewriting submitted instructions.
-
-A block response requires a fresh `blocked` observation and the exact `expected_state_change_seq`. Bounded text is for free-form text input. An interactive option dialog requires inspection and bounded allowlisted keys, such as `enter` for a preauthorized recommended selection. A response that leaves state and sequence unchanged is a no-effect observation, not permission to replay blindly. Only a grounded non-user decision may be supplied automatically.
-
-## Failure and ambiguous-effect recovery
-
-Every result carries `ok`, operation, state, retryability, deterministic key/registry coordinate, and either bounded observations or a structured error with phase, ambiguity, and recovery guidance.
-
-Timeouts during prompt delivery, block response, or close may have changed external state. Recovery is therefore observe-before-retry:
-
-1. Inspect deterministic run and registry identity.
-2. Verify workspace/tab/pane ownership and live state/sequence.
-3. Verify prompt fingerprint/state, report presence, official session, and bounded output.
-4. For closure, verify topology and whether the owned tab still exists.
-5. Continue from a proved effect, or retry only after proving absence.
-6. If effect or ownership remains ambiguous, preserve all coordinates and stop mutation.
-
-Creating a new worker number is not an identity-conflict recovery mechanism.
-
-## Trust boundaries
-
-Trusted only after validation:
-
-- strict configuration layers and hashes;
-- canonical storage, run, project, instruction, registry, and session paths;
-- run/reset manifests and deterministic identities;
-- registry-owned workspace/tab/pane bindings;
-- OMP-resolved role/model/thinking identity and official JSONL evidence;
-- Herdr Sidebar structural proof.
-
-Untrusted by default:
-
-- model-supplied paths or resume arguments;
-- labels, terminal text, and report claims without structural or independent evidence;
-- stale state sequences and prior-run evidence;
-- unowned panes, workspaces, sessions, and manual registry changes;
-- secrets or personal data placed in audit artifacts.
-
-## Non-goals
-
-- General-purpose terminal, process, workspace, or secret management.
-- Automatic decomposition, approval, prioritization, or user-judgment replacement.
-- Model selection or verification for host task/subagents.
-- Safe concurrent editing of overlapping files in a shared project directory.
-- Automatic closure of the retained Herdr workspace.
-- Treating old reset evidence as current truth.
-- Repairing malformed configuration, registries, sessions, or ambiguous ownership by guessing.
+The target ORCH launches under the configuration-selected OMP role. `/reload-plugins` refreshes the skill and MCP server; extension cutover verification requires a new OMP session.

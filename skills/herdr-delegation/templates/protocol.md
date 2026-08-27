@@ -1,184 +1,210 @@
 # a2a communication protocol — <track_id>/<run_id>
 
-This deterministic run is the file communication channel between the planning session (**ORCH**) and independent worker sessions. Files are the audit source of truth. Herdr transports prompts and exposes live state; it does not own judgments. The user does not wake workers, relay messages, or perform recovery.
+This deterministic run is the durable channel between the OMP orchestrator (**ORCH**) and persistent Herdr responsibility workers. Documents carry contracts, decisions, and results. MCP carries live control pointers. Herdr exposes responsibility, assignment, session, and live-state observations. None substitutes for another.
 
-## Identity, storage, and model contract
+The user does not relay messages, wake workers, or perform recovery.
 
-- ORCH runs under OMP role `@plan`. Configuration selects OMP role aliases only, never concrete model IDs. The caller resolves the selected role and effective thinking to an exact concrete provider/model before launch.
-- Run identity is lowercase `track_id` plus `run_id`. Every tool call uses those IDs; an arbitrary run path is never an input substitute.
-- `storage.root` is configured as an absolute path in user `${PI_CODING_AGENT_DIR}/herdr-delegator.json` (default `~/.omp/agent/herdr-delegator.json`) or project `<cwd>/.omp/herdr-delegator.json`. There is no temporary-path fallback.
-- `herdr_track.init_run` deterministically resolves `<storage-root>/<track-id>/<run-id>`, writes strict `run.json`, copies this protocol, creates `a2a/`, and updates the tool-owned storage index. It creates no placeholder plan, instruction, report, evidence, registry, workspace, tab, or session.
-- Worker tabs require an explicit configured profile on every `ensure_worker`. Built-ins are `default` (`@default`) and `slow` (`@slow`), both with thinking `inherit`; no implicit selection exists.
-- The child OMP launches with the caller-captured concrete provider/model and effective thinking, preventing cross-process role-alias drift. Before any work prompt, the child extension reports session-bound in-process bootstrap attestation through Herdr pane metadata: official session ID/reported path, concrete provider/model, thinking, nonce, and timestamp. The controller proves the target pane/session and compares all facts exactly.
-- A bootstrap-reported session path may precede JSONL creation and is not resume-eligible yet. After the first prompt boundary, JSONL must exist and match the bootstrap/session/model/thinking/fallback facts before success or resume. Attestation/report failure is fail-closed; never send a synthetic prompt to create JSONL.
-- Bounded mechanical/light work uses the host OMP task/subagent mechanism in the current ORCH session. It creates no Herdr worker or `a2a` worker files. ORCH owns and verifies it; this plugin does not control or verify its model.
+## Identity and storage
 
-## Roles
+- Official support is OMP-only.
+- Run identity is `(track_id, run_id)`. Tool calls use those coordinates, never a model-supplied run path.
+- `storage.root` comes from strict user or project `herdr-delegator.json` configuration and must be absolute.
+- `herdr_track {action:"init"}` resolves `<storage.root>/<track_id>/<run_id>`, writes the strict run manifest and this protocol, creates `a2a/`, and updates the tool-owned index.
+- ORCH authors `plan.md` and assignment artifacts after initialization.
+- Tool-owned manifests, indexes, `a2a/herdr-workers.json`, `a2a/delegation.json`, and locks are never edited, moved, copied, or unlocked by ORCH or workers.
 
-- **ORCH**: decomposes work, chooses routing, writes plan/instructions, judges decisions, independently verifies results, and performs recovery.
-- **Herdr worker (`w1`, `w2`, ...)**: an independent OMP main session in a separate registry-owned tab. It performs only its assigned substantial slice and writes its own report.
-- **Host task/subagent**: bounded, mechanical, non-judgmental work inside the current ORCH session; never treated as a persistent worker.
-- **User**: supplies only decisions meeting the escalation boundary below; never acts as transport or recovery operator.
+Configuration stores bounded OMP role aliases, never concrete model IDs. The built-in orchestrator role is `@default`; worker profiles `default` and `slow` select `@default` and `@slow`. A configured role may replace any built-in role.
 
-Worker tabs share the project `cwd`. Parallelize only disjoint ownership, and never run concurrent code-editing workers against one shared working directory. Serialize overlapping writes.
+The bridge-only OMP extension publishes session-scoped runtime facts. The stdio MCP server derives those facts from the verified Herdr caller pane and active OMP agent directory. Before mutation, bridge facts and Herdr bootstrap metadata must agree on session, pane, provider/model, thinking, nonce, and freshness. After the first prompt boundary, persisted JSONL must also agree on session, provider/model, thinking, and fallback. Missing, stale, unsafe, duplicated, or conflicting identity fails closed.
 
-## File authority
+## Actors
 
-| File | Writer | Authority and purpose |
+- **ORCH:** decomposes work, chooses responsibility routing, writes plans and assignments, resolves judgment, verifies results independently, and performs recovery.
+- **Responsibility worker (`w1`, `w2`, ...):** a persistent OMP main session in one registry-owned tab. It keeps context across assignments with the same responsibility.
+- **Assignment (`A-NNN`):** one immutable unit of work routed to a responsibility lane.
+- **Host OMP task/subagent:** bounded mechanical work outside the Herdr registry and model-verification contract.
+- **User:** supplies only decisions that cross the declared escalation boundary.
+
+Workers share the project `cwd`. Concurrent code-editing workers require disjoint write ownership. Serialize overlapping edits.
+
+## Durable file authority
+
+| Coordinate | Writer | Authority |
 |---|---|---|
-| `run.json` | `herdr_track` | Strict version-1 track/run/cwd/path manifest and optional reset coordinate; never edit |
-| `reset.json` | `herdr_track` | Strict sibling-reset lineage, source-plan hash, and fixed worker/evidence policies; never edit |
-| `plan.md` | ORCH | Goal, completion scenarios, prohibitions, user decisions, routing, ownership, dependencies, quiet windows, lineage, and integration checks |
-| `protocol.md` | `herdr_track` | Byte-for-byte bundled communication and lifecycle contract; keep project-specific constraints in `plan.md` and instructions |
-| `orchestrator-instructions.md` | predecessor ORCH | Complete prompt source when `start_orch` launches a target ORCH |
-| `orchestrator-report.md` | target ORCH | Target ORCH progress, decisions, evidence, and handoff result |
-| `a2a/w<N>-instructions.md` | ORCH | Complete worker assignment and constrained prompt source |
-| `a2a/w<N>-report.md` | Worker `w<N>` | Append-only timestamped progress, evidence, decision requests, and completion |
-| `[ORCH Response]` in a worker report | ORCH | Decision or closure judgment |
-| `[ORCH Addendum]` in worker instructions | ORCH | New information for an already-prompted worker, consumed at the next natural boundary |
-| `a2a/w<N>-to-w<M>.md` | Sender `w<N>` | Append-only directional peer facts, only for a plan-declared channel |
-| `a2a/herdr-workers.json` and `.herdr-workers.lock` | plugin tools | Registry version 3 identity, workspace/anchor, ORCH observation, model verification, and worker lifecycle; never edit, move, copy, or unlock |
-| `evidence.md` | ORCH | Independent before/after, slice, and integration evidence when needed |
-| `<storage-root>/index.json` and lock | `herdr_track` | Deterministic storage index and transaction state; never hand-edit or unlock |
+| `run.json`, `reset.json`, `<storage.root>/index.json` | `herdr_track` | Deterministic run identity, reset lineage, and storage index |
+| `protocol.md` | `herdr_track` | Byte-for-byte bundled protocol |
+| `plan.md`, `evidence.md` | ORCH | Goal, routing, decisions, and independent verification |
+| `a2a/assignments/A-NNN.md` | ORCH | One immutable assignment contract and instruction source |
+| `a2a/w<N>-report.md` | Worker `w<N>` | Append-only evidence, result, decision request, and completion block |
+| `[ORCH Response]` report blocks | ORCH | Decision, acceptance, or recovery judgment |
+| `a2a/w<N>-to-w<M>.md` | Declared sender | Append-only peer facts for a plan-authorized directional channel |
+| `a2a/delegation.json` | MCP | Minimal responsibility routing, lane state, assignment state, hashes, and timestamps |
+| `a2a/herdr-workers.json` | Lifecycle authority | Workspace, tab, pane, official session, model verification, and guarded close state |
+| `orchestrator-instructions.md`, `orchestrator-report.md` | Source ORCH, target ORCH | Optional target-ORCH startup and result |
 
-Canonical paths returned in bounded tool details are audit observations. Tool calls continue to use track/run IDs. The one path-valued worker input, `prompt_wait.instruction_path`, must equal the exact deterministic worker instruction coordinate; it never establishes run identity.
+There are no separate assignment contract or receipt files. MCP stores the verified worker-report hash in `delegation.json`.
 
-Terminal output and Herdr state are live observations, not substitutes for plans, instructions, reports, evidence, or decisions. Never write another worker's report. Never place secrets in paths, arguments, prompts, output, logs, reports, or evidence.
+Terminal output and Herdr metadata are observations, not reports or decisions. Never place secrets in any audit or control channel.
 
-## Condition-bearing plan and instructions
+## Responsibility routing
 
-Before work begins, `plan.md` states observable completion, prohibitions, user-confirmed items, routing, exact write ownership, producer/consumer dependencies, readiness signals, peer channels, quiet windows, ORCH verification, and any reset lineage. Separate read-only measurement from repair.
+A responsibility key names durable direction, ownership, and context. Exact responsibility reuse is the default. There is no fixed worker count ceiling.
 
-Each worker instruction names required reading, scope and non-goals, prohibitions, ordered work, completion checks, report path, dependencies, explicit profile, and delegation policy. Compare it once with this deployed protocol before prompting. Current project rules and this protocol govern; prior runs are evidence only.
+Each lane has at most one active assignment and a FIFO queue. A busy lane queues a same-responsibility assignment; busyness is not a reason to create another worker.
 
-## `herdr_track` lifecycle
+An additional lane for the same responsibility requires one bounded separation witness:
 
-### `init_run`
+- `direction`
+- `ownership`
+- `dependency`
 
-Call with bounded lowercase `track_id`/`run_id`, absolute canonical project `cwd`, optional `timeout_ms` (1,000–300,000), and optional sibling `reset_of: { track_id, run_id }`. It performs storage initialization only. ORCH authors judgment files afterward.
+The witness contains a short `reason` and an existing `conflicts_with_worker_id`. No scoring or automatic decomposition applies. Never allocate a new worker number to bypass ambiguous responsibility, identity, topology, or session ownership.
 
-### `start_orch`
+## Canonical assignment
 
-Call only after canonical `plan.md` and `orchestrator-instructions.md` exist. Inputs are track/run IDs and optional timeout—never `cwd`, instruction path, session path, executable, or argv. The tool resolves the instruction, has the caller resolve configured `@plan` to exact provider/model plus effective thinking, launches the child with those concrete values, verifies its pre-prompt bootstrap attestation from the intended pane, fingerprints/deduplicates the prompt, and waits for a natural boundary.
+Assignment IDs match `^A-(?!0+$)[0-9]{3,}$`. ORCH writes exactly:
 
-A fresh target starts without resume. Reconciliation may resume only that target run's exact registry-recorded official session path after persisted JSONL identity, owned-shell, and duplicate checks. Recovery after an ambiguous first return may retain `prompt_state: prompting` permanently as the never-replay fingerprint. It need not become `prompted`; `verified_at` plus persisted fallback/model facts establishes persisted verification and settled state. A dead ORCH cannot start or resume itself; use native Herdr/OMP restoration or a live predecessor control surface.
+```text
+<run>/a2a/assignments/<assignment_id>.md
+```
 
-### `inspect_orch`
+The file is bounded UTF-8 with LF line endings. Frontmatter contains, in order:
 
-Call after `start_orch` and before judgment or ambiguous-effect recovery. It reports bounded run/workspace/anchor identity, target official session and model verification, live state and sequence, prompt fingerprint/state, reset lineage, focus observation, and `orchestrator-report.md` presence. It returns no arbitrary transcript.
+1. `assignment_id`
+2. `responsibility_key`
+3. `profile`
 
-Never retry an ambiguous target start or prompt blindly. Inspect; continue from a proved effect, retry only from proved absence when recovery guidance permits, otherwise preserve coordinates and fail closed.
+The body contains, in order:
 
-## `herdr_worker` automated relay
+1. `# Goal`
+2. `# Completion conditions`
+3. `# Write ownership`
+4. `# Dependencies`
+5. `# User boundaries`
 
-Every call uses `track_id`, `run_id`, and lowercase `worker_id` matching `w[1-9][0-9]*`. Optional timeout is 1,000–300,000 milliseconds; optional inspection output is 1–200 lines.
+The final four sections contain one or more bounded Markdown bullets. The artifact becomes immutable when submitted. `herdr_assignment.add` receives its exact SHA-256 as `instructions_sha256`.
 
-### Mandatory sequence
+## Public MCP contract
 
-1. Call **`ensure_worker`** with track/run IDs, worker ID, canonical project `cwd`, and an explicit configured `profile`. It verifies run/cwd/config and calling ORCH, resolves the selected worker role to an exact concrete provider/model and effective thinking, launches with those captured values, verifies pre-prompt bootstrap attestation from the intended pane, and proves registry/workspace/anchor/session identity before prompt-path mutation.
-2. If ensure reports resume, reconciliation, or ambiguity, call **`inspect_worker`** before prompting. Continue only when official identity and live state are proved.
-3. Call **`prompt_wait`** with the same IDs and exact `<resolved-run>/a2a/<worker-id>-instructions.md`. It fingerprints the instruction, records prompt intent before submission, prevents duplicates, and waits for `idle`, `done`, or `blocked` boundaries.
-4. Call **`inspect_worker`** after the wait and before judgment, block response, retry, recovery, or close.
+The public surface contains exactly three composite tools.
 
-Do not skip or reorder the sequence. Never create another worker number to escape uncertainty.
+### `herdr_track`
 
-### State-based operation rules
+| Action | Required action-specific fields | Effect |
+|---|---|---|
+| `init` | `cwd`; optional `reset_of` | Initializes or reconciles deterministic storage |
+| `inspect` | none | Returns bounded delegation and ORCH observations |
+| `start_orchestrator` | none | Starts or reconciles the configured OMP ORCH |
+| `close` | fresh `expected_registry_revision` | Fresh-inspects and safely closes every settled lane, all-or-nothing |
 
-- **`ensure_worker`**: first creation or reconciliation of the same deterministic identity after interruption. It may reconcile a live worker, use a proved owned shell, or create one owned replacement tab only after duplicate checks. It is not authority to replace an identity-conflicted worker.
-- **`prompt_wait`**: only after successful ensure and any required inspection. A matching fingerprint in `prompting`, `prompted`, `working`, `idle`, `done`, or `blocked` means inspect rather than send again. After submission, change instructions only by appending an `[ORCH Addendum]` for the next natural boundary.
-- **`inspect_worker`**: after ensure when resume/reconciliation/ambiguity occurred; after every wait; after timeout, stall, ambiguous effect, block response, or close uncertainty; and immediately before a decision or close.
-- **`resolve_block`**: only after latest inspection proves `blocked`; pin `expected_state_change_seq` to that exact sequence. ORCH must have a non-user answer grounded by plan, instruction, or canonical project source. Use bounded text only for free-form text input. For an interactive option dialog, inspect it and use bounded allowlisted keys, such as `enter` for a preauthorized recommended selection. If a response leaves state and sequence unchanged, it is a no-effect observation: inspect and do not replay blindly.
-- **`close_worker`**: mandatory for registry-owned workers during closure, only after fresh inspection proves `idle`, `done`, or `failed` and registry identity, tab ownership, and pane topology are safe. A post-close `inspect_worker` may return `agent_not_found`; the registry `closed` record is authoritative and the retained run anchor remains.
+Every action also receives `track_id` and `run_id`.
 
-### Timeout, stall, and ambiguous effect
+### `herdr_assignment`
 
-A timed-out prompt, response, or close may already have taken effect. Never repeat it blindly. Inspect and reconcile:
+| Action | Required action-specific fields | Effect |
+|---|---|---|
+| `add` | `assignment_id`, `responsibility_key`, `instructions_sha256`; optional `separation`, `wait` | Reuses, queues, or creates a lane and dispatches the canonical assignment |
+| `wait` | `assignment_id`; optional `wait` | Waits on the active assignment without mutation on timeout |
+| `respond` | `assignment_id`, fresh `expected_state_change_seq`, bounded `response` | Answers only a freshly proved blocked assignment |
 
-- deterministic run/worker identity and registry ownership;
-- workspace, anchor, tab, and exact root-pane coordinates;
-- live state and `state_change_seq`;
-- instruction fingerprint and registry phase;
-- report presence and bounded terminal observation;
-- official OMP session path/identity and model verification;
-- for close, whether the owned tab still exists and whether every pane is safe.
+`wait.until` values are `idle`, `done`, and `blocked`; `timeout_ms` is 1,000–300,000. A text response is bounded. A key response uses only the MCP allowlist.
 
-Continue from a proved effect. Retry only when absence is proved and recovery guidance permits. If effect, identity, ownership, topology, or duplicate safety remains ambiguous, preserve files and coordinates and raise an ORCH decision. Do not resend, respond, close, or create a replacement.
+Assignment state is exactly:
 
-### Workspace, focus, resume, and close boundaries
+```text
+queued | prompting | working | blocked | completed | failed | ambiguous
+```
 
-The deterministic run has one dedicated workspace with a retained anchor tab/pane; each worker has a separate registry-owned tab. Labels are hints, not identity proof. No public operation closes a workspace.
+### `herdr_worker`
 
-Focus restoration is guarded and best-effort. Automation restores only displacement onto owned coordinates and never overrides unrelated current focus. Record `focus_restoration: partial`; it is a warning, not proof of operation failure.
+| Action | Required action-specific fields | Effect |
+|---|---|---|
+| `list` | optional `responsibility_key` | Lists bounded responsibility lanes |
+| `inspect` | `worker_id`; optional `output_lines` 1–200 | Freshly observes one registry-owned worker |
+| `resume` | `worker_id`, exact `expected_session_id` | Reconciles only the verified official session |
+| `close` | `worker_id`, exact `expected_session_id`, fresh `expected_state_change_seq` | Safely closes a settled responsibility lane |
 
-Context continuity exists only through the exact official OMP session path stored in registry version 3. A bootstrap-reported path is not resume-eligible until its JSONL exists and persisted identity is verified. Prefer native Herdr restoration. Manual resume requires a proved owned shell or one owned replacement tab plus file and duplicate checks. Never take a session path or resume arguments from model input, and never resume one JSONL concurrently. Missing/corrupt paths, known duplicates, and credible duplicate ambiguity fail closed.
+Every action also receives `track_id` and `run_id`. Callers never supply raw Herdr targets, arbitrary paths, argv, terminal commands, or generic close operations.
 
-Safe close allows only the exact registry root pane plus verified Herdr Sidebar auxiliary panes. Each Sidebar must share workspace/tab and canonical run `cwd`, have exact label `Sidebar`, expose no non-null `agent` or `agent_session`, and have a non-empty `tokens` object whose every key begins `herdr-sidebar-`. Any unproved, mixed, or extra pane prevents close.
+## Dispatch and settlement
 
-## Self-resolution and user escalation
+`herdr_assignment.add`:
 
-Before a worker requests a decision:
+1. verifies the immutable assignment path, grammar, and hash;
+2. selects exact responsibility reuse, FIFO queueing, or a justified separated lane;
+3. ensures the lane with the assignment's configured profile;
+4. verifies bootstrap identity before prompt;
+5. records prompt intent before sending a pointer to the canonical artifact;
+6. waits for a natural boundary;
+7. verifies persisted session/model identity after prompt;
+8. checks the worker report for settlement.
 
-1. Read its instructions, then `plan.md`, canonical project documents/settings, then code.
-2. If evidence is clear and action is within ownership, proceed and cite the exact coordinate afterward.
-3. If evidence is absent or conflicting, append one batched `[ORCH Decision Request]`: situation in at most three lines, options, tradeoffs, and recommendation. Continue independent work where possible.
-4. ORCH independently verifies the grounds and either resolves the current block or escalates.
+A worker completes by appending:
 
-`resolve_block` is not a convenience prompt. It requires a non-user decision, canonical grounds, and the latest inspected blocked sequence.
+```markdown
+[Assignment Completion: A-001]
 
-Escalate to the user only for:
+status: completed
+```
 
-- an item explicitly marked user-confirmed in `plan.md`;
-- irreversible or destructive action outside registry-owned workers;
-- a shared rule or cross-session governance change;
-- secrets, authentication, account access, or account-specific input;
-- judgment only the user can supply.
+or exactly one `status: failed` line in that block. Settlement stores the full report SHA-256 and completion timestamp, transitions the assignment to its terminal state, returns the lane to `idle`, and promotes the FIFO head.
 
-Do not escalate merely because a worker asks, a tool times out, or an operation is unfamiliar.
+Assignment completion never closes the tab or official OMP session. The worker remains available for another assignment with the same responsibility.
 
-## Peer routing through ORCH
+## Blocked, timeout, and ambiguous state
 
-Workers may use directional `w<N>-to-w<M>.md` files only within plan-declared ownership. The sender alone appends; the receiver treats the file as read-only. Peer facts may establish artifact coordinates/readiness, dependencies, existing interface contracts, quiet windows, reproduction results, and compatibility observations.
+Before a response, ORCH fresh-inspects the worker and pins the exact blocked `state_change_seq`. Use text only for free-form input and allowlisted keys only for an inspected dialog.
 
-Peers confirm contracts; ORCH changes contracts. Scope, priority, assignment, ownership, approval, completion conditions, conflicting evidence, irreversible actions, governance, and user-confirmed items go to ORCH.
+A wait timeout has no effect and may be repeated. A prompt, response, resume, or close timeout may have changed external state. Never replay it blindly.
 
-Use `[REQ wN-<monotonic-number>]` and `[REPLY wN-<monotonic-number>]`. One message covers one dependency; cite coordinates instead of pasting evidence. Workers check only at natural boundaries—startup, before a block, after a phase/commit/deployment/proposal boundary, and before completion. No polling or acknowledgment-only messages.
+Recovery order:
 
-ORCH relays a peer-file coordinate through `[ORCH Addendum]` or a newly planned prompt. When a fact affects execution, each affected worker records message ID, adopted fact, affected step, and artifact coordinate in its report.
+1. inspect the assignment and worker;
+2. verify responsibility routing, registry ownership, official session, workspace/tab/root-pane identity, and live sequence;
+3. verify the operation fingerprint, report, and bounded observation;
+4. continue from a proved effect or retry only after proved absence;
+5. preserve all coordinates when effect or ownership remains ambiguous.
 
-## Reporting and ORCH verification
+Potentially effected assignment operations converge on the single `ambiguous` state with bounded replay facts. Do not invent additional public states.
 
-Reports are push records. Workers append at natural boundaries and exit normally after completion. Each completion entry states artifact coordinates, exact checks/results, self-decided grounds, and procedural friction. ORCH uses wait and inspection operations; it does not poll files or interrupt working sessions.
+## Observation, focus, resume, and close
 
-ORCH independently reproduces material claims, samples reported coordinates, and runs a separate live demonstration where possible. Slice verification stays inside the slice; integration verification runs once at the boundary. ORCH records acceptance or recovery in `[ORCH Response]` and performs recovery directly.
+Herdr observation metadata is display-only:
 
-## Sibling reset
+- `responsibility`
+- `assignment`
+- `assignment-state`
 
-Reset uses `herdr_track.init_run` with a new sibling target coordinate and `reset_of` source coordinate under the same storage root. The tool validates source manifest and plan, copies the source plan, writes strict lineage/reset records, and fixes policies to `close-settled-preserve-active` and `revalidate-before-import`. It never traverses or mutates source workers.
+It never changes Herdr semantic agent state and is not contract, settlement, or identity authority.
 
-ORCH may revise the copied target plan before `start_orch`. Freshly inspect source workers; close safe settled registry-owned workers through `close_worker`, and preserve working, blocked, unknown, conflicted, or unsafe workers plus source workspace and recovery coordinates. Old evidence is not inherited as truth; revalidate before citation.
+Resume uses only the exact registry-recorded official OMP JSONL after persisted model/session verification and duplicate checks. Focus restoration only reverses displacement onto registry-owned coordinates; unrelated current focus wins.
 
-Author target `orchestrator-instructions.md`; `start_orch` launches one clean target ORCH under `@plan`. Target resume uses only its own exact official session path. Native restoration or a live predecessor starts/reconciles it; a dead ORCH cannot resume itself.
+Safe worker close requires the exact registry root pane plus only structurally verified Herdr Sidebar panes. Track close rejects the entire operation if any lane is active, blocked, ambiguous, identity-conflicted, or unsafe. No public operation closes the retained workspace.
+
+## Decisions and escalation
+
+Workers first read their assignment, `plan.md`, canonical project documents/settings, and code. They proceed when evidence is clear and within ownership. Otherwise they append one batched `[ORCH Decision Request]` and continue independent work.
+
+ORCH changes scope, ownership, priority, approval, and completion conditions. Peer files carry only existing facts, readiness, dependencies, quiet windows, and compatibility observations.
+
+Escalate to the user only for plan-marked user decisions, irreversible actions outside registry-owned workers, shared governance, secrets/authentication/account access, or judgment only the user can supply.
+
+## Verification, reset, and handoff
+
+ORCH independently reproduces material claims and runs integration verification once at the integration boundary.
+
+A sibling reset uses `herdr_track {action:"init", reset_of:{...}}` at a different coordinate. It copies planning context, not truth. Revalidate inherited evidence; close only freshly proved safe settled source lanes; preserve active or unsafe source lanes.
+
+The target ORCH uses the configured orchestrator role, not a fixed `@plan` role. Start it with `herdr_track {action:"start_orchestrator"}` and inspect before judgment or recovery.
 
 ## Common worker rules
 
-- Obey exact ownership and prohibitions.
+- Obey exact write ownership and prohibitions.
+- Do not delegate or run project-wide commands unless the assignment permits it.
 - Record out-of-scope gaps; do not repair them in place.
-- Keep secrets out of all channels; refer only to approved names or references.
-- Do not create a competing project convention.
-- Do not delegate unless current project rules and worker instructions permit it.
-- If a worker created a worktree, remove it only when clean, fully merged, and zero commits ahead. Preserve dirty/unmerged worktrees and report their state.
+- Append durable results only to your own report.
+- Keep the assignment completion block exact.
+- After completion, remain idle and keep the tab/session open.
+- Do not create competing project conventions.
+- Keep secrets out of all channels.
 - Project-specific additions: <project rules>
-
-## Closure
-
-ORCH closes only after implementation and integration verification:
-
-1. Freshly inspect every registry-owned worker and target ORCH when present.
-2. Resolve/escalate blocked state and reconcile every unknown or ambiguous effect.
-3. Close each registry-owned worker proved `idle`, `done`, or `failed` with safe identity and Sidebar-aware topology. Preserve every unsafe worker.
-4. Promote durable decisions, rules, and evidence to permanent project coordinates.
-5. Record closure judgment in plan/reports/evidence. The plugin storage index is tool-owned; never hand-edit it.
-6. Delete only non-audit scratch files.
-7. Remove only clean, fully merged worktrees with zero commits ahead; preserve dirty or unmerged worktrees for user disposition.
-
-The deterministic run remains its audit record; do not manually relocate it into a temporary archive. Never declare closure while a worker is working, blocked, unknown, identity-conflicted, unsafe to close, or affected by unresolved ambiguity.
