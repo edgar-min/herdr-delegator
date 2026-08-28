@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promise
 import path from "node:path";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type OrchBirthRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -29,6 +29,17 @@ function validOrchBirth(value: unknown, index: number): value is OrchBirthRecord
     typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
     (value.origin === "claim" || value.origin === "spawn") &&
     typeof value.born_at === "string" && value.born_at.length <= 64;
+}
+
+const CREATOR_KEYS = ["session_id", "pane_id", "mandate_sha256", "opened_at"] as const;
+
+function validOrchCreator(value: unknown): value is OrchCreatorRecord {
+  return isRecord(value) &&
+    exactKeys(value, CREATOR_KEYS) &&
+    typeof value.session_id === "string" && value.session_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.session_id) &&
+    typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
+    typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
+    typeof value.opened_at === "string" && value.opened_at.length <= 64;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -142,11 +153,14 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
 
 function validateRegistry(value: unknown, runPath: string): asserts value is DelegationRegistry {
   const requiredKeys = ["version", "owner", "run_path", "revision", "responsibilities", "lanes", "assignments", "created_at", "updated_at"] as const;
-  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
+  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
     throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "Preserve and repair the minimal registry; do not infer ownership.");
   }
   if (value.orch_births !== undefined && (!Array.isArray(value.orch_births) || !value.orch_births.every((birth, index) => validOrchBirth(birth, index)))) {
     throw new McpContractError("delegation_registry_invalid", "An ORCH birth record is malformed.", "storage", "Repair births from verified spawn or claim evidence; generations are contiguous from 1.");
+  }
+  if (value.orch_creator !== undefined && !validOrchCreator(value.orch_creator)) {
+    throw new McpContractError("delegation_registry_invalid", "The ORCH creator record is malformed.", "storage", "Repair the creator record from the opening session's verified attestation, or remove it to reopen the track.");
   }
   for (const [key, responsibility] of Object.entries(value.responsibilities)) {
     if (!RESPONSIBILITY_RE.test(key) || !isRecord(responsibility) || !exactKeys(responsibility, ["key", "worker_ids"]) || responsibility.key !== key || !Array.isArray(responsibility.worker_ids) || responsibility.worker_ids.some((id) => typeof id !== "string" || !WORKER_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A responsibility route is malformed.", "storage", "Repair routing from verified worker identities.");

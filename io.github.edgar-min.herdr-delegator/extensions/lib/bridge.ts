@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { ConfigSource, ThinkingLevel } from "./contracts";
 import { ROLE_RE, SHA256_RE, compactMessage, isObject } from "./contracts";
-import { isThinkingLevel, loadDelegatorConfig } from "./config";
+import { isThinkingLevel, loadDelegatorConfig, silentFallbackRoleWarning } from "./config";
 import { observeRoleThinking } from "./role-thinking";
 
 export const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
@@ -536,21 +536,10 @@ async function alignOrchestratorSession(
   const target = ctx.models.resolve(role);
   if (!target) throw new Error(`Configured orchestrator role ${role} did not resolve to a model.`);
   const expected = concreteModel(target, `role ${role}`);
-  // OMP resolves an unconfigured-but-recognized role by inheriting the default
-  // chain instead of failing, so on a machine without a modelRoles entry the
-  // "aligned" model is silently the default one (dogfooded on another user's
-  // environment). The extension API exposes no settings read, so the exact
-  // signal is identity with @default: a fallback always matches it, and the
-  // only false positive — a role deliberately mapped to the default model —
-  // makes the warning a harmless note.
-  let fallbackNote = "";
-  if (role !== "@default") {
-    const defaultTarget = ctx.models.resolve("@default");
-    const defaultIdentity = defaultTarget ? concreteModel(defaultTarget, "role @default") : undefined;
-    if (defaultIdentity && defaultIdentity.provider === expected.provider && defaultIdentity.model === expected.model) {
-      fallbackNote = ` WARNING: ${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then rerun /herdr-align.`;
-    }
-  }
+  // Shared with the open/spawn preflight; /herdr-align is deleted in a later
+  // phase and its remedy wording is the only part local to this path.
+  const fallback = silentFallbackRoleWarning(role, expected, ctx, "rerun /herdr-align");
+  const fallbackNote = fallback ? ` WARNING: ${fallback}` : "";
   const live = concreteModel(ctx.models.current(), "current model");
   const liveThinking = pi.getThinkingLevel();
   if (!isThinkingLevel(liveThinking)) {

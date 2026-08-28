@@ -31,6 +31,18 @@ export const FRICTION_REPORTERS = ["agent", "human"] as const;
 export const MAX_FRICTION_SUMMARY = 500;
 export const MAX_FRICTION_EVIDENCE = 2_000;
 export const FRICTION_FINGERPRINT_RE = /^[a-f0-9]{16}$/;
+// Mandate bounds (identity/comms redesign, decision 5). The bootstrapper distills
+// the conversation into WHAT and WHY; HOW belongs to the born ORCH. Every limit
+// below is published in the tool schema up front and named with the observed size
+// in its rejection message, per the goal-4096 lesson (friction 29239ed8).
+export const MAX_MANDATE_INTENT = 4_096;
+export const MAX_MANDATE_ITEM = 500;
+export const MAX_MANDATE_ITEMS = 32;
+export const MAX_MANDATE_BYTES = 16_384;
+// Hard transport ceilings. They exist only so an absurd payload cannot reach the
+// named-limit validator; the published limits above are the contract.
+const MANDATE_TRANSPORT_STRING = 64_000;
+const MANDATE_TRANSPORT_ITEMS = 256;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
@@ -182,6 +194,24 @@ export type OrchBirthRecord = {
   born_at: string;
 };
 
+// Death of the bootstrapper (decision 3). `herdr_track open` stamps the creator
+// session before it spawns anything, so the record doubles as the open-in-flight
+// marker: creator present with no birth means the atomic open did not finish and
+// only the creator may retry it — never a claim. Creator plus birth means the
+// creator is retired for this run.
+export type OrchCreatorRecord = {
+  session_id: string;
+  pane_id: string;
+  mandate_sha256: string;
+  opened_at: string;
+};
+
+export type Mandate = {
+  intent: string;
+  constraints: string[];
+  shape_of_success: string[];
+};
+
 export type DelegationRegistry = {
   version: 1;
   owner: "herdr-delegator";
@@ -190,6 +220,7 @@ export type DelegationRegistry = {
   responsibilities: Record<string, ResponsibilityRecord>;
   lanes: Record<string, WorkerLaneRecord>;
   orch_births?: OrchBirthRecord[];
+  orch_creator?: OrchCreatorRecord;
   assignments: Record<string, AssignmentRecord>;
   created_at: string;
   updated_at: string;
@@ -254,11 +285,17 @@ const separation = z.object({
   reason: z.string().min(1).max(500),
   conflicts_with_worker_id: workerId,
 }).strict();
+const mandate = z.object({
+  intent: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why this track exists and what it must achieve, in the user's terms. WHAT and WHY only — HOW is the born ORCH's to decide. Limit ${MAX_MANDATE_INTENT} characters.`),
+  constraints: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).max(MANDATE_TRANSPORT_ITEMS).describe(`Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each; pass an empty array when there are none.`),
+  shape_of_success: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).min(1).max(MANDATE_TRANSPORT_ITEMS).describe(`Observable conditions that make the track done. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each.`),
+}).strict().describe(`Bounded mandate persisted as orchestrator-instructions.md and fingerprinted at the ORCH's first prompt. The whole rendered document is limited to ${MAX_MANDATE_BYTES} bytes.`);
 
 export const herdrTrackInputShape = {
   ...run,
-  action: z.enum(["init", "inspect", "start_orchestrator", "close"]),
+  action: z.enum(["open", "init", "inspect", "start_orchestrator", "close"]),
   cwd: z.string().min(1).optional(),
+  mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
   expected_registry_revision: z.number().int().nonnegative().optional(),
 };
@@ -308,6 +345,7 @@ export const herdrFrictionInputShape = {
 };
 
 export const herdrTrackSchema = z.discriminatedUnion("action", [
+  z.object({ ...run, action: z.literal("open"), cwd: z.string().min(1), mandate }).strict(),
   z.object({ ...run, action: z.literal("init"), cwd: z.string().min(1), reset_of: z.object(run).strict().optional() }).strict(),
   z.object({ ...run, action: z.literal("inspect") }).strict(),
   z.object({ ...run, action: z.literal("start_orchestrator") }).strict(),

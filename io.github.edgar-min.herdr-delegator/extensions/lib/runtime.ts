@@ -1166,14 +1166,81 @@ export async function restoreFocus(
   return partial ? "partial" : "restored";
 }
 
-async function validateWorkspaceCandidate(
+/**
+ * Display-only rename onto the supervision surface (identity/comms redesign,
+ * decision 4). A name is never identity, so a failed rename degrades to a
+ * bounded warning and never breaks a committed lifecycle operation. Every
+ * caller composes its label from COORDINATE_RE coordinates, so the clamp here
+ * is a second guard rather than the contract.
+ */
+export async function labelPane(
+  binary: string,
+  paneId: string,
+  label: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const bounded = label.replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 160);
+  const renamed = await runHerdr(binary, ["pane", "rename", paneId, bounded], timeoutMs, signal);
+  if (renamed.ok) return undefined;
+  return compactMessage(`Pane ${paneId} kept its previous name: ${renamed.code} ${renamed.message}`, "A pane rename failed.");
+}
+
+/**
+ * True for the auxiliary sidebar pane Herdr attaches to a tab it owns. Callers
+ * that must prove a tab holds exactly one delegator-owned shell subtract these
+ * first; passing no `root_pane_id` accepts any sidebar in the tab.
+ */
+export async function verifiedHerdrSidebarAuxiliaryPane(
+  pane: Record<string, unknown>,
+  record: Pick<RegistryRecord, "workspace_id" | "tab_id" | "root_pane_id">,
+  runCwd: string,
+): Promise<boolean> {
+  const paneId = typeof pane.pane_id === "string" ? pane.pane_id : undefined;
+  if (
+    !paneId ||
+    paneId === record.root_pane_id ||
+    pane.workspace_id !== record.workspace_id ||
+    pane.tab_id !== record.tab_id ||
+    pane.label !== "Sidebar" ||
+    deepValues(pane, "agent").some((value) => value !== undefined && value !== null) ||
+    deepValues(pane, "agent_session").some((value) => value !== undefined && value !== null)
+  ) {
+    return false;
+  }
+
+  const tokens = pane.tokens;
+  if (
+    !isObject(tokens) ||
+    Object.keys(tokens).length === 0 ||
+    !Object.keys(tokens).every((key) => key.startsWith("herdr-sidebar-"))
+  ) {
+    return false;
+  }
+
+  if (typeof pane.cwd !== "string" || !path.isAbsolute(pane.cwd)) return false;
+  try {
+    return (await realpath(pane.cwd)) === runCwd;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolves the run's anchor tab inside its track space. A track space holds one
+ * anchor tab per run (runs are generations inside the track's space), keyed by
+ * the deterministic run anchor label; a space that does not have one yet gets a
+ * fresh tab rather than borrowing another run's anchor.
+ */
+async function resolveRunAnchorTab(
   binary: string,
   workspaceId: string,
   workspaceLabel: string,
+  anchorLabel: string,
   cwd: string,
   timeoutMs: number,
   signal?: AbortSignal,
-): Promise<{ anchorTabId: string; anchorPaneId: string }> {
+): Promise<{ anchorTabId: string; anchorPaneId: string; createdTab: boolean }> {
   const [workspace, snapshot] = await Promise.all([
     runHerdr(binary, ["workspace", "get", workspaceId], timeoutMs, signal),
     runHerdr(binary, ["api", "snapshot"], timeoutMs, signal),
@@ -1187,7 +1254,7 @@ async function validateWorkspaceCandidate(
   if (!workspaceObject || workspaceObject.label !== workspaceLabel) {
     throw new ContractError(
       "identity_conflict",
-      "The candidate workspace ID or deterministic label does not match the run reservation.",
+      "The candidate workspace ID or deterministic label does not match the track reservation.",
       "workspace_reconcile",
       { recovery: "Preserve the candidate and inspect its identity; labels alone are not ownership proof." },
     );
@@ -1195,33 +1262,77 @@ async function validateWorkspaceCandidate(
   const tabs = uniqueBy(
     collectMatchingObjects(
       snapshot.data,
-      (candidate) => candidate.workspace_id === workspaceId && typeof candidate.tab_id === "string",
+      (candidate) => candidate.workspace_id === workspaceId && candidate.label === anchorLabel && typeof candidate.tab_id === "string",
     ),
     ["tab_id"],
   );
-  if (tabs.length !== 1) {
+  if (tabs.length > 1) {
     throw new ContractError(
       "identity_conflict",
-      "An uncommitted workspace candidate does not have exactly one anchor tab.",
+      "The track space holds more than one tab with this run's deterministic anchor label.",
       "workspace_reconcile",
-      { recovery: "Preserve the workspace and inspect its topology before adoption." },
+      { recovery: "Preserve every candidate tab and inspect the space topology before adoption." },
     );
   }
-  const anchorTabId = firstString(tabs[0], ["tab_id"]);
-  const panes = uniqueBy(
+  if (tabs.length === 0) {
+    const created = await runHerdr(
+      binary,
+      ["tab", "create", "--workspace", workspaceId, "--cwd", cwd, "--label", anchorLabel, "--no-focus"],
+      timeoutMs,
+      signal,
+    );
+    if (!created.ok) {
+      throw commandError(
+        created,
+        "workspace_create",
+        "Read the track space tab list by the deterministic run anchor label before retrying.",
+        created.timedOut,
+      );
+    }
+    const createdTabId = firstString(created.data, ["tab_id"]);
+    const roots = collectMatchingObjects(created.data, (item) => isObject(item.root_pane));
+    const createdPaneId = firstString(roots[0]?.root_pane, ["pane_id"]) ?? firstString(created.data, ["root_pane_id"]);
+    if (!createdTabId || !createdPaneId) {
+      throw new ContractError(
+        "invalid_herdr_response",
+        "The run anchor tab-create response omitted tab or root pane coordinates.",
+        "workspace_create",
+        {
+          ambiguousEffect: true,
+          recovery: "Read the space tab list by the same anchor label; do not issue a second create blindly.",
+        },
+      );
+    }
+    return { anchorTabId: createdTabId, anchorPaneId: createdPaneId, createdTab: true };
+  }
+  const anchorTabId = firstString(tabs[0], ["tab_id"]) ?? "";
+  const tabPanes = uniqueBy(
     collectMatchingObjects(
       snapshot.data,
       (candidate) => candidate.tab_id === anchorTabId && typeof candidate.pane_id === "string",
     ),
     ["pane_id"],
   );
-  const anchorPaneId = firstString(panes[0], ["pane_id"]);
-  if (!anchorTabId || panes.length !== 1 || !anchorPaneId) {
+  const sidebarProofs = await Promise.all(
+    tabPanes.map((candidate) =>
+      verifiedHerdrSidebarAuxiliaryPane(candidate, { workspace_id: workspaceId, tab_id: anchorTabId }, cwd)
+    ),
+  );
+  const shells = tabPanes.filter((_, index) => !sidebarProofs[index]);
+  const anchorPaneId = firstString(shells[0], ["pane_id"]);
+  if (!anchorTabId || shells.length !== 1 || !anchorPaneId) {
+    // Herdr attaches a tab's sidebar pane before it publishes that pane's label
+    // and herdr-sidebar-* tokens, so a tab observed inside that window looks
+    // like two shells. The state is transient, hence retryable — but never
+    // guessed at, because picking the wrong pane would plant an agent in it.
     throw new ContractError(
       "identity_conflict",
-      "An uncommitted workspace candidate does not have exactly one anchor pane.",
+      `The run anchor tab holds ${shells.length} panes that are not provably its Herdr sidebar.`,
       "workspace_reconcile",
-      { recovery: "Preserve the workspace and inspect its topology before adoption." },
+      {
+        retryable: true,
+        recovery: "Retry the identical call: a just-attached sidebar is only provable once Herdr publishes its label and tokens. If the count persists, preserve the tab and inspect its topology before adoption.",
+      },
     );
   }
   const pane = await runHerdr(binary, ["pane", "get", anchorPaneId], timeoutMs, signal);
@@ -1236,26 +1347,35 @@ async function validateWorkspaceCandidate(
   if (canonicalPaneCwd !== cwd) {
     throw new ContractError(
       "identity_conflict",
-      "The workspace candidate anchor cwd differs from the canonical requested cwd.",
+      "The run anchor pane cwd differs from the canonical requested cwd.",
       "workspace_reconcile",
       { recovery: "Preserve the workspace and inspect its provenance before adoption." },
     );
   }
-  return { anchorTabId, anchorPaneId };
+  return { anchorTabId, anchorPaneId, createdTab: false };
 }
 
+/**
+ * Reconciles the run's home: one Herdr space per track (`herdr/<track_id>`) and
+ * one anchor tab per run inside it (`ORCH <track_id>/<run_id>`). Runs are
+ * generations inside their track's space, so the anchor label — not the space —
+ * is what disambiguates one run from its siblings.
+ */
 export async function ensureRunWorkspace(
   binary: string,
   registry: Registry,
   registryPath: string,
   runPath: string,
+  trackId: string,
+  runId: string,
   cwd: string,
   orchestrator: OrchestratorRecord,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<RunRecord> {
   const runKey = sha256(runPath);
-  const workspaceLabel = `herdr-run-${runKey.slice(0, 12)}`;
+  const workspaceLabel = `herdr/${trackId}`;
+  const anchorLabel = `ORCH ${trackId}/${runId}`;
   const timestamp = nowIso();
   if (!registry.run) {
     registry.run = {
@@ -1351,7 +1471,7 @@ export async function ensureRunWorkspace(
   if (candidates.length > 1) {
     throw new ContractError(
       "identity_conflict",
-      "Multiple workspaces have the deterministic run label.",
+      "Multiple workspaces have the deterministic track label.",
       "workspace_reconcile",
       { recovery: "Preserve every candidate; labels are hints and cannot disambiguate ownership." },
     );
@@ -1369,15 +1489,16 @@ export async function ensureRunWorkspace(
     ) {
       throw new ContractError(
         "identity_conflict",
-        "The sole labelled workspace candidate conflicts with registry ownership.",
+        "The sole labelled track space conflicts with registry ownership.",
         "workspace_reconcile",
         { recovery: "Preserve the candidate and inspect registry ownership before adoption." },
       );
     }
-    const anchor = await validateWorkspaceCandidate(
+    const anchor = await resolveRunAnchorTab(
       binary,
       workspaceId,
       workspaceLabel,
+      anchorLabel,
       cwd,
       timeoutMs,
       signal,
@@ -1395,7 +1516,7 @@ export async function ensureRunWorkspace(
       throw commandError(
         created,
         "workspace_create",
-        "List and reconcile the deterministic workspace label before retrying creation.",
+        "List and reconcile the deterministic track label before retrying creation.",
         created.timedOut,
       );
     }
@@ -1415,6 +1536,18 @@ export async function ensureRunWorkspace(
           ambiguousEffect: true,
           recovery: "List and reconcile the deterministic label; do not issue a second create blindly.",
         },
+      );
+    }
+    // The fresh space's own tab becomes this run's anchor, so it must carry the
+    // run anchor label a sibling run later searches by. A failed rename leaves a
+    // labelled-but-anchorless space that the next call adopts and re-anchors.
+    const named = await runHerdr(binary, ["tab", "rename", anchorTabId, anchorLabel], timeoutMs, signal);
+    if (!named.ok) {
+      throw commandError(
+        named,
+        "workspace_create",
+        `Retry the identical call: the track space ${workspaceLabel} exists and its run anchor tab is re-derived from the label.`,
+        named.timedOut,
       );
     }
   }

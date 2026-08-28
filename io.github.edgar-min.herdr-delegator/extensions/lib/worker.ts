@@ -1,11 +1,11 @@
 // Worker responsibilities for the Herdr delegator extension.
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { FocusRestoration, OmpModelContext, Operation, RegistryRecord, SessionVerification, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
-import { ContractError, DEDUPE_STATES, KEY_ALLOWLIST, MAX_TEXT_RESPONSE, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
+import { COORDINATE_RE, ContractError, DEDUPE_STATES, FOCUS_TIMEOUT_MS, KEY_ALLOWLIST, MAX_TEXT_RESPONSE, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { canonicalInstruction, canonicalWorkerId, isFile, normalizeTimeout, resolveLaunchProfile, resolveRunCoordinate } from "./config";
 import type { BootstrapSessionVerification, CommandResult, OwnedFocus } from "./runtime";
-import { MAX_EFFECTIVE_WAIT_MS, assertAgentBelongsToRecord, assertLaunchProfile, assertPersistedMatchesBootstrap, assertRecordIdentity, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, observeOrchestrator, publicState, publicWorker, readRegistry, reconcileDeterministicIdentity, registryPaths, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, startWorkerAgent, uniqueBy, updateRecordFromObservation, verifyWorkerSession, waitForAgentStatus, withRegistryLock, writeRegistryAtomic } from "./runtime";
+import { MAX_EFFECTIVE_WAIT_MS, assertAgentBelongsToRecord, assertLaunchProfile, assertPersistedMatchesBootstrap, assertRecordIdentity, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, observeOrchestrator, publicState, publicWorker, readRegistry, reconcileDeterministicIdentity, registryPaths, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, startWorkerAgent, uniqueBy, updateRecordFromObservation, verifiedHerdrSidebarAuxiliaryPane, verifyWorkerSession, waitForAgentStatus, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
 type StalenessRecord = RegistryRecord & {
   last_activity_revision?: number;
@@ -120,6 +120,8 @@ export async function ensureWorker(
         registry,
         targetRegistryPath,
         runPath,
+        coordinate.manifest.track_id,
+        coordinate.manifest.run_id,
         cwd,
         orchestrator,
         timeoutMs,
@@ -361,6 +363,14 @@ export async function ensureWorker(
   } finally {
     focusRestoration = await restoreFocus(binary, focusBefore, owned);
   }
+  // Supervision surface (decision 4): the lane's pane carries `w<N> <responsibility>`
+  // so a human scanning the track space reads responsibilities, not hashes.
+  const responsibilityKey = typeof params.responsibility_key === "string" && COORDINATE_RE.test(params.responsibility_key)
+    ? params.responsibility_key
+    : undefined;
+  const paneLabelWarning = responsibilityKey && record.root_pane_id
+    ? await labelPane(binary, record.root_pane_id, `${workerId} ${responsibilityKey}`, FOCUS_TIMEOUT_MS, signal)
+    : undefined;
 
   return {
     ok: true,
@@ -373,6 +383,8 @@ export async function ensureWorker(
     observation: {
       focus_restoration: focusRestoration,
       model_verification: modelVerification,
+      ...(responsibilityKey ? { pane_label: `${workerId} ${responsibilityKey}` } : {}),
+      ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
     },
   };
 }
@@ -913,41 +925,6 @@ export async function resolveBlock(params: ToolParams, signal?: AbortSignal): Pr
     focus_restoration: focusRestoration,
   };
   return result;
-}
-
-export async function verifiedHerdrSidebarAuxiliaryPane(
-  pane: Record<string, unknown>,
-  record: Pick<RegistryRecord, "workspace_id" | "tab_id" | "root_pane_id">,
-  runCwd: string,
-): Promise<boolean> {
-  const paneId = typeof pane.pane_id === "string" ? pane.pane_id : undefined;
-  if (
-    !paneId ||
-    paneId === record.root_pane_id ||
-    pane.workspace_id !== record.workspace_id ||
-    pane.tab_id !== record.tab_id ||
-    pane.label !== "Sidebar" ||
-    deepValues(pane, "agent").some((value) => value !== undefined && value !== null) ||
-    deepValues(pane, "agent_session").some((value) => value !== undefined && value !== null)
-  ) {
-    return false;
-  }
-
-  const tokens = pane.tokens;
-  if (
-    !isObject(tokens) ||
-    Object.keys(tokens).length === 0 ||
-    !Object.keys(tokens).every((key) => key.startsWith("herdr-sidebar-"))
-  ) {
-    return false;
-  }
-
-  if (typeof pane.cwd !== "string" || !path.isAbsolute(pane.cwd)) return false;
-  try {
-    return (await realpath(pane.cwd)) === runCwd;
-  } catch {
-    return false;
-  }
 }
 
 export async function closeWorker(params: ToolParams, signal?: AbortSignal): Promise<WorkerResult> {

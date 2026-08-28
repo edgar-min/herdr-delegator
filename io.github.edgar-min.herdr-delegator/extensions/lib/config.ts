@@ -342,11 +342,34 @@ export async function resolveLaunchProfile(
   };
 }
 
+/**
+ * OMP resolves an unconfigured-but-recognized role by inheriting the default
+ * chain instead of failing, so on a machine without a `modelRoles` entry the
+ * "aligned" model is silently the default one (dogfooded on another user's
+ * environment). The extension API exposes no settings read, so the exact signal
+ * is identity with `@default`: a fallback always matches it, and the only false
+ * positive — a role deliberately mapped to the default model — makes the warning
+ * a harmless note. This never blocks (decision 6): it names what the operator is
+ * actually getting.
+ */
+export function silentFallbackRoleWarning(
+  role: string,
+  expected: { provider: string; model: string },
+  ctx: OmpModelContext,
+  remedy: string,
+): string | undefined {
+  if (role === "@default") return undefined;
+  const fallback = ctx.models.resolve("@default");
+  if (!fallback || fallback.provider !== expected.provider || fallback.id !== expected.model) return undefined;
+  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then ${remedy}.`;
+}
+
 export async function resolveOrchestratorProfile(
   runPath: string,
   cwd: string,
   ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
+  requireCallerAlignment: boolean,
 ): Promise<{
   launch: Omit<TargetOrchestratorRecordWithBootstrapFacts,
     "workspace_id" | "tab_id" | "pane_id" | "agent_name" | "session_path" | "session_id" |
@@ -359,10 +382,13 @@ export async function resolveOrchestratorProfile(
   const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
   const current = modelIdentity(ctx.models.current());
   const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
+  // Only the legacy caller-is-an-ORCH path asserts this. A birth-based open is
+  // issued by an ordinary chat session that will never command the run.
   if (
-    resolved.provider !== current.provider ||
-    resolved.model !== current.model ||
-    orchestratorThinking !== currentThinking
+    requireCallerAlignment &&
+    (resolved.provider !== current.provider ||
+      resolved.model !== current.model ||
+      orchestratorThinking !== currentThinking)
   ) {
     throw orchestratorMismatchError(
       "The live caller ORCH identity",
@@ -669,20 +695,30 @@ export async function validateOrchestratorRun(resolved: ResolvedRun): Promise<Re
   const planPath = path.join(runPath, "plan.md");
   const instructionPath = path.join(runPath, "orchestrator-instructions.md");
   try {
-    if (
-      (await realpath(planPath)) !== planPath ||
-      (await realpath(instructionPath)) !== instructionPath ||
-      !(await isFile(planPath)) ||
-      !(await isFile(instructionPath))
-    ) {
+    if ((await realpath(instructionPath)) !== instructionPath || !(await isFile(instructionPath))) {
       throw new Error("not canonical");
     }
   } catch {
     throw new ContractError(
       "invalid_orchestrator_layout",
-      "The run must contain canonical plan.md and orchestrator-instructions.md before start or inspection.",
+      "The run must contain a canonical orchestrator-instructions.md before start or inspection.",
       "validate",
     );
+  }
+  // plan.md is the ORCH's own document, written in clean context with the user
+  // after birth (decision 5), so a fresh run legitimately has none yet. A reset
+  // sibling is different: its plan is copied in by init and is the lineage the
+  // reset contract hashes.
+  if (manifest.reset_of) {
+    try {
+      if ((await realpath(planPath)) !== planPath || !(await isFile(planPath))) throw new Error("not canonical");
+    } catch {
+      throw new ContractError(
+        "invalid_orchestrator_layout",
+        "A reset run must contain the canonical plan.md its lineage was initialized with.",
+        "validate",
+      );
+    }
   }
   if (!manifest.reset_of) return undefined;
   const resetPath = path.join(runPath, "reset.json");

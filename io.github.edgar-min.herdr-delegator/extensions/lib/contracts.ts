@@ -388,6 +388,7 @@ export type ToolParams = {
   expected_state_change_seq?: unknown;
   response?: unknown;
   profile?: unknown;
+  responsibility_key?: unknown;
 };
 
 export type TrackParams = {

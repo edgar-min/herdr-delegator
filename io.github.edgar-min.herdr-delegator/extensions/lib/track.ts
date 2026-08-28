@@ -2,11 +2,10 @@
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
-import { ContractError, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
-import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, withRegistryLock, writeRegistryAtomic } from "./runtime";
-import { verifiedHerdrSidebarAuxiliaryPane } from "./worker";
+import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, verifiedHerdrSidebarAuxiliaryPane, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
 const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
 
@@ -899,10 +898,18 @@ async function inspectOrchestrator(
   };
 }
 
+/**
+ * Spawns and first-prompts the run's target ORCH. `requireCallerAlignment` is
+ * the legacy `start_orchestrator` contract, where the caller was itself an ORCH
+ * and had to already run the configured orchestrator role. A birth-based `open`
+ * passes false: the creator session commands nothing and dies for this run
+ * (decisions 3 and 6), so its own model is irrelevant to the spawn.
+ */
 async function startOrchestrator(
   params: TrackParams,
   ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
+  requireCallerAlignment: boolean,
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -930,7 +937,18 @@ async function startOrchestrator(
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
   const { registryPath } = registryPaths(runPath);
-  const resolved = await resolveOrchestratorProfile(runPath, cwd, ctx, currentThinking);
+  const resolved = await resolveOrchestratorProfile(runPath, cwd, ctx, currentThinking, requireCallerAlignment);
+  // Silent-fallback preflight (decision 6): an unconfigured-but-recognized OMP
+  // role inherits the default chain instead of failing, so the spawn would be
+  // pre-aligned to a default-grade model under a planning-grade name. This warns
+  // and never blocks — the spawn is still legitimate, just possibly cheaper than
+  // the operator believes.
+  const fallbackWarning = silentFallbackRoleWarning(
+    resolved.launch.requested_role,
+    { provider: resolved.launch.expected_provider, model: resolved.launch.expected_model },
+    ctx,
+    "reopen the track once the role is configured",
+  );
   const { binary, paneId } = await requireHerdrEnvironment();
   const caller = await observeOrchestrator(binary, paneId, resolved.caller, timeoutMs, signal);
   const focusBefore = await captureFocus(binary, signal);
@@ -948,6 +966,8 @@ async function startOrchestrator(
         registry,
         targetRegistryPath,
         runPath,
+        coordinate.manifest.track_id,
+        coordinate.manifest.run_id,
         cwd,
         caller,
         timeoutMs,
@@ -1162,6 +1182,10 @@ async function startOrchestrator(
   } finally {
     focusRestoration = await restoreFocus(binary, focusBefore, owned);
   }
+  // Supervision surface (decision 4): the ORCH pane announces which run commands
+  // it. Applied after focus restoration so a rename never competes with it.
+  const paneLabel = `ORCH ${coordinate.manifest.track_id}/${coordinate.manifest.run_id}`;
+  const paneLabelWarning = await labelPane(binary, target.pane_id, paneLabel, FOCUS_TIMEOUT_MS, signal);
   return {
     ok: true,
     operation: "start_orch",
@@ -1177,6 +1201,9 @@ async function startOrchestrator(
       model_verification: verification,
       prompt_fingerprint: instructionFingerprint,
       reset_lineage: lineage,
+      pane_label: paneLabel,
+      ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
+      ...(fallbackWarning ? { role_fallback_warning: fallbackWarning } : {}),
       report_exists: await isFile(path.join(runPath, "orchestrator-report.md")),
       report_path: path.join(runPath, "orchestrator-report.md"),
     },

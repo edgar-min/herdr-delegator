@@ -6,24 +6,29 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { resolveSkillRoutes } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, resolveBlock, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 
 
 // ---------------------------------------------------------------------------
-// Birth-based ORCH identity (identity/comms redesign, decision 1-2). The
-// latest birth record in a2a/delegation.json is the sole command identity for
-// a run: guarded run-command ops accept only the latest-generation birth
-// session and reject zombies (stale generations) and strangers. Until the
-// atomic `open` op exists, a run with no birth is claimed by the first
-// attested guarded command (origin "claim"); `start_orchestrator` records the
-// spawned ORCH as a new generation (origin "spawn").
+// Birth-based ORCH identity (identity/comms redesign, decisions 1-3). The latest
+// birth record in a2a/delegation.json is the sole command identity for a run:
+// guarded run-command ops accept only the latest-generation birth session and
+// reject zombies (stale generations) and strangers.
+//
+// `herdr_track open` stamps a creator record before it spawns anything, so the
+// creator record is also the "this run is open-managed" marker:
+//   creator + birth      -> normal life; the creator is retired for this run.
+//   creator, no birth    -> an open did not finish; only re-running `open` may
+//                           complete it, and nothing may claim birth.
+//   no creator, no birth -> a legacy run (init + start_orchestrator); the first
+//                           attested guarded command claims generation 1.
 // ---------------------------------------------------------------------------
 
 function latestBirth(registry: DelegationRegistry): OrchBirthRecord | undefined {
@@ -31,30 +36,38 @@ function latestBirth(registry: DelegationRegistry): OrchBirthRecord | undefined 
   return births && births.length ? births[births.length - 1] : undefined;
 }
 
-function orchIdentityError(births: readonly OrchBirthRecord[], sessionId: string): McpContractError {
+function orchIdentityError(registry: Pick<DelegationRegistry, "orch_births" | "orch_creator">, sessionId: string): McpContractError {
+  const births = registry.orch_births ?? [];
   const latest = births[births.length - 1];
+  if (!latest) {
+    return new McpContractError("orch_birth_missing", "This run was opened but its ORCH was never born, so nothing commands it yet.", "attest", "Re-run herdr_track open from the opening session with the identical mandate; it is idempotent and completes the birth.");
+  }
+  if (registry.orch_creator?.session_id === sessionId) {
+    return new McpContractError("creator_session_retired", `The session that opened this track died for it at birth; generation ${latest.generation} commands this run.`, "attest", "Stop working this track here and converse with the named ORCH pane; refuse to accumulate more context on it.");
+  }
   if (births.some((birth) => birth.official_session_id === sessionId)) {
     return new McpContractError("stale_orch_generation", `Caller session belongs to a retired ORCH generation; generation ${latest.generation} commands this run.`, "attest", "Stop commanding this run: a newer ORCH was born. Converse with the current ORCH pane instead.");
   }
   return new McpContractError("orch_identity_mismatch", `Caller session is not this run's ORCH (generation ${latest.generation}).`, "attest", "Only the run's born ORCH session may command it. Coordinate via herdr_message notify_run or the run documents.");
 }
 
-/** Singularity gate for guarded run-command ops; claims birth on first command. */
+/** Singularity gate for guarded run-command ops; claims birth only on a legacy run. */
 export async function assertOrchCommand(store: DelegationStore, facts: OmpRuntimeFacts): Promise<void> {
   const registry = await store.read();
-  const births = registry.orch_births ?? [];
-  const latest = births[births.length - 1];
+  const latest = latestBirth(registry);
   if (latest) {
-    if (latest.official_session_id !== facts.session_id) throw orchIdentityError(births, facts.session_id);
+    if (latest.official_session_id !== facts.session_id) throw orchIdentityError(registry, facts.session_id);
     return;
   }
+  if (registry.orch_creator) throw orchIdentityError(registry, facts.session_id);
   await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
     const current = next.orch_births ?? [];
     const head = current[current.length - 1];
     if (head) {
-      if (head.official_session_id !== facts.session_id) throw orchIdentityError(current, facts.session_id);
+      if (head.official_session_id !== facts.session_id) throw orchIdentityError(next, facts.session_id);
       return;
     }
+    if (next.orch_creator) throw orchIdentityError(next, facts.session_id);
     next.orch_births = [...current, {
       generation: current.length + 1,
       official_session_id: facts.session_id,
@@ -610,12 +623,83 @@ function assertLiveWorkerSession(
   }
   return liveSequence;
 }
+// ---------------------------------------------------------------------------
+// Mandate (identity/comms redesign, decision 5). The bootstrapper distills the
+// conversation into WHAT and WHY; HOW belongs to the born ORCH, which writes
+// plan.md in clean context with the user. The document is persisted as
+// orchestrator-instructions.md, which start_orch fingerprints at first prompt
+// and refuses to replay after a change — so a mandate is settled before birth,
+// never edited behind a living ORCH.
+//
+// Every published limit is enforced here and names the observed size in its
+// rejection (goal-4096 lesson, friction 29239ed8): a caller learns the bound
+// from the failure instead of by bisection.
+// ---------------------------------------------------------------------------
+
+function mandateBullets(values: readonly string[], field: string): string[] {
+  if (values.length > MAX_MANDATE_ITEMS) {
+    throw new McpContractError("mandate_too_large", `${field} has ${values.length} entries; the limit is ${MAX_MANDATE_ITEMS}.`, "validate", `Keep at most ${MAX_MANDATE_ITEMS} entries; fold the rest into the intent or leave them to the ORCH's plan.`);
+  }
+  return values.map((value, index) => {
+    const item = singleLine(value);
+    if (!item) throw new McpContractError("mandate_invalid", `${field} entry ${index + 1} is empty after single-line normalization.`, "validate", "Give each entry one concrete line, or drop it.");
+    if (item.length > MAX_MANDATE_ITEM) {
+      throw new McpContractError("mandate_too_large", `${field} entry ${index + 1} is ${item.length} characters; the limit is ${MAX_MANDATE_ITEM}.`, "validate", `Shorten the entry to at most ${MAX_MANDATE_ITEM} characters; a mandate names the boundary, not its reasoning.`);
+    }
+    return item;
+  });
+}
+
+export function renderMandate(run: RunRef, mandate: Mandate): string {
+  const intent = mandate.intent.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
+  if (!intent) throw new McpContractError("mandate_invalid", "The mandate intent is empty after normalization.", "validate", "State why this track exists and what it must achieve, in the user's terms.");
+  if (intent.length > MAX_MANDATE_INTENT) {
+    throw new McpContractError("mandate_too_large", `The mandate intent is ${intent.length} characters; the limit is ${MAX_MANDATE_INTENT}.`, "validate", `Shorten the intent to at most ${MAX_MANDATE_INTENT} characters; a mandate carries WHAT and WHY, and the ORCH writes the detail into plan.md.`);
+  }
+  const constraints = mandateBullets(mandate.constraints, "Constraints");
+  const success = mandateBullets(mandate.shape_of_success, "Shape of success");
+  const document = `---
+version: 1
+track_id: ${run.track_id}
+run_id: ${run.run_id}
+---
+
+# Mandate
+
+You are the orchestrator born for run ${run.track_id}/${run.run_id}. This document is
+your mandate: it fixes what this track must achieve and why, and deliberately says
+nothing about how. The session that wrote it has died for this track and will not
+answer for it — the user converses with you now, in this pane.
+
+Before delegating anything, write plan.md in this run directory in conversation with
+the user. The plan is yours; it is the only place how belongs.
+
+## Intent
+
+${intent}
+
+## Constraints
+
+${constraints.length ? constraints.map((item) => `- ${item}`).join("\n") : "- None recorded at open; the mandate imposes no boundary beyond the intent above."}
+
+## Shape of success
+
+${success.map((item) => `- ${item}`).join("\n")}
+`;
+  const bytes = Buffer.byteLength(document);
+  if (bytes > MAX_MANDATE_BYTES) {
+    throw new McpContractError("mandate_too_large", `The rendered mandate is ${bytes} bytes; the limit is ${MAX_MANDATE_BYTES}.`, "validate", `Shorten the intent or drop entries until the whole document fits in ${MAX_MANDATE_BYTES} bytes.`);
+  }
+  return document;
+}
+
 export class CompositeTools {
   constructor(private readonly adapter: HerdrAdapter) {}
 
   async track(input: HerdrTrackInput): Promise<McpResult> {
     const run = runRef(input);
     try {
+      if (input.action === "open") return await this.openTrack(input, run);
       if (input.action === "init") {
         // Attestation-gated, but identity-free: init records no ORCH identity
         // (friction 8a9dc4d2 — handoff init must never stamp the source
@@ -636,7 +720,11 @@ export class CompositeTools {
       }
       const runtime = await loadFacts(this.adapter);
       if (input.action === "start_orchestrator") {
-        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
+        // Legacy compatibility path only. On an open-managed run the spawn is
+        // owned by `open`, so allowing it here would hand any attested session a
+        // generation bump around the creator lockout.
+        if ((await store.read()).orch_creator) throw new McpContractError("track_opened_atomically", "This run was opened with herdr_track open, which owns its ORCH spawn.", "attest", "Re-run herdr_track open with the identical mandate to reconcile the ORCH; start_orchestrator remains only for runs created by init.");
+        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking, true);
         const birth = await this.recordSpawnBirth(store, result.orchestrator);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
@@ -657,6 +745,95 @@ export class CompositeTools {
       const closed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { for (const lane of Object.values(next.lanes)) if (lane.state !== "failed") lane.state = "closed"; });
       return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes) } };
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
+  }
+
+  /**
+   * The single atomic op that opens a track (decisions 1, 3, 4, 5): ensure the
+   * track space and run scaffolding, fix the mandate, spawn the ORCH pane
+   * pre-aligned to the configured orchestrator role, and record its birth.
+   *
+   * Partial-failure semantics are fail-closed and re-entrant rather than
+   * compensating, because the committed pieces are exactly the ones it is never
+   * safe to delete blindly:
+   *  - before the creator stamp: nothing identity-bearing exists. A failure
+   *    leaves at most an initialized run directory and a mandate file, and the
+   *    identical call reconciles them.
+   *  - the creator stamp lands before the spawn, so a failed spawn leaves a run
+   *    that no session can command and no session can claim: only this creator,
+   *    re-running the identical open, can finish the birth.
+   *  - birth and retirement are the same record write: the creator is retired
+   *    exactly when an ORCH exists to replace it, never before.
+   * Residue a failure can leave — the run directory, the mandate, the track
+   * space, and (past the spawn) the ORCH pane — is named in the failure's
+   * recovery text and reused by the retry; nothing is orphaned silently.
+   */
+  private async openTrack(input: Extract<HerdrTrackInput, { action: "open" }>, run: RunRef): Promise<McpResult> {
+    // Cheapest gate first: a malformed mandate is the caller's own input and is
+    // rejected without spending an attestation round trip.
+    const document = renderMandate(run, input.mandate);
+    const mandateHash = sha256(document);
+    const runtime = await loadFacts(this.adapter);
+
+    const scaffolding = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd });
+    const store = await DelegationStore.resolve(input.track_id, input.run_id);
+    const opened = await store.read();
+    const creator = opened.orch_creator;
+    if (creator && creator.mandate_sha256 !== mandateHash) {
+      throw new McpContractError("mandate_conflict", "This run was already opened with a different mandate.", "validate", "Open a sibling run for a different mandate; a settled mandate is never rewritten behind a live ORCH.");
+    }
+    const born = latestBirth(opened);
+    if (born) {
+      return { ok: true, tool: "herdr_track", action: "open", run, effect: "none", retryable: false, registry_revision: opened.revision, data: { already_open: true, orch_birth: born, orch_pane_id: born.pane_id, space: `herdr/${input.track_id}`, orch_pane: `ORCH ${input.track_id}/${input.run_id}`, mandate: { path: path.join(store.runPath, "orchestrator-instructions.md"), sha256: mandateHash }, next_step: `This track is already commanded by its ORCH pane ${born.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Direct the user there and do no further work on this track here.` } };
+    }
+    if (creator && creator.session_id !== runtime.facts.session_id) {
+      throw new McpContractError("track_open_in_progress", "Another session is opening this run and its ORCH is not born yet.", "attest", "Let the opening session finish or retry its identical open; a second opener would race the same birth.");
+    }
+
+    const instructionPath = path.join(store.runPath, "orchestrator-instructions.md");
+    let existingMandate: Buffer | undefined;
+    try { existingMandate = await readFile(instructionPath); }
+    catch (error: unknown) { if (!isObject(error) || error.code !== "ENOENT") throw new McpContractError("mandate_unreadable", "The run's orchestrator-instructions.md cannot be read safely.", "storage", "Inspect the run directory; never overwrite an unreadable mandate."); }
+    if (existingMandate && sha256(existingMandate) !== mandateHash) {
+      throw new McpContractError("mandate_conflict", "This run already holds a different orchestrator-instructions.md.", "validate", "Open a sibling run for a different mandate; the instruction file is fingerprinted at first prompt and never replayed after a change.");
+    }
+    if (!existingMandate) await writeAtomic(instructionPath, document);
+
+    const stamped = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      if (next.orch_creator && next.orch_creator.session_id !== runtime.facts.session_id) {
+        throw new McpContractError("track_open_in_progress", "Another session claimed this open while the mandate was being fixed.", "attest", "Let the opening session finish; a second opener would race the same birth.");
+      }
+      next.orch_creator = { session_id: runtime.facts.session_id, pane_id: runtime.facts.pane_id, mandate_sha256: mandateHash, opened_at: nowIso() };
+    });
+
+    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking, false);
+    const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
+    if (!birth) {
+      throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
+    }
+    const observation = isObject(spawned.observation) ? spawned.observation : {};
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning].filter((value): value is string => typeof value === "string");
+    // No skill routes here: plan and authoring boundaries belong to the ORCH,
+    // and this result is read by the session that just retired.
+    return {
+      ok: true,
+      tool: "herdr_track",
+      action: "open",
+      run,
+      effect: "confirmed",
+      retryable: false,
+      registry_revision: stamped.revision,
+      data: {
+        run: scaffolding.run,
+        space: `herdr/${input.track_id}`,
+        orch_pane: typeof observation.pane_label === "string" ? observation.pane_label : `ORCH ${input.track_id}/${input.run_id}`,
+        orch_pane_id: birth.pane_id,
+        orch_birth: birth,
+        mandate: { path: instructionPath, sha256: mandateHash, bytes: Buffer.byteLength(document) },
+        creator_retired: runtime.facts.session_id,
+        next_step: `This track's ORCH is born in pane ${birth.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Tell the user to continue there: this session is retired for this track and every guarded call it makes now fails with creator_session_retired. Do not accumulate more context on this track here.`,
+        ...(warnings.length ? { warnings } : {}),
+      },
+    };
   }
 
   /** Records the spawned target ORCH as the run's newest birth generation (idempotent per identity). */
@@ -781,7 +958,7 @@ export class CompositeTools {
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
         let ensured: WorkerResult;
         try {
-          ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) }, runtime.ctx, runtime.thinking);
+          ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, responsibility_key: selected.lane.responsibility_key, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) }, runtime.ctx, runtime.thinking);
         } catch (error) {
           const cleaned = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
             const assignment = next.assignments[input.assignment_id];
@@ -923,7 +1100,7 @@ export class CompositeTools {
         if (!assignment) throw new McpContractError("resume_not_eligible", "Lane assignment is absent from the minimal registry.", "resume", "Reconcile assignment routing before resume.");
         const artifact = await store.assignmentFile(assignmentId, assignment.responsibility_key, assignment.instructions_sha256);
         try {
-          const result = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, profile: artifact.assignment.profile }, runtime.ctx, runtime.thinking);
+          const result = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, responsibility_key: assignment.responsibility_key, profile: artifact.assignment.profile }, runtime.ctx, runtime.thinking);
           registry = await updateLaneFromWorker(store, input.worker_id, result);
           return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: result };
         } catch (error) {
