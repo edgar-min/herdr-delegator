@@ -1,10 +1,9 @@
 // Track lifecycle responsibilities for the Herdr delegator extension.
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import type { FocusRestoration, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
+import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, withRegistryLock, writeRegistryAtomic } from "./runtime";
 import { verifiedHerdrSidebarAuxiliaryPane } from "./worker";
@@ -735,16 +734,20 @@ function updateTargetFromObservation(target: TargetOrchestratorRecord, data: unk
 async function assertTargetConfiguredRole(
   run: RunRecord,
   target: TargetOrchestratorRecord,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
 ): Promise<void> {
   const { config, sources } = await loadDelegatorConfig(run.run_path, run.cwd);
   const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  const configuredThinking = config.orchestrator.thinking;
+  // Passing the persisted level as the live one keeps `inherit` with no
+  // role-bound level the tautology it has always been here — this check owns
+  // configuration drift, not session drift — while a role that does bind a
+  // level is now compared against it.
+  const configuredThinking = effectiveThinking(config.orchestrator, ctx, target.effective_thinking);
   if (
     config.orchestrator.role !== target.requested_role ||
     resolved.provider !== target.expected_provider ||
     resolved.model !== target.expected_model ||
-    (configuredThinking !== "inherit" && configuredThinking !== target.effective_thinking) ||
+    configuredThinking !== target.effective_thinking ||
     JSON.stringify(sources) !== JSON.stringify(target.config_sources)
   ) {
     throw new ContractError(
@@ -806,7 +809,7 @@ async function verifyTargetOrchestratorSession(
 
 async function inspectOrchestrator(
   params: TrackParams,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -898,7 +901,7 @@ async function inspectOrchestrator(
 
 async function startOrchestrator(
   params: TrackParams,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
   signal?: AbortSignal,
 ): Promise<TrackResult> {

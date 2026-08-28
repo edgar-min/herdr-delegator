@@ -1,0 +1,59 @@
+name: Friction report
+description: Promote a herdr_friction record (or an equivalent observation) to an upstream issue.
+title: "[friction] "
+labels: ["friction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Copy the fields from your local record: `herdr_friction {action: "list"}` reads
+        `<agent-dir>/herdr-delegator/friction/friction.jsonl`. Review `summary` and
+        `evidence` for private paths or project names before pasting — the local log is
+        never sanitized because it never leaves your machine on its own.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      description: Same taxonomy as the local log.
+      options:
+        - contract-gap (grammar/schema cannot express a legitimate intent)
+        - false-block (a guard rejected a correct action)
+        - ambiguous-outcome (a result left the effective state or next step unclear)
+        - excessive-steps (one logical operation needed too many calls)
+        - doc-drift (documented behavior disagrees with observed behavior)
+        - defect (outright wrong behavior)
+        - papercut (any other observed annoyance)
+    validations:
+      required: true
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One concrete single-line symptom (the record's `summary`).
+    validations:
+      required: true
+  - type: input
+    id: fingerprint
+    attributes:
+      label: Fingerprint
+      description: The record's 16-hex `fingerprint`, if promoted from a local record. Include `prior_reports` count if >0.
+  - type: input
+    id: surface
+    attributes:
+      label: Tool / surface
+      description: The record's `tool` and `error_code`, e.g. `herdr_worker` / `stale_state_change_seq`.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Verbatim error output, the exact rejected input, or reproduction steps.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: herdr-delegator / OMP / Herdr / Bun versions.
+    validations:
+      required: true

@@ -117,6 +117,31 @@ export type ModelProfile = {
   thinking: ConfigThinkingLevel;
 };
 
+/** A concrete model as the OMP model facade reports it. */
+export type OmpModelIdentity = { provider: string; id: string };
+
+/**
+ * The read-only slice of an OMP session this delegator resolves profiles from.
+ *
+ * Only `ctx.models` is ever consulted, so the contract is stated structurally
+ * instead of as the whole `ExtensionContext`: the MCP server process rebuilds
+ * the same facade from published bridge facts and must satisfy it exactly.
+ *
+ * `roleThinking` is the part OMP's own facade cannot answer. `models.resolve()`
+ * deliberately strips a role's `:level` thinking suffix and resolves to the base
+ * model, so the level a role is bound to is only observable beside it. It stays
+ * optional because a bridge published before this field existed carries no
+ * role-bound level, and absence means exactly what it meant then: nothing is
+ * bound, so `inherit` keeps the live session level.
+ */
+export type OmpModelContext = {
+  models: {
+    current(): OmpModelIdentity | undefined;
+    resolve(spec: string): OmpModelIdentity | undefined;
+    roleThinking?(role: string): ThinkingLevel | undefined;
+  };
+};
+
 export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "completion", "settlement", "reset"] as const;
 export const MAX_SKILL_ROUTE_RULES = 16;
 export const MAX_SKILLS_PER_ROUTE = 8;

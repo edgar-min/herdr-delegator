@@ -1,12 +1,11 @@
 // Config responsibilities for the Herdr delegator extension.
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
+import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
 import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
@@ -248,26 +247,51 @@ export async function resolveSkillRoutes(
   return rules.filter((rule) => rule.surface === surface && boundaries.includes(rule.boundary));
 }
 
-export function modelIdentity(model: ExtensionContext["model"]): { provider: string; model: string } {
+export function modelIdentity(model: OmpModelIdentity | undefined): { provider: string; model: string } {
   if (!model || typeof model.provider !== "string" || typeof model.id !== "string") {
     throw new ContractError("model_role_unresolved", "The configured OMP role did not resolve to a concrete model.", "model_verify");
   }
   return { provider: model.provider, model: model.id };
 }
 
+/**
+ * The thinking level the OMP role itself is bound to, when the bridge observed
+ * one. A role configured as `provider/model:medium` carries `medium`; a role
+ * with no `:level` suffix carries nothing.
+ */
+export function roleBoundThinking(ctx: OmpModelContext, role: string): ThinkingLevel | undefined {
+  const level = ctx.models.roleThinking?.(role);
+  return isThinkingLevel(level) ? level : undefined;
+}
+
+/**
+ * The level a profile actually launches with, in descending authority:
+ * an explicit delegator configuration, then the level the OMP role binds, then
+ * the live session level. `inherit` names the absence of a delegator opinion,
+ * not an instruction to ignore the role — a role pinned to `:medium` is a
+ * decision the user already made, and adopting the live level over it silently
+ * upgrades or downgrades every launch that role governs.
+ */
+export function effectiveThinking(
+  profile: ModelProfile,
+  ctx: OmpModelContext,
+  currentThinking: ThinkingLevel,
+): ThinkingLevel {
+  if (profile.thinking !== "inherit") return profile.thinking;
+  return roleBoundThinking(ctx, profile.role) ?? currentThinking;
+}
+
 export async function resolveLaunchProfile(
   params: ToolParams,
   runPath: string,
   cwd: string,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
 ): Promise<{ launch: ResolvedLaunchProfile; orchestrator: Omit<OrchestratorRecord, "pane_id" | "observed_at"> }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
   const resolvedOrchestrator = modelIdentity(ctx.models.resolve(config.orchestrator.role));
   const currentOrchestrator = modelIdentity(ctx.models.current());
-  const orchestratorThinking = config.orchestrator.thinking === "inherit"
-    ? currentThinking
-    : config.orchestrator.thinking;
+  const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
   if (
     resolvedOrchestrator.provider !== currentOrchestrator.provider ||
     resolvedOrchestrator.model !== currentOrchestrator.model ||
@@ -304,7 +328,7 @@ export async function resolveLaunchProfile(
     requested_role: profile.role,
     expected_provider: workerModel.provider,
     expected_model: workerModel.model,
-    effective_thinking: profile.thinking === "inherit" ? currentThinking : profile.thinking,
+    effective_thinking: effectiveThinking(profile, ctx, currentThinking),
   };
   return {
     launch,
@@ -321,7 +345,7 @@ export async function resolveLaunchProfile(
 export async function resolveOrchestratorProfile(
   runPath: string,
   cwd: string,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
 ): Promise<{
   launch: Omit<TargetOrchestratorRecordWithBootstrapFacts,
@@ -334,18 +358,16 @@ export async function resolveOrchestratorProfile(
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
   const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
   const current = modelIdentity(ctx.models.current());
-  const effectiveThinking = config.orchestrator.thinking === "inherit"
-    ? currentThinking
-    : config.orchestrator.thinking;
+  const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
   if (
     resolved.provider !== current.provider ||
     resolved.model !== current.model ||
-    effectiveThinking !== currentThinking
+    orchestratorThinking !== currentThinking
   ) {
     throw orchestratorMismatchError(
       "The live caller ORCH identity",
       config.orchestrator.role,
-      { ...resolved, thinking: effectiveThinking },
+      { ...resolved, thinking: orchestratorThinking },
       { ...current, thinking: currentThinking },
     );
   }
@@ -354,7 +376,7 @@ export async function resolveOrchestratorProfile(
     requested_role: config.orchestrator.role,
     expected_provider: resolved.provider,
     expected_model: resolved.model,
-    effective_thinking: effectiveThinking,
+    effective_thinking: orchestratorThinking,
   };
   return { launch: profile, caller: profile };
 }

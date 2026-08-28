@@ -4,7 +4,7 @@
 
 - Package/plugin: `herdr-delegator` 1.2.0
 - Skill: `herdr-delegation` 1.2.0
-- Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`
+- Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, `herdr_friction`
 - Official runtime: OMP only
 - License: Apache-2.0
 
@@ -105,15 +105,23 @@ If the live session does not match the configured orchestrator role, mutations f
 
 Optional `skill_routing.rules` (at most 16) route installed skills to protocol boundaries. `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`; `surface` is `orch` or `worker`; each rule names 1–8 skills. The plugin ships no skill names — rules live in user, project, or run configuration, so any skill pack plugs in without touching the plugin. Matching routes are delivered deterministically as `skill_routes` plus an imperative `skill_routes_note` in tool results (`init`, `preflight`, terminal assignment results) and inside the worker dispatch prompt; the note names the `skill://<name>` resolution scheme. Routes are advisory only: they raise discovery reliability, never gate settlement or lifecycle, and never prove a skill ran.
 
-## Start
+Treat a routing rule like a dependency declaration: routed skill names become instructions executed inside your ORCH and worker sessions, so route only a skill pack you trust — or better, skills you wrote and vetted yourself. The routing layer is where this plugin compounds: a small set of boundary-matched skills (context inquiry at `plan`, review passes at `settlement`) measurably tightens delegation quality without touching the plugin.
 
-Invoke the bundled skill from an OMP session:
+## Start (first run)
+
+1. Install the plugin, then `/reload-plugins` (or start a new OMP session).
+2. Create a user-layer `herdr-delegator.json` with an absolute `storage.root`, and map `orchestrator.role` and each worker profile to OMP roles you actually have configured (`@plan`, `@default`, ...).
+3. Open Herdr and start OMP inside a Herdr pane — every guarded mutation requires the pane bridge and fails closed outside it.
+4. Run `/herdr-align` once. A fresh session rarely starts on the configured orchestrator role's model, and guarded calls fail closed with `orchestrator_model_mismatch` until the session is aligned; the command switches this session's model/thinking to the configured role and refreshes bridge attestation.
+5. Invoke the bundled skill and let ORCH drive:
 
 ```text
 /skill:herdr-delegation
 ```
 
-The ORCH chooses responsibilities, initializes a deterministic run, writes immutable assignment artifacts, dispatches them through MCP, verifies results, and performs recovery or closure.
+6. Optionally wire `skill_routing` rules to your trusted skills before the first real track — see above.
+
+The ORCH chooses responsibilities, initializes a deterministic run, writes immutable assignment artifacts, dispatches them through MCP, verifies results, and performs recovery or closure. Target orchestrators started by `herdr_track start_orchestrator` launch pre-aligned (`--model`/`--thinking` from the configured role), so `/herdr-align` is only a caller-session concern.
 
 ## Responsibility lanes
 
@@ -170,6 +178,8 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 
 `wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
 
+Dispatch is self-healing: a settlement that promotes the lane's FIFO head also dispatches it in the same guarded call, and a `wait` on a queued head of an idle lane dispatches it too. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane. `respond` on a queued assignment errors with `assignment_not_prompted` rather than silently succeeding.
+
 Assignment state is exactly:
 
 ```text
@@ -187,11 +197,21 @@ queued | prompting | working | blocked | completed | failed | ambiguous
 
 - `wake_orch`: assignment ID and boundary; worker doorbell to the run's recorded ORCH wake target.
 - `wake_peer`: peer lane ID; doorbell after a plan-authorized channel append.
+- `wake_worker`: own-lane ID; ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report — for decision-request workers that idled without a formal blocked state.
 - `notify_run`: target run coordinates, kind, and a one-line note ≤500 chars; orch-to-orch note for any cross-run need.
 
 The server composes every delivered text, resolves targets from run records, and transports messages as Herdr pane input. Delivery is a soft observation (`delivered`, `rejected_blocked`, `target_unresolved`, `failed`) — only invalid input errors — and every attempt is logged to the sending run's `a2a/messages.jsonl`.
 
-All calls include `track_id` and `run_id`. The server does not accept arbitrary run paths, Herdr targets, session paths, argv, commands, or generic close operations.
+### `herdr_friction`
+
+- `report`: standardized `kind` (`contract-gap`, `false-block`, `ambiguous-outcome`, `excessive-steps`, `doc-drift`, `defect`, `papercut`), `reporter` (`agent`/`human`), one-line `summary`, optional `tool`, `error_code`, bounded `evidence`, and run coordinates.
+- `list`: optional `kind`/`fingerprint` filter and `limit`; returns newest entries plus per-fingerprint counts.
+
+Dogfooding friction accumulates in a global append-only local log at `<agent-dir>/herdr-delegator/friction/friction.jsonl` (mode 600) — never in an external tracker; promoting curated reports to issues is a separate human-gated triage pass. The action skips the OMP fact bridge so a broken bridge stays reportable, and duplicate symptoms group by a digit-insensitive fingerprint. When the same non-retryable error code recurs in one server session, the failing result carries a one-line `friction_hint` inviting a single report — the nudge is the trigger; reporting every error is explicitly out of contract.
+
+To promote friction upstream, open a [friction issue](https://github.com/edgar-min/herdr-delegator/issues/new?template=friction.yml): copy `kind`, `summary`, `fingerprint`, and `evidence` from `herdr_friction {action: "list"}`, and review them for private paths first — the local log is unsanitized by design. A PR fixing dogfooded friction cites the same record in its template, so the tracker stays greppable by the exact taxonomy the tool records.
+
+All calls except `herdr_friction` include `track_id` and `run_id`. The server does not accept arbitrary run paths, Herdr targets, session paths, argv, commands, or generic close operations.
 
 ## Safety
 

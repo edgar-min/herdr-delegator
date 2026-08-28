@@ -61,6 +61,10 @@ ORCH picks `profile` for each assignment from the assignment's work characterist
 
 Cost-efficient small mechanical work routes to host OMP task/subagents, so no persistent lane profile exists for it.
 
+### Session alignment
+
+Guarded mutations fail closed with `orchestrator_model_mismatch` when this session's model or thinking does not match the configured `orchestrator.role` — a fresh OMP session rarely starts on that role's model. At track start, or on that error, ask the user to run `/herdr-align` once (a user-invoked OMP command from this plugin: it switches only this session's model/thinking to the configured role and refreshes bridge attestation), or to relaunch with the `omp --model`/`--thinking` values the error names. Target orchestrators started via `herdr_track start_orchestrator` launch pre-aligned and never need this.
+
 ### Skill routing
 
 An optional `skill_routing.rules` array (at most 16 rules) routes installed skills to protocol boundaries:
@@ -77,6 +81,8 @@ An optional `skill_routing.rules` array (at most 16 rules) routes installed skil
 ```
 
 `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`. `surface` is `orch` or `worker`. Each rule names 1–8 bounded skill names; the shipped configuration names none. Delivery is deterministic: `herdr_track init` returns `plan`/`authoring` (plus `reset` for a sibling reset) routes, `herdr_assignment preflight` returns `authoring` routes, the dispatch prompt carries `dispatch`/`completion` routes to the worker, and terminal assignment results carry `settlement` routes. Routes are advisory text only — never invocation proof, settlement gate, or authority.
+
+Route only trusted skills: routed names become instructions executed inside ORCH and worker sessions, so treat a routing rule like a dependency declaration. Prefer a vetted skill pack or skills the user wrote themselves, matched to the boundary they improve (context inquiry at `plan`, review at `settlement`). When no rules are configured, suggest this once during planning rather than silently proceeding forever without them.
 
 Launches remain fail-closed behind two gates:
 
@@ -172,7 +178,7 @@ Describe the complete assignment.
 - User-confirmed decision, or none
 ```
 
-Every list section contains bounded `- ` bullets. After dispatch, the file is immutable. The SHA-256 passed to MCP is named `instructions_sha256` because the single artifact is the worker's durable instruction contract.
+Every list section contains bounded `- ` bullets. The goal is one Markdown section of at most 4096 characters with no nested H1 heading; put detail into completion conditions or referenced documents. After dispatch, the file is immutable. The SHA-256 passed to MCP is named `instructions_sha256` because the single artifact is the worker's durable instruction contract.
 
 Workers append durable evidence and results only to `a2a/w<N>-report.md`. Completion requires:
 
@@ -184,7 +190,7 @@ status: completed
 
 or exactly one `status: failed` line in that block. MCP stores the full report hash and completion time in `a2a/delegation.json`; there is no separate contract or receipt file.
 
-## 6. Use the four MCP tools
+## 6. Use the five MCP tools
 
 The public MCP surface is exactly:
 
@@ -192,6 +198,7 @@ The public MCP surface is exactly:
 - `herdr_assignment`
 - `herdr_worker`
 - `herdr_message`
+- `herdr_friction`
 
 ### `herdr_track`
 
@@ -209,9 +216,11 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 - `wait`: run coordinates, `assignment_id`, optional `wait`.
 - `respond`: run coordinates, `assignment_id`, fresh `expected_state_change_seq`, and either bounded text or allowlisted keys.
 
+`respond` requires a freshly proved blocked worker; responding to a `queued` assignment errors with `assignment_not_prompted` instead of silently succeeding. For a worker that posted an `[ORCH Decision Request]` and idled without blocking, append the ruling to its report and send `herdr_message {action:"wake_worker"}`.
+
 `wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error; compose longer logical waits by repeating bounded calls, and prefer settling on worker wake signals over long polling loops.
 
-`add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends pointers to the canonical assignment and `protocol-worker.md`, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active.
+`add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends pointers to the canonical assignment and `protocol-worker.md`, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane instead of failing it. When a settlement promotes the FIFO head, the same guarded call dispatches the promoted assignment; a queued head on an idle lane is also dispatched by the next `wait` on it.
 
 `preflight` validates the canonical draft's grammar before immutability and returns the server-computed `instructions_sha256` of the exact validated bytes, bounded section counts, and any configured `authoring` skill routes. It never mutates the registry or any lane; an already-registered assignment returns its immutable state instead.
 
@@ -236,9 +245,17 @@ Use worker operations for lane observation and lifecycle only. Assignment delive
 
 - `wake_orch`: run coordinates, `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` — worker doorbell to the run's recorded ORCH wake target.
 - `wake_peer`: run coordinates, `to_worker_id` — doorbell to a registered peer lane after a plan-authorized channel append.
+- `wake_worker`: run coordinates, `to_worker_id` — ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report; for decision-request workers that idled without a formal blocked state.
 - `notify_run`: run coordinates, `to_track_id`, `to_run_id`, `kind` from `fact`/`bottleneck`/`request`/`handoff`, one-line `note` ≤500 chars — orch-to-orch note for any cross-run need, not only handoff.
 
 The server composes every delivered text, resolves targets from run records, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); only invalid input errors, and every attempt is appended to the sending run's `a2a/messages.jsonl`. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
+
+### `herdr_friction`
+
+- `report`: `kind` from `contract-gap`/`false-block`/`ambiguous-outcome`/`excessive-steps`/`doc-drift`/`defect`/`papercut`, `reporter` from `agent`/`human`, one-line `summary` ≤500 chars, optional `tool`, `error_code`, `evidence` ≤2000 chars, and run coordinates.
+- `list`: optional `kind`, `fingerprint`, `limit` — grouped inspection of prior reports.
+
+Reports append to a global local log (`<agent-dir>/herdr-delegator/friction/friction.jsonl`), never to an external tracker; promotion to issues is a separate human-gated triage pass. Report as `agent` only after resolving or abandoning a difficulty where the contract itself — not the call's input — was the obstacle; a `friction_hint` on a repeated error result marks such a moment. Never report every error. Transcribe a user-observed issue verbatim with `reporter: "human"`. Duplicate symptoms share a `fingerprint`; a report result's `prior_reports` shows how often the same symptom has already been recorded.
 
 ## 7. Completion is not closure
 
@@ -265,7 +282,14 @@ Workers self-resolve from their assignment, `plan.md`, canonical project documen
 
 ORCH independently reproduces material worker claims and runs integration verification once at the integration boundary. Record acceptance or recovery in `[ORCH Response]` and `evidence.md` when used.
 
-For a handoff, create a sibling run, preserve active or unsafe source lanes, revalidate inherited evidence, complete `templates/handoff.md`, and start the target with `herdr_track {action:"start_orchestrator"}`. The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended.
+A handoff needs no human intervention: the whole bootstrap is four tool-drivable steps run by the source ORCH.
+
+1. `herdr_track {action:"init"}` with the target `track_id`/`run_id` and the same canonical `cwd` (add `reset_of` for a reset sibling). Init lays out the deterministic run and its protocol documents.
+2. Write the target's `plan.md`, complete `templates/handoff.md` into the target run, and write `orchestrator-instructions.md` pointing at the handoff document. These are ordinary file writes; both `plan.md` and `orchestrator-instructions.md` must exist before start, and the instruction file is fingerprinted at first prompt and never replayed after change.
+3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md` and wake the source run via `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
+4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 7.
+
+The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended.
 
 The target's start prompt names the source ORCH wake target: the target wakes the source after handoff revalidation, a terminal boundary, or a decision request, and the source may wake the target via its registry `agent_name`. Both directions are the same bounded non-authoritative doorbell — run documents stay the only authority.
 

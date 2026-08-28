@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import { appendFile, lstat, readFile, realpath, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -13,7 +13,7 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type HerdrAssignmentInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 
 
 // ---------------------------------------------------------------------------
@@ -324,13 +324,13 @@ async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFact
   if (paneCandidates.length !== 1) throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane observation is absent or ambiguous.", "attest", "Inspect the inherited Herdr pane identity.");
   const tokensValue = paneCandidates[0].tokens;
   if (tokensValue === null || typeof tokensValue !== "object" || Array.isArray(tokensValue)) {
-    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane has no bootstrap metadata tokens.", "attest", "Refresh the OMP bootstrap bridge before mutation.");
+    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane has no bootstrap metadata tokens.", "attest", "Republish the bridge with /reload-plugins (or a new OMP session), then retry the identical call.", false, true);
   }
   const tokens = tokensValue as Record<string, unknown>;
   const namespacedKeys = Object.keys(tokens).filter((key) => key.startsWith(BOOTSTRAP_TOKEN_PREFIX)).sort();
   const expectedKeys = Object.values(BOOTSTRAP_TOKENS).sort();
   if (namespacedKeys.length !== expectedKeys.length || namespacedKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane bootstrap token set is incomplete or contains unexpected namespaced keys.", "attest", "Refresh metadata and bridge facts together.");
+    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane bootstrap token set is incomplete or contains unexpected namespaced keys.", "attest", "Republish the bridge with /reload-plugins (or a new OMP session), then retry the identical call.", false, true);
   }
   const metadataSession = tokens[BOOTSTRAP_TOKENS.sessionId];
   const officialSessionId = typeof metadataSession === "string" ? metadataSession : undefined;
@@ -406,10 +406,83 @@ function normalizeLegacyPhase(phase: string): ErrorPhase {
   return "validate";
 }
 
+// ---------------------------------------------------------------------------
+// Dogfooding friction log. Reports are global (agent-directory scoped), local,
+// and append-only: friction must stay recordable even when the run layout or
+// the OMP fact bridge is itself the broken part, so this path never touches
+// loadFacts or a DelegationStore. Promotion to an external tracker is a
+// deliberate human-gated triage step outside this server.
+// ---------------------------------------------------------------------------
+
+const FRICTION_LIST_DEFAULT = 50;
+const FRICTION_GROUP_LIMIT = 20;
+const FRICTION_HINT_THRESHOLD = 2;
+const MAX_TRACKED_ERROR_CODES = 64;
+const sessionErrorCounts = new Map<string, number>();
+
+function frictionLogPath(): string {
+  const configured = process.env.PI_CODING_AGENT_DIR;
+  const agentDirectory = configured ? path.resolve(configured) : path.join(homedir(), ".omp", "agent");
+  return path.join(agentDirectory, "herdr-delegator", "friction", "friction.jsonl");
+}
+
+/** Duplicate-grouping key: digit runs collapse so IDs and paths group together. */
+function frictionFingerprint(kind: string, tool: string | undefined, errorCode: string | undefined, summary: string): string {
+  const normalized = summary.toLowerCase().replace(/[0-9]+/g, "#").replace(/\s+/g, " ").trim();
+  return sha256(`${kind}\0${tool ?? ""}\0${errorCode ?? ""}\0${normalized}`).slice(0, 16);
+}
+
+function isFrictionRecord(value: unknown): value is FrictionRecord {
+  return isObject(value) && typeof value.at === "string" && typeof value.kind === "string" && typeof value.summary === "string" && typeof value.fingerprint === "string";
+}
+
+type FrictionScan = { total: number; malformed: number; counts: Map<string, number>; entries: FrictionRecord[] };
+
+/** Streaming scan; keeps only the newest `keep` matching entries in memory. */
+async function scanFriction(filter: { kind?: string; fingerprint?: string }, keep: number): Promise<FrictionScan> {
+  const scan: FrictionScan = { total: 0, malformed: 0, counts: new Map(), entries: [] };
+  try {
+    for await (const line of createInterface({ input: createReadStream(frictionLogPath(), "utf8"), crlfDelay: Infinity })) {
+      if (!line.trim()) continue;
+      let record: FrictionRecord;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (!isFrictionRecord(parsed)) throw new Error("unexpected record shape");
+        record = parsed;
+      } catch { scan.malformed += 1; continue; }
+      if (filter.kind && record.kind !== filter.kind) continue;
+      if (filter.fingerprint && record.fingerprint !== filter.fingerprint) continue;
+      scan.total += 1;
+      scan.counts.set(record.fingerprint, (scan.counts.get(record.fingerprint) ?? 0) + 1);
+      if (keep > 0) { scan.entries.push(record); if (scan.entries.length > keep) scan.entries.shift(); }
+    }
+  } catch (error: unknown) {
+    if (!(isObject(error) && error.code === "ENOENT")) throw new McpContractError("friction_log_unreadable", error instanceof Error ? error.message : "Friction log could not be read.", "storage", "Repair or remove the corrupt friction log before reporting.");
+  }
+  return scan;
+}
+
+/**
+ * Session-local repeat-error observation: the friction nudge only fires once a
+ * non-retryable code recurs — i.e. when a retry loop is evidenced — never on a
+ * first failure or on contract-legal retryable staleness.
+ */
+function frictionHintFor(tool: ToolName, code: string, retryable: boolean): string | undefined {
+  if (tool === "herdr_friction" || retryable) return undefined;
+  const count = (sessionErrorCounts.get(code) ?? 0) + 1;
+  if (sessionErrorCounts.has(code) || sessionErrorCounts.size < MAX_TRACKED_ERROR_CODES) sessionErrorCounts.set(code, count);
+  if (count < FRICTION_HINT_THRESHOLD) return undefined;
+  return `Error '${code}' has recurred ${count} times this session. If the contract itself — not this call's input — is the obstacle, record it once via herdr_friction {action:"report"} after resolving or abandoning this path; do not report every error.`;
+}
+
 function resultError(tool: ToolName, action: string, run: RunRef, error: unknown): McpResult {
-  if (error instanceof McpContractError) return { ok: false, tool, action, run, effect: error.ambiguousEffect ? "ambiguous" : "none", retryable: error.retryable, error: { code: error.code, phase: error.phase, message: error.message, recovery: error.recovery, ambiguous_effect: error.ambiguousEffect } };
-  if (error instanceof LegacyContractError) return { ok: false, tool, action, run, effect: error.ambiguousEffect ? "ambiguous" : "none", retryable: error.retryable, error: { code: error.code, phase: normalizeLegacyPhase(error.phase), message: error.message, recovery: error.recovery, ambiguous_effect: error.ambiguousEffect } };
-  return { ok: false, tool, action, run, effect: "none", retryable: false, error: { code: "internal_error", phase: "validate", message: error instanceof Error ? error.message : String(error), recovery: "Inspect stderr and canonical registries; do not repeat a mutation blindly.", ambiguous_effect: false } };
+  const failure = (code: string, phase: ErrorPhase, message: string, recovery: string, ambiguous: boolean, retryable: boolean): McpResult => {
+    const hint = frictionHintFor(tool, code, retryable);
+    return { ok: false, tool, action, run, effect: ambiguous ? "ambiguous" : "none", retryable, ...(hint ? { friction_hint: hint } : {}), error: { code, phase, message, recovery, ambiguous_effect: ambiguous } };
+  };
+  if (error instanceof McpContractError) return failure(error.code, error.phase, error.message, error.recovery, error.ambiguousEffect, error.retryable);
+  if (error instanceof LegacyContractError) return failure(error.code, normalizeLegacyPhase(error.phase), error.message, error.recovery, error.ambiguousEffect, error.retryable);
+  return failure("internal_error", "validate", error instanceof Error ? error.message : String(error), "Inspect stderr and canonical registries; do not repeat a mutation blindly.", false, false);
 }
 
 async function updateLaneFromWorker(store: DelegationStore, workerId: string, result: Pick<WorkerResult, "state" | "worker">): Promise<DelegationRegistry> {
@@ -559,6 +632,80 @@ export class CompositeTools {
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
   }
 
+  /**
+   * Shared assignment dispatch: prompt the lane's worker with the canonical
+   * assignment pointer, verify the prompted session, and settle if a completion
+   * block is already reported. Used by `add` and by FIFO promotion.
+   */
+  private async promptAssignment(store: DelegationStore, run: RunRef, workerId: string, assignmentId: string, agentName: string, paneId: string, until: string[], timeoutMs: number, warnings: string[]): Promise<DelegationRegistry> {
+    const snapshot = await store.read();
+    const record = snapshot.assignments[assignmentId];
+    if (!record) throw new McpContractError("assignment_artifact_missing", "Assignment vanished from the registry before dispatch.", "select", "Inspect the minimal registry before prompting.");
+    const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
+    const artifactPath = path.join(store.runPath, "a2a", "assignments", `${assignmentId}.md`);
+    const reportPath = path.join(store.runPath, "a2a", `${workerId}-report.md`);
+    const promptedAt = nowIso();
+    let registry = await store.mutate(timeoutMs, (next) => {
+      next.assignments[assignmentId].state = "prompting";
+      next.assignments[assignmentId].prompted_at = promptedAt;
+      next.assignments[assignmentId].updated_at = promptedAt;
+      next.lanes[workerId].state = "working";
+    });
+    const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker");
+    const pointer = `Assignment ${assignmentId}; responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}`;
+    try {
+      const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
+      if (prompted.warning) warnings.push(prompted.warning);
+    } catch (error) {
+      if (error instanceof McpContractError && error.ambiguousEffect) await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.assignments[assignmentId];
+        current.state = "ambiguous";
+        current.ambiguous_operation = "prompt";
+        current.updated_at = nowIso();
+      });
+      throw error;
+    }
+    const verified = await verifyPromptedWorker({ track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+    registry = await updateLaneFromWorker(store, workerId, verified);
+    const observedState = laneState(verified.state);
+    const seq = numberField(verified.worker, ["state_change_seq"]) ?? registry.lanes[workerId].state_change_seq;
+    registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      next.lanes[workerId].state = observedState;
+      next.lanes[workerId].state_change_seq = seq;
+      next.assignments[assignmentId].state = observedState === "blocked" ? "blocked" : "working";
+      next.assignments[assignmentId].updated_at = nowIso();
+    });
+    const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (progress) warnings.push(progress);
+    const beforeSettlement = registry.assignments[assignmentId].state;
+    registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId]);
+    const terminal = await reportTerminalObservation(this.adapter, registry, assignmentId, beforeSettlement, paneId);
+    if (terminal) warnings.push(terminal);
+    return registry;
+  }
+
+  /**
+   * FIFO promotion dispatch (dogfooded defect fix): a settlement that promotes
+   * a queued head must also deliver it, or the lane idles while its head stays
+   * queued forever. One promoted head is dispatched per guarded call; a chain
+   * of instant completions drains across subsequent calls.
+   */
+  private async dispatchPromotedHead(store: DelegationStore, run: RunRef, workerId: string, until: string[], timeoutMs: number, warnings: string[]): Promise<DelegationRegistry | undefined> {
+    const registry = await store.read();
+    const lane = registry.lanes[workerId];
+    const headId = lane?.active_assignment_id;
+    if (!lane || !headId || lane.state !== "idle" || registry.assignments[headId]?.state !== "queued") return undefined;
+    const live = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId });
+    const agentName = stringField(live.worker, ["agent_name"]);
+    const paneId = stringField(live.worker, ["root_pane_id"]);
+    if (!agentName || !paneId) {
+      warnings.push(`Promoted assignment ${headId} not dispatched: lane ${workerId} lacks canonical agent or pane coordinates.`);
+      return undefined;
+    }
+    warnings.push(`Promoted queued assignment ${headId} dispatched to ${workerId}.`);
+    return this.promptAssignment(store, run, workerId, headId, agentName, paneId, until, timeoutMs, warnings);
+  }
+
   async assignment(input: HerdrAssignmentInput): Promise<McpResult> {
     const run = runRef(input);
     try {
@@ -617,46 +764,10 @@ export class CompositeTools {
         const agentName = stringField(ensured.worker, ["agent_name"]);
         const paneId = stringField(ensured.worker, ["root_pane_id"]);
         if (!agentName || !paneId) throw new McpContractError("worker_identity_conflict", "Ensured worker lacks canonical agent or pane coordinates.", "attest", "Inspect the lifecycle registry before prompting.");
-        const promptedAt = nowIso();
-        registry = await store.mutate(timeout(input), (next) => {
-          next.assignments[input.assignment_id].state = "prompting";
-          next.assignments[input.assignment_id].prompted_at = promptedAt;
-          next.assignments[input.assignment_id].updated_at = promptedAt;
-          next.lanes[lane.worker_id].state = "working";
-        });
-        const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
-        const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker");
-        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}`;
         const warnings: string[] = [];
-        try {
-          const prompted = await this.adapter.prompt(agentName, pointer, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
-          if (prompted.warning) warnings.push(prompted.warning);
-        }
-        catch (error) {
-          if (error instanceof McpContractError && error.ambiguousEffect) await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-            const assignment = next.assignments[input.assignment_id];
-            assignment.state = "ambiguous";
-            assignment.ambiguous_operation = "prompt";
-            assignment.updated_at = nowIso();
-          });
-          throw error;
-        }
-        const verified = await verifyPromptedWorker({ track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, timeout_ms: timeout(input) });
-        registry = await updateLaneFromWorker(store, lane.worker_id, verified);
-        const observedState = laneState(verified.state);
-        const seq = numberField(verified.worker, ["state_change_seq"]) ?? lane.state_change_seq;
-        registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-          next.lanes[lane.worker_id].state = observedState;
-          next.lanes[lane.worker_id].state_change_seq = seq;
-          next.assignments[input.assignment_id].state = observedState === "blocked" ? "blocked" : "working";
-          next.assignments[input.assignment_id].updated_at = nowIso();
-        });
-        const progress = await this.adapter.reportObservation(paneId, input.responsibility_key, input.assignment_id, registry.assignments[input.assignment_id].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (progress) warnings.push(progress);
-        const beforeSettlement = registry.assignments[input.assignment_id].state;
-        registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
-        const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, paneId);
-        if (terminal) warnings.push(terminal);
+        const until = input.wait?.until ?? ["idle", "done", "blocked"];
+        registry = await this.promptAssignment(store, run, lane.worker_id, input.assignment_id, agentName, paneId, until, timeout(input), warnings);
+        registry = await this.dispatchPromotedHead(store, run, lane.worker_id, until, timeout(input), warnings) ?? registry;
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
         const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
@@ -666,7 +777,16 @@ export class CompositeTools {
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
-      if (assignment.state === "queued") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
+      if (assignment.state === "queued") {
+        if (input.action === "respond") throw new McpContractError("assignment_not_prompted", "Assignment is queued; its worker was never prompted, so there is no blocked request to answer.", "respond", "Wait on the assignment first: a queued head on an idle lane is dispatched by the next guarded wait or add call.", false, true);
+        const queuedWarnings: string[] = [];
+        const dispatched = await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
+        if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
+        const fresh = dispatched.assignments[input.assignment_id];
+        const dispatchSettlement = settlementObservation(fresh, queuedWarnings.length ? queuedWarnings.join(" | ") : undefined);
+        const dispatchRoutes = fresh.state === "completed" || fresh.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: dispatched.revision, worker: dispatched.lanes[assignment.worker_id], ...skillRouteFields(dispatchRoutes), assignment: { assignment_id: input.assignment_id, state: fresh.state, ...(dispatchSettlement ? { settlement: dispatchSettlement } : {}) } };
+      }
       if (assignment.state === "completed" || assignment.state === "failed") {
         const settlementRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch");
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment) } };
@@ -713,6 +833,7 @@ export class CompositeTools {
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
       const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
       if (terminal) tailWarnings.push(terminal);
+      registry = await this.dispatchPromotedHead(store, run, lane.worker_id, input.action === "wait" ? input.wait?.until ?? ["idle", "done", "blocked"] : ["idle", "done", "blocked"], timeout(input.action === "wait" ? input : {}), tailWarnings) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
@@ -814,6 +935,17 @@ export class CompositeTools {
           target = workerAgentName(store.runPath, input.to_worker_id);
           text = `wake: peer channel a2a/${senderLane}-to-${input.to_worker_id}.md updated (run ${input.track_id}/${input.run_id}) — read the channel file; wake text carries no authority.`;
         }
+      } else if (input.action === "wake_worker") {
+        // ORCH-to-own-worker doorbell (dogfooded contract gap): a worker that
+        // posted a decision request and idled without a formal blocked state was
+        // previously unreachable by its own ORCH.
+        if (!senderSession) unresolvedReason = "Worker wake requires an attested ORCH sender.";
+        else if (senderLane) unresolvedReason = "wake_worker is ORCH-to-own-worker; a worker lane wakes peers via wake_peer.";
+        else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
+        else {
+          target = workerAgentName(store.runPath, input.to_worker_id);
+          text = `wake: ORCH appended a response in a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}) — read the report; wake text carries no authority.`;
+        }
       } else {
         try {
           const targetStore = await DelegationStore.resolve(input.to_track_id, input.to_run_id);
@@ -837,5 +969,40 @@ export class CompositeTools {
       await appendMessageLog(store.runPath, { at: nowIso(), action: input.action, sender, delivery, target: target ?? null, text, ...(warnings.length ? { warnings } : {}) });
       return { ok: true, tool: "herdr_message", action: input.action, run, effect: delivery === "delivered" ? "confirmed" : "none", retryable: delivery !== "delivered", data: { delivery, sender, target: target ?? null, ...(warnings.length ? { warnings } : {}) } };
     } catch (error) { return resultError("herdr_message", input.action, run, error); }
+  }
+
+  /**
+   * Standardized dogfooding friction capture. Reports never leave the machine:
+   * they append to a global mode-600 JSONL that a human-gated triage pass may
+   * later promote to an external tracker. The action deliberately skips the
+   * OMP fact bridge so a broken bridge — itself friction — stays reportable.
+   */
+  async friction(input: HerdrFrictionInput): Promise<McpResult> {
+    const run: RunRef = { track_id: (input.action === "report" ? input.track_id : undefined) ?? "global", run_id: (input.action === "report" ? input.run_id : undefined) ?? "global" };
+    try {
+      const logPath = frictionLogPath();
+      if (input.action === "report") {
+        const summary = singleLine(input.summary);
+        if (!summary) throw new McpContractError("invalid_friction", "Summary is empty after single-line normalization.", "validate", "Provide one concrete observable symptom.");
+        const fingerprint = frictionFingerprint(input.kind, input.tool, input.error_code, summary);
+        const prior = (await scanFriction({ fingerprint }, 0)).counts.get(fingerprint) ?? 0;
+        const paneId = process.env.HERDR_PANE_ID;
+        const record: FrictionRecord = {
+          at: nowIso(), kind: input.kind, reporter: input.reporter, summary, fingerprint,
+          ...(input.tool ? { tool: input.tool } : {}),
+          ...(input.error_code ? { error_code: input.error_code } : {}),
+          ...(input.evidence ? { evidence: input.evidence } : {}),
+          ...(input.track_id ? { track_id: input.track_id } : {}),
+          ...(input.run_id ? { run_id: input.run_id } : {}),
+          ...(paneId && paneId.length <= 80 && BOUNDED_TOKEN_RE.test(paneId) ? { pane_id: paneId } : {}),
+        };
+        await mkdir(path.dirname(logPath), { recursive: true, mode: 0o700 });
+        await appendFile(logPath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+        return { ok: true, tool: "herdr_friction", action: input.action, run, effect: "confirmed", retryable: false, data: { fingerprint, prior_reports: prior, log_path: logPath } };
+      }
+      const scan = await scanFriction({ kind: input.kind, fingerprint: input.fingerprint }, input.limit ?? FRICTION_LIST_DEFAULT);
+      const groups = [...scan.counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, FRICTION_GROUP_LIMIT).map(([fingerprint, count]) => ({ fingerprint, count }));
+      return { ok: true, tool: "herdr_friction", action: input.action, run, effect: "none", retryable: false, data: { total: scan.total, ...(scan.malformed ? { malformed: scan.malformed } : {}), groups, entries: scan.entries, log_path: logPath } };
+    } catch (error) { return resultError("herdr_friction", input.action, run, error); }
   }
 }

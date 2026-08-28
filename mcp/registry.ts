@@ -113,7 +113,9 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
     return section.slice(prefix.length);
   });
   const goal = sectionValues[0].trim();
-  if (!goal || goal.length > 4_096 || goal.includes("\n# ")) throw new McpContractError("assignment_artifact_invalid", "Goal must be one bounded Markdown section.", "validate", "Repair the assignment goal.");
+  if (!goal) throw new McpContractError("assignment_artifact_invalid", "Goal section is empty.", "validate", "Repair the assignment goal.");
+  if (goal.length > 4_096) throw new McpContractError("assignment_artifact_invalid", `Goal is ${goal.length} characters; the limit is 4096.`, "validate", "Shorten the goal to at most 4096 characters; move detail into completion conditions or referenced documents.");
+  if (goal.includes("\n# ")) throw new McpContractError("assignment_artifact_invalid", "Goal contains a nested H1 heading.", "validate", "Keep the goal one H1-free Markdown section.");
   return {
     assignment_id: assignmentId,
     responsibility_key: responsibility,
@@ -266,17 +268,29 @@ export class DelegationStore {
     const artifact = await this.assignmentFile(assignmentId, responsibility, instructionsHash);
     let selected!: LaneSelection;
     await this.transaction(timeoutMs, async (registry) => {
+      const now = nowIso();
       const existing = registry.assignments[assignmentId];
       if (existing) {
         if (existing.instructions_sha256 !== instructionsHash || existing.responsibility_key !== responsibility) throw new McpContractError("assignment_duplicate_conflict", "Assignment ID already binds different immutable Markdown.", "select", "Allocate a new assignment ID.");
-        const lane = registry.lanes[existing.worker_id];
-        if (!lane) throw new McpContractError("responsibility_ambiguous", "Existing assignment has no uniquely owned lane.", "select", "Inspect the minimal registry; do not create a replacement.");
-        const ready = existing.state === "queued" && lane.active_assignment_id === assignmentId;
-        selected = { lane, assignment: existing, queued: !ready && existing.state === "queued", duplicate: !ready, artifact, revision: registry.revision + 1 };
-        return;
+        const boundLane = registry.lanes[existing.worker_id];
+        if (boundLane && boundLane.state !== "closed" && boundLane.state !== "failed") {
+          const ready = existing.state === "queued" && boundLane.active_assignment_id === assignmentId;
+          selected = { lane: boundLane, assignment: existing, queued: !ready && existing.state === "queued", duplicate: !ready, artifact, revision: registry.revision + 1 };
+          return;
+        }
+        // Rebind path (dogfooded defect): an assignment whose lane died before any
+        // prompt lost no work, so a re-add routes it to a live or fresh lane
+        // instead of terminally failing it. Dispatched history never rebinds.
+        if (existing.state !== "queued" && !(existing.state === "failed" && existing.prompted_at === undefined)) {
+          throw new McpContractError("responsibility_ambiguous", "Existing assignment already ran on a lane that is now closed or failed.", "select", "Allocate a new assignment ID for repeated work; never rebind dispatched history.");
+        }
+        if (boundLane) {
+          if (boundLane.active_assignment_id === assignmentId) delete boundLane.active_assignment_id;
+          boundLane.queued_assignment_ids = boundLane.queued_assignment_ids.filter((id) => id !== assignmentId);
+          boundLane.updated_at = now;
+        }
       }
 
-      const now = nowIso();
       let responsibilityRecord = registry.responsibilities[responsibility];
       if (!responsibilityRecord) {
         responsibilityRecord = { key: responsibility, worker_ids: [] };
@@ -297,8 +311,18 @@ export class DelegationStore {
         responsibilityRecord.worker_ids.push(workerId);
       }
       const queued = !!lane.active_assignment_id || lane.state === "working" || lane.state === "blocked" || lane.state === "resume-needed";
-      const assignment: AssignmentRecord = { assignment_id: assignmentId, responsibility_key: responsibility, worker_id: lane.worker_id, state: "queued", instructions_sha256: instructionsHash, created_at: now, updated_at: now };
-      registry.assignments[assignmentId] = assignment;
+      let assignment: AssignmentRecord;
+      if (existing) {
+        existing.worker_id = lane.worker_id;
+        existing.state = "queued";
+        existing.updated_at = now;
+        delete existing.ambiguous_operation;
+        delete existing.ambiguous_state_change_seq;
+        assignment = existing;
+      } else {
+        assignment = { assignment_id: assignmentId, responsibility_key: responsibility, worker_id: lane.worker_id, state: "queued", instructions_sha256: instructionsHash, created_at: now, updated_at: now };
+        registry.assignments[assignmentId] = assignment;
+      }
       if (queued) lane.queued_assignment_ids.push(assignmentId); else lane.active_assignment_id = assignmentId;
       lane.updated_at = now;
       selected = { lane, assignment, queued, duplicate: false, artifact, revision: registry.revision + 1 };

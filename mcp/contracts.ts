@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export const TOOL_NAMES = ["herdr_track", "herdr_assignment", "herdr_worker", "herdr_message"] as const;
+export const TOOL_NAMES = ["herdr_track", "herdr_assignment", "herdr_worker", "herdr_message", "herdr_friction"] as const;
 export const COORDINATE_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export const RESPONSIBILITY_RE = COORDINATE_RE;
 export const ASSIGNMENT_RE = /^A-(?!0+$)[0-9]{3,}$/;
@@ -23,6 +23,14 @@ export const OBSERVATION_SOURCE = "herdr-delegator:observation";
 export const MAX_MESSAGE_NOTE = 500;
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
 export const MESSAGE_KINDS = ["fact", "bottleneck", "request", "handoff"] as const;
+// Standardized dogfooding friction taxonomy. Reports go to a global append-only
+// local log, never to an external tracker; promotion to issues is a deliberate
+// human-gated triage step.
+export const FRICTION_KINDS = ["contract-gap", "false-block", "ambiguous-outcome", "excessive-steps", "doc-drift", "defect", "papercut"] as const;
+export const FRICTION_REPORTERS = ["agent", "human"] as const;
+export const MAX_FRICTION_SUMMARY = 500;
+export const MAX_FRICTION_EVIDENCE = 2_000;
+export const FRICTION_FINGERPRINT_RE = /^[a-f0-9]{16}$/;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
@@ -33,6 +41,21 @@ export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" |
 export type RunRef = { track_id: string; run_id: string };
 export type MessageBoundary = (typeof MESSAGE_BOUNDARIES)[number];
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
+export type FrictionKind = (typeof FRICTION_KINDS)[number];
+export type FrictionReporter = (typeof FRICTION_REPORTERS)[number];
+export type FrictionRecord = {
+  at: string;
+  kind: FrictionKind;
+  reporter: FrictionReporter;
+  summary: string;
+  fingerprint: string;
+  tool?: string;
+  error_code?: string;
+  evidence?: string;
+  track_id?: string;
+  run_id?: string;
+  pane_id?: string;
+};
 // Delivery is an observation, never a contract failure: a message tool call only
 // hard-errors on invalid input, so a broken channel stays visible instead of
 // silently killing the flow behind retryable errors.
@@ -199,6 +222,7 @@ export type McpResult<T = unknown> = {
   skill_routes_note?: string;
   data?: T;
   error?: { code: string; phase: ErrorPhase; message: string; recovery: string; ambiguous_effect: boolean };
+  friction_hint?: string;
 };
 
 const coordinate = z.string().regex(COORDINATE_RE);
@@ -245,7 +269,7 @@ export const herdrWorkerInputShape = {
 };
 export const herdrMessageInputShape = {
   ...run,
-  action: z.enum(["wake_orch", "wake_peer", "notify_run"]),
+  action: z.enum(["wake_orch", "wake_peer", "wake_worker", "notify_run"]),
   assignment_id: z.string().min(3).max(32).optional(),
   boundary: z.enum(MESSAGE_BOUNDARIES).optional(),
   to_worker_id: workerId.optional(),
@@ -253,6 +277,19 @@ export const herdrMessageInputShape = {
   to_run_id: coordinate.optional(),
   kind: z.enum(MESSAGE_KINDS).optional(),
   note: z.string().min(1).max(MAX_MESSAGE_NOTE).optional(),
+};
+export const herdrFrictionInputShape = {
+  action: z.enum(["report", "list"]),
+  kind: z.enum(FRICTION_KINDS).optional().describe("Standardized friction type. contract-gap: the grammar/schema cannot express a legitimate intent. false-block: a guard rejected a correct action. ambiguous-outcome: a result left the effective state or next step unclear. excessive-steps: one logical operation needed too many calls. doc-drift: documented behavior disagrees with observed behavior. defect: outright wrong behavior. papercut: any other observed annoyance."),
+  reporter: z.enum(FRICTION_REPORTERS).optional().describe("agent: autonomous observation by the calling agent. human: a user-observed issue transcribed on the user's behalf."),
+  summary: z.string().min(1).max(MAX_FRICTION_SUMMARY).optional().describe("One concrete single-line symptom; normalized for duplicate grouping."),
+  tool: boundedTokenSchema.optional().describe("Surface the friction concerns (a herdr_* tool, skill, doc, or CLI name)."),
+  error_code: boundedTokenSchema.optional(),
+  evidence: z.string().min(1).max(MAX_FRICTION_EVIDENCE).optional().describe("Bounded verbatim evidence: error output, the exact rejected input, or reproduction notes."),
+  track_id: coordinate.optional(),
+  run_id: coordinate.optional(),
+  fingerprint: z.string().regex(FRICTION_FINGERPRINT_RE).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
 };
 
 export const herdrTrackSchema = z.discriminatedUnion("action", [
@@ -276,13 +313,19 @@ export const herdrWorkerSchema = z.discriminatedUnion("action", [
 export const herdrMessageSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("wake_orch"), assignment_id: assignmentId, boundary: z.enum(MESSAGE_BOUNDARIES) }).strict(),
   z.object({ ...run, action: z.literal("wake_peer"), to_worker_id: workerId }).strict(),
+  z.object({ ...run, action: z.literal("wake_worker"), to_worker_id: workerId }).strict(),
   z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate, kind: z.enum(MESSAGE_KINDS), note: z.string().min(1).max(MAX_MESSAGE_NOTE) }).strict(),
+]);
+export const herdrFrictionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("report"), kind: z.enum(FRICTION_KINDS), reporter: z.enum(FRICTION_REPORTERS), summary: z.string().min(1).max(MAX_FRICTION_SUMMARY), tool: boundedTokenSchema.optional(), error_code: boundedTokenSchema.optional(), evidence: z.string().min(1).max(MAX_FRICTION_EVIDENCE).optional(), track_id: coordinate.optional(), run_id: coordinate.optional() }).strict(),
+  z.object({ action: z.literal("list"), kind: z.enum(FRICTION_KINDS).optional(), fingerprint: z.string().regex(FRICTION_FINGERPRINT_RE).optional(), limit: z.number().int().min(1).max(200).optional() }).strict(),
 ]);
 
 export type HerdrTrackInput = z.infer<typeof herdrTrackSchema>;
 export type HerdrAssignmentInput = z.infer<typeof herdrAssignmentSchema>;
 export type HerdrWorkerInput = z.infer<typeof herdrWorkerSchema>;
 export type HerdrMessageInput = z.infer<typeof herdrMessageSchema>;
+export type HerdrFrictionInput = z.infer<typeof herdrFrictionSchema>;
 
 export class McpContractError extends Error {
   constructor(public readonly code: string, message: string, public readonly phase: ErrorPhase, public readonly recovery: string, public readonly ambiguousEffect = false, public readonly retryable = false) { super(message); }

@@ -1,8 +1,7 @@
 // Worker responsibilities for the Herdr delegator extension.
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
-import type { FocusRestoration, Operation, RegistryRecord, SessionVerification, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
+import type { FocusRestoration, OmpModelContext, Operation, RegistryRecord, SessionVerification, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
 import { ContractError, DEDUPE_STATES, KEY_ALLOWLIST, MAX_TEXT_RESPONSE, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { canonicalInstruction, canonicalWorkerId, isFile, normalizeTimeout, resolveLaunchProfile, resolveRunCoordinate } from "./config";
 import type { BootstrapSessionVerification, CommandResult, OwnedFocus } from "./runtime";
@@ -88,7 +87,7 @@ async function verifyWorkerBootstrap(
 
 export async function ensureWorker(
   params: ToolParams,
-  ctx: ExtensionContext,
+  ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
   signal?: AbortSignal,
 ): Promise<WorkerResult> {

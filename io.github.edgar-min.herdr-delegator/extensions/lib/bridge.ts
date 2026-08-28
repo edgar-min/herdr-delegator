@@ -7,6 +7,7 @@ import path from "node:path";
 import type { ConfigSource, ThinkingLevel } from "./contracts";
 import { ROLE_RE, SHA256_RE, compactMessage, isObject } from "./contracts";
 import { isThinkingLevel, loadDelegatorConfig } from "./config";
+import { observeRoleThinking } from "./role-thinking";
 
 export const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
 // Freshness window a published pane-token set and fact nonce stay attestable for.
@@ -33,6 +34,13 @@ let activeBridgeLoop: AbortController | undefined;
 
 type ConcreteModel = { provider: string; model: string };
 
+/**
+ * A configured role as published. `thinking` is present only when the role is
+ * bound to an explicit `:level` suffix, so a consumer reading no field reads
+ * "this role imposes no level" — the same thing a pre-`thinking` bridge said.
+ */
+type RoleModel = ConcreteModel & { thinking?: ThinkingLevel };
+
 export type OmpFactBridgeV1 = {
   version: 1;
   session_id: string;
@@ -40,7 +48,7 @@ export type OmpFactBridgeV1 = {
   pane_id: string;
   cwd: string;
   current: ConcreteModel & { thinking: ThinkingLevel };
-  roles: Record<`@${string}`, ConcreteModel>;
+  roles: Record<`@${string}`, RoleModel>;
   config_sources: { scope: string; path: string; sha256: string }[];
   issued_at: string;
   nonce: string;
@@ -416,12 +424,14 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
       config.orchestrator.role,
       ...Object.values(config.worker_profiles).map((profile) => profile.role),
     ]);
-    const roles = {} as Record<`@${string}`, ConcreteModel>;
+    const roles = {} as Record<`@${string}`, RoleModel>;
     for (const role of roleAliases) {
       if (role.length > 80 || !ROLE_RE.test(role)) {
         throw new Error(`Configured role ${JSON.stringify(role)} is not bounded.`);
       }
-      roles[role as `@${string}`] = concreteModel(ctx.models.resolve(role), `role ${role}`);
+      const model = concreteModel(ctx.models.resolve(role), `role ${role}`);
+      const roleThinking = await observeRoleThinking(role);
+      roles[role as `@${string}`] = roleThinking === undefined ? model : { ...model, thinking: roleThinking };
     }
 
     const binary = await findHerdrBinary();
@@ -515,7 +525,7 @@ function sessionThinkingLevel(level: ThinkingLevel): SessionThinkingLevel {
 async function alignOrchestratorSession(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
-): Promise<string> {
+): Promise<{ text: string; degraded: boolean }> {
   const cwd = ctx.cwd;
   assertBoundedPath(cwd, "cwd");
   const { config } = await loadDelegatorConfig(undefined, cwd);
@@ -526,21 +536,39 @@ async function alignOrchestratorSession(
   const target = ctx.models.resolve(role);
   if (!target) throw new Error(`Configured orchestrator role ${role} did not resolve to a model.`);
   const expected = concreteModel(target, `role ${role}`);
+  // OMP resolves an unconfigured-but-recognized role by inheriting the default
+  // chain instead of failing, so on a machine without a modelRoles entry the
+  // "aligned" model is silently the default one (dogfooded on another user's
+  // environment). The extension API exposes no settings read, so the exact
+  // signal is identity with @default: a fallback always matches it, and the
+  // only false positive — a role deliberately mapped to the default model —
+  // makes the warning a harmless note.
+  let fallbackNote = "";
+  if (role !== "@default") {
+    const defaultTarget = ctx.models.resolve("@default");
+    const defaultIdentity = defaultTarget ? concreteModel(defaultTarget, "role @default") : undefined;
+    if (defaultIdentity && defaultIdentity.provider === expected.provider && defaultIdentity.model === expected.model) {
+      fallbackNote = ` WARNING: ${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then rerun /herdr-align.`;
+    }
+  }
   const live = concreteModel(ctx.models.current(), "current model");
   const liveThinking = pi.getThinkingLevel();
   if (!isThinkingLevel(liveThinking)) {
     throw new Error("OMP did not expose a bounded session thinking level.");
   }
-  // `inherit` means the configured role imposes no thinking level of its own, so
-  // the live level is already the expected one and alignment leaves it alone.
+  // `inherit` means the delegator config imposes no level, not that the role
+  // imposes none: a role written as `provider/model:medium` binds medium, and
+  // aligning to the live level instead would silently launch the orchestrator at
+  // a grade the user never chose. Only a role that binds nothing falls through
+  // to the live level, which is what `inherit` did before roles were observable.
   const expectedThinking: ThinkingLevel = config.orchestrator.thinking === "inherit"
-    ? liveThinking
+    ? (await observeRoleThinking(role)) ?? liveThinking
     : config.orchestrator.thinking;
   const modelAligned = expected.provider === live.provider && expected.model === live.model;
   const previous = `${live.provider}/${live.model} thinking=${liveThinking}`;
   const next = `${expected.provider}/${expected.model} thinking=${expectedThinking}`;
   if (modelAligned && expectedThinking === liveThinking) {
-    return `herdr-align: already aligned with ${role} — ${next}.`;
+    return { text: `herdr-align: already aligned with ${role} — ${next}.${fallbackNote}`, degraded: !!fallbackNote };
   }
 
   await ctx.waitForIdle();
@@ -561,7 +589,7 @@ async function alignOrchestratorSession(
   }
   // Republish immediately so the alignment is attestable without waiting for the next tick.
   await refreshOmpBridge(pi, ctx);
-  return `herdr-align: ${previous} -> ${next} (role ${role}); bridge attestation refreshed.`;
+  return { text: `herdr-align: ${previous} -> ${next} (role ${role}); bridge attestation refreshed.${fallbackNote}`, degraded: !!fallbackNote };
 }
 
 function registerAlignCommand(pi: ExtensionAPI): void {
@@ -569,7 +597,8 @@ function registerAlignCommand(pi: ExtensionAPI): void {
     description: "Switch this session's model and thinking to the configured Herdr orchestrator role",
     handler: async (_args, ctx) => {
       try {
-        ctx.ui.notify(compactMessage(await alignOrchestratorSession(pi, ctx), "herdr-align completed."), "info");
+        const aligned = await alignOrchestratorSession(pi, ctx);
+        ctx.ui.notify(compactMessage(aligned.text, "herdr-align completed."), aligned.degraded ? "warning" : "info");
       } catch (error) {
         const message = compactMessage(
           error instanceof Error ? error.message : error,
