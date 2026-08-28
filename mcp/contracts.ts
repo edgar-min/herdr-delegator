@@ -17,12 +17,16 @@ export const MAX_TIMEOUT_MS = 300_000;
 // single-call wait below that bound; longer logical waits are composed by
 // repeating bounded `wait` calls.
 export const MAX_EFFECTIVE_WAIT_MS = 25_000;
-export const MAX_RESPONSE_TEXT = 8_000;
 export const DELEGATION_VERSION = 1 as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
-export const MAX_MESSAGE_NOTE = 500;
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
-export const MESSAGE_KINDS = ["fact", "bottleneck", "request", "handoff"] as const;
+// Inter-run conversation (identity/comms redesign, decisions 10-12). A doorbell
+// never carries content, so `notify_run` carries no payload at all: the sender
+// ORCH appends its entry — kind, note, and any bounded body — to the
+// sender-owned inter-run channel document, and the bell only points at it. The
+// documented entry kinds live in the skill, not in this schema, because the
+// document is the authority and the server never parses it.
+
 // Standardized dogfooding friction taxonomy. Reports go to a global append-only
 // local log, never to an external tracker; promotion to issues is a deliberate
 // human-gated triage step.
@@ -46,13 +50,12 @@ const MANDATE_TRANSPORT_ITEMS = 256;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
-export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "respond" | "settlement" | "resume" | "close";
+export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "settlement" | "resume" | "close";
 export type AssignmentState = "queued" | "prompting" | "working" | "blocked" | "completed" | "failed" | "ambiguous";
 export type LaneState = "starting" | "idle" | "working" | "blocked" | "resume-needed" | "closing" | "closed" | "failed";
 export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto";
 export type RunRef = { track_id: string; run_id: string };
 export type MessageBoundary = (typeof MESSAGE_BOUNDARIES)[number];
-export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export type FrictionKind = (typeof FRICTION_KINDS)[number];
 export type FrictionReporter = (typeof FRICTION_REPORTERS)[number];
 export type FrictionRecord = {
@@ -150,7 +153,7 @@ export type AssignmentRecord = {
   elapsed_ms?: number;
   token_usage?: TokenUsageObservation;
   advisory_unowned_changes?: AdvisoryUnownedChanges;
-  ambiguous_operation?: "prompt" | "respond" | "resume";
+  ambiguous_operation?: "prompt" | "resume";
   ambiguous_state_change_seq?: number;
   created_at: string;
   updated_at: string;
@@ -305,14 +308,12 @@ export const herdrTrackInputShape = {
 };
 export const herdrAssignmentInputShape = {
   ...run,
-  action: z.enum(["add", "preflight", "wait", "respond"]),
+  action: z.enum(["add", "preflight", "wait"]),
   assignment_id: z.string().min(3).max(32),
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
   separation: separation.optional(),
   wait,
-  expected_state_change_seq: z.number().int().nonnegative().optional(),
-  response: z.unknown().optional(),
 };
 export const herdrWorkerInputShape = {
   ...run,
@@ -331,8 +332,6 @@ export const herdrMessageInputShape = {
   to_worker_id: workerId.optional(),
   to_track_id: coordinate.optional(),
   to_run_id: coordinate.optional(),
-  kind: z.enum(MESSAGE_KINDS).optional(),
-  note: z.string().min(1).max(MAX_MESSAGE_NOTE).optional(),
 };
 export const herdrFrictionInputShape = {
   action: z.enum(["report", "list"]),
@@ -359,7 +358,6 @@ export const herdrAssignmentSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), wait }).strict(),
   z.object({ ...run, action: z.literal("preflight"), assignment_id: assignmentId, responsibility_key: coordinate }).strict(),
   z.object({ ...run, action: z.literal("wait"), assignment_id: assignmentId, wait }).strict(),
-  z.object({ ...run, action: z.literal("respond"), assignment_id: assignmentId, expected_state_change_seq: z.number().int().nonnegative(), response: z.discriminatedUnion("kind", [z.object({ kind: z.literal("text"), text: z.string().min(1).max(MAX_RESPONSE_TEXT) }).strict(), z.object({ kind: z.literal("keys"), keys: z.array(z.enum(["enter", "esc", "up", "down", "left", "right", "tab", "shift+tab", "y", "n"])).min(1).max(32) }).strict()]) }).strict(),
 ]);
 export const herdrWorkerSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("list"), responsibility_key: coordinate.optional() }).strict(),
@@ -371,7 +369,7 @@ export const herdrMessageSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("wake_orch"), assignment_id: assignmentId, boundary: z.enum(MESSAGE_BOUNDARIES) }).strict(),
   z.object({ ...run, action: z.literal("wake_peer"), to_worker_id: workerId }).strict(),
   z.object({ ...run, action: z.literal("wake_worker"), to_worker_id: workerId }).strict(),
-  z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate, kind: z.enum(MESSAGE_KINDS), note: z.string().min(1).max(MAX_MESSAGE_NOTE) }).strict(),
+  z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate }).strict(),
 ]);
 export const herdrFrictionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("report"), kind: z.enum(FRICTION_KINDS), reporter: z.enum(FRICTION_REPORTERS), summary: z.string().min(1).max(MAX_FRICTION_SUMMARY), tool: boundedTokenSchema.optional(), error_code: boundedTokenSchema.optional(), evidence: z.string().min(1).max(MAX_FRICTION_EVIDENCE).optional(), track_id: coordinate.optional(), run_id: coordinate.optional() }).strict(),

@@ -1,7 +1,7 @@
 // Contracts responsibilities for the Herdr delegator extension.
 import { createHash } from "node:crypto";
 
-export const OPERATIONS = ["ensure_worker", "prompt_wait", "inspect_worker", "resolve_block", "close_worker"] as const;
+export const OPERATIONS = ["ensure_worker", "prompt_wait", "inspect_worker", "close_worker"] as const;
 
 export const WORKER_RE = /^w[1-9][0-9]*$/i;
 
@@ -30,32 +30,6 @@ export const DEDUPE_STATES: Record<string, true> = {
   blocked: true,
 };
 
-export const ALLOWED_KEYS = [
-  "enter",
-  "esc",
-  "up",
-  "down",
-  "left",
-  "right",
-  "tab",
-  "shift+tab",
-  "y",
-  "n",
-] as const;
-
-export const KEY_ALLOWLIST: Record<string, true> = {
-  enter: true,
-  esc: true,
-  up: true,
-  down: true,
-  left: true,
-  right: true,
-  tab: true,
-  "shift+tab": true,
-  y: true,
-  n: true,
-};
-
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
 export const MIN_TIMEOUT_MS = 1_000;
@@ -67,8 +41,6 @@ export const LOCK_STALE_MS = MAX_TIMEOUT_MS + 30_000;
 export const LOCK_WAIT_MAX_MS = 5_000;
 
 const MAX_ERROR_MESSAGE = 500;
-
-export const MAX_TEXT_RESPONSE = 8_000;
 
 export const REGISTRY_OWNER = "herdr-delegator";
 
@@ -315,7 +287,6 @@ export type RegistryRecord = {
   state_change_seq?: number;
   instruction_path?: string;
   prompt_sha256?: string;
-  resolving_state_change_seq?: number;
   owner: typeof REGISTRY_OWNER;
   created_tab: boolean;
   config_sources: ConfigSource[];
@@ -386,7 +357,6 @@ export type ToolParams = {
   instruction_path?: unknown;
   output_lines?: unknown;
   expected_state_change_seq?: unknown;
-  response?: unknown;
   profile?: unknown;
   responsibility_key?: unknown;
 };

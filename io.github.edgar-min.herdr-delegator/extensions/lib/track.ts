@@ -1120,7 +1120,7 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. After handoff revalidation, a terminal boundary, or a decision request in orchestrator-report.md, send one bounded herdr_message {action:"notify_run"} to the source run named in handoff.md.`;
+      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<track_id>_<run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
       const prompted = await runHerdr(
         binary,
         [

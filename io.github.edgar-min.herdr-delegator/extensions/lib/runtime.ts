@@ -178,7 +178,6 @@ function isRegistry(value: unknown): value is Registry {
     const optionalNumbers = [
       record.revision,
       record.state_change_seq,
-      record.resolving_state_change_seq,
       record.last_activity_revision,
     ];
     return (

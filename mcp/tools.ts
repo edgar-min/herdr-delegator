@@ -8,7 +8,7 @@ import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
-import { closeWorker, ensureWorker, inspectWorker, resolveBlock, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
+import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
@@ -88,6 +88,35 @@ function singleLine(value: string): string { return value.replace(/[\r\n\t\u0000
 /** Deterministic worker agent name; mirrors extensions/lib/worker.ts. */
 function workerAgentName(runPath: string, workerId: string): string {
   return `herdr-${workerId}-${sha256(`${runPath}\0${workerId}`).slice(0, 12)}`;
+}
+
+/**
+ * Sender-owned inter-run channel document (decision 12). Isomorph of the peer
+ * channel file `a2a/w<N>-to-w<M>.md`: directional, append-only, and owned by the
+ * run that writes it, so no ORCH ever writes inside another run's directory —
+ * the counterpart's ack is an append to its own reverse channel plus a bell
+ * back. `_` cannot occur in a run coordinate, so `<track>_<run>` parses back
+ * unambiguously.
+ */
+export function interRunChannelPath(runPath: string, toTrackId: string, toRunId: string): string {
+  return path.join(runPath, "a2a", `orch-to-${toTrackId}_${toRunId}.md`);
+}
+
+/**
+ * A doorbell may only point at a document that already exists: a bell with
+ * nothing behind it is the silent failure this design exists to prevent, so a
+ * missing or empty channel document is rejected as caller input, not reported as
+ * a soft delivery outcome.
+ */
+async function readChannelDocument(channelPath: string): Promise<{ sha256: string; bytes: number }> {
+  let contents: Buffer;
+  try { contents = await readFile(channelPath); }
+  catch (error: unknown) {
+    if (isObject(error) && error.code === "ENOENT") throw new McpContractError("channel_document_missing", "The sender-owned inter-run channel document does not exist, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first — one heading with the ISO timestamp, the kind (fact, bottleneck, request, or handoff) and your run coordinates, then the note — and ring the bell after the append.`);
+    throw new McpContractError("channel_document_unreadable", "The inter-run channel document cannot be read safely.", "storage", "Inspect the channel document; never ring a bell for a document you cannot read.");
+  }
+  if (!contents.byteLength || !contents.toString("utf8").trim()) throw new McpContractError("channel_document_empty", "The inter-run channel document is empty, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first, then ring the bell.`);
+  return { sha256: sha256(contents), bytes: contents.byteLength };
 }
 function field(value: unknown, names: readonly string[]): unknown {
   if (!value || typeof value !== "object") return undefined;
@@ -435,7 +464,6 @@ function normalizeLegacyPhase(phase: string): ErrorPhase {
   if (phase.includes("bootstrap") || phase.includes("attest")) return "attest";
   if (phase.includes("prompt")) return "prompt";
   if (phase.includes("wait") || phase.includes("inspect")) return "wait";
-  if (phase.includes("respond") || phase.includes("block")) return "respond";
   if (phase.includes("session") || phase.includes("resume")) return "resume";
   if (phase.includes("close")) return "close";
   if (phase.includes("registry") || phase.includes("storage") || phase.includes("run")) return "storage";
@@ -995,15 +1023,14 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
       }
 
-      // wait/respond are guarded run-command ops (they respond and dispatch
-      // promoted heads): only the run's born ORCH session may issue them.
+      // `wait` is a guarded run-command op (it dispatches promoted heads), so
+      // only the run's born ORCH session may issue it.
       const commandFacts = await loadFacts(this.adapter);
       await assertOrchCommand(store, commandFacts.facts);
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
       if (assignment.state === "queued") {
-        if (input.action === "respond") throw new McpContractError("assignment_not_prompted", "Assignment is queued; its worker was never prompted, so there is no blocked request to answer.", "respond", "Wait on the assignment first: a queued head on an idle lane is dispatched by the next guarded wait or add call.", false, true);
         const queuedWarnings: string[] = [];
         const dispatched = await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
         if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
@@ -1018,33 +1045,14 @@ export class CompositeTools {
       }
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");
-      const inspected = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, ...(input.action === "wait" ? { timeout_ms: timeout(input) } : {}) });
+      const inspected = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, timeout_ms: timeout(input) });
       registry = await updateLaneFromWorker(store, lane.worker_id, inspected);
       const tailWarnings: string[] = [];
-      let waitTimedOut = false;
-      if (input.action === "wait") {
-        const agentName = stringField(inspected.worker, ["agent_name"]);
-        if (!agentName) throw new McpContractError("worker_identity_conflict", "Assignment lane has no canonical agent name.", "wait", "Reconcile lifecycle identity before waiting.");
-        const waited = await this.adapter.wait(agentName, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
-        waitTimedOut = waited.timedOut === true;
-        if (waited.warning) tailWarnings.push(waited.warning);
-      } else {
-        const currentLane = registry.lanes[lane.worker_id];
-        if (currentLane.state !== "blocked") throw new McpContractError("agent_blocked", "Worker is not freshly proved blocked.", "respond", "Inspect and respond only at the latest blocked sequence.", false, true);
-        if (currentLane.state_change_seq !== input.expected_state_change_seq) throw new McpContractError("stale_state_change_seq", "Blocked response sequence is stale.", "respond", "Inspect and use the exact latest sequence.", false, true);
-        try {
-          await resolveBlock({ operation: "resolve_block", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, expected_state_change_seq: input.expected_state_change_seq, response: input.response });
-        } catch (error) {
-          if (error instanceof LegacyContractError && error.ambiguousEffect) await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-            const current = next.assignments[input.assignment_id];
-            current.state = "ambiguous";
-            current.ambiguous_operation = "respond";
-            current.ambiguous_state_change_seq = input.expected_state_change_seq;
-            current.updated_at = nowIso();
-          });
-          throw error;
-        }
-      }
+      const agentName = stringField(inspected.worker, ["agent_name"]);
+      if (!agentName) throw new McpContractError("worker_identity_conflict", "Assignment lane has no canonical agent name.", "wait", "Reconcile lifecycle identity before waiting.");
+      const waited = await this.adapter.wait(agentName, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
+      const waitTimedOut = waited.timedOut === true;
+      if (waited.warning) tailWarnings.push(waited.warning);
       const finalInspect = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id });
       registry = await updateLaneFromWorker(store, lane.worker_id, finalInspect);
       registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
@@ -1056,11 +1064,11 @@ export class CompositeTools {
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
       const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
       if (terminal) tailWarnings.push(terminal);
-      registry = await this.dispatchPromotedHead(store, run, lane.worker_id, input.action === "wait" ? input.wait?.until ?? ["idle", "done", "blocked"] : ["idle", "done", "blocked"], timeout(input.action === "wait" ? input : {}), tailWarnings) ?? registry;
+      registry = await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
@@ -1144,6 +1152,7 @@ export class CompositeTools {
       let target: string | undefined;
       let text = "";
       let unresolvedReason: string | undefined;
+      let channelObservation: { path: string; sha256: string; bytes: number } | undefined;
       if (input.action === "wake_orch") {
         const birth = latestBirth(registry);
         if (!birth) unresolvedReason = "Run has no ORCH birth record; birth is recorded at ORCH spawn or by its first guarded command.";
@@ -1173,14 +1182,21 @@ export class CompositeTools {
           text = `wake: ORCH appended a response in a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}) — read the report; wake text carries no authority.`;
         }
       } else {
-        try {
+        // notify_run is a pure bell (decision 12): the conversation itself lives
+        // in the sender-owned inter-run channel document, and the bell may only
+        // point at an entry that is already durable.
+        const channelPath = interRunChannelPath(store.runPath, input.to_track_id, input.to_run_id);
+        const channel = await readChannelDocument(channelPath);
+        channelObservation = { path: channelPath, sha256: channel.sha256, bytes: channel.bytes };
+        if (senderLane) unresolvedReason = "notify_run is ORCH-to-ORCH; a worker lane escalates to its own ORCH instead of addressing another run.";
+        else try {
           const targetStore = await DelegationStore.resolve(input.to_track_id, input.to_run_id);
           const birth = latestBirth(await targetStore.read());
           if (!birth) unresolvedReason = `Run ${input.to_track_id}/${input.to_run_id} has no ORCH birth record yet.`;
           else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Target run's ORCH is the caller; a note to yourself is never delivered.";
           else target = birth.pane_id;
         } catch (error) { unresolvedReason = `Target run unresolved: ${error instanceof Error ? error.message : String(error)}`; }
-        text = `orch note (${input.kind}) from ${input.track_id}/${input.run_id}: ${singleLine(input.note)} — non-authoritative; verify against that run's documents.`;
+        text = `channel: ${channelPath} sha256=${channel.sha256} (${channel.bytes} bytes, from ${input.track_id}/${input.run_id}) — read the inter-run channel document; this bell carries no content.`;
       }
 
       let delivery: MessageDelivery;
@@ -1194,7 +1210,7 @@ export class CompositeTools {
         }
       }
       await appendMessageLog(store.runPath, { at: nowIso(), action: input.action, sender, delivery, target: target ?? null, text, ...(warnings.length ? { warnings } : {}) });
-      return { ok: true, tool: "herdr_message", action: input.action, run, effect: delivery === "delivered" ? "confirmed" : "none", retryable: delivery !== "delivered", data: { delivery, sender, target: target ?? null, ...(warnings.length ? { warnings } : {}) } };
+      return { ok: true, tool: "herdr_message", action: input.action, run, effect: delivery === "delivered" ? "confirmed" : "none", retryable: delivery !== "delivered", data: { delivery, sender, target: target ?? null, ...(channelObservation ? { channel: channelObservation } : {}), ...(warnings.length ? { warnings } : {}) } };
     } catch (error) { return resultError("herdr_message", input.action, run, error); }
   }
 

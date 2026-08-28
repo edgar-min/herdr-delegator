@@ -69,7 +69,7 @@ Cost-efficient small mechanical work routes to host OMP task/subagents, so no pe
 
 A configured role name that OMP recognizes but no `modelRoles` entry resolves inherits the default chain silently — a planning-grade name pre-aligning a default-grade model. The `open`/spawn preflight warns without blocking and returns the warning in `data.warnings`; report it to the user instead of dropping it.
 
-Command singularity: a run's ORCH identity is its birth-record chain in tool-owned `a2a/delegation.json`. `herdr_track open` is the only path that births an ORCH for a new track; legacy `start_orchestrator` records a birth for an `init` run, and on a legacy run with no birth yet the first attested guarded command (assignment `add`/`wait`/`respond`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`, a session from a retired generation fails with `stale_orch_generation`, and the session that opened the track fails with `creator_session_retired`. One run has exactly one commanding ORCH — never command a run another session already commands.
+Command singularity: a run's ORCH identity is its birth-record chain in tool-owned `a2a/delegation.json`. `herdr_track open` is the only path that births an ORCH for a new track; legacy `start_orchestrator` records a birth for an `init` run, and on a legacy run with no birth yet the first attested guarded command (assignment `add`/`wait`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`, a session from a retired generation fails with `stale_orch_generation`, and the session that opened the track fails with `creator_session_retired`. One run has exactly one commanding ORCH — never command a run another session already commands.
 
 ### Skill routing
 
@@ -286,9 +286,8 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 - `preflight`: run coordinates, `assignment_id`, `responsibility_key`.
 - `add`: run coordinates, `assignment_id`, `responsibility_key`, exact `instructions_sha256`, optional `separation`, optional `wait`.
 - `wait`: run coordinates, `assignment_id`, optional `wait`.
-- `respond`: run coordinates, `assignment_id`, fresh `expected_state_change_seq`, and either bounded text or allowlisted keys.
 
-`respond` requires a freshly proved blocked worker; responding to a `queued` assignment errors with `assignment_not_prompted` instead of silently succeeding. For a worker that posted an `[ORCH Decision Request]` and idled without blocking, append the ruling to its report and send `herdr_message {action:"wake_worker"}`.
+There is no response action. Answering a worker — a decision request, a ruling, or a worker genuinely blocked on input — is always the same two steps: append an `[ORCH Response]` block to `a2a/w<N>-report.md`, then ring `herdr_message {action:"wake_worker"}`. The wake is delivered as pane input, so it reaches an idle worker and a truly input-waiting one alike. The report append is the authority; the wake is only the pointer.
 
 `wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error; compose longer logical waits by repeating bounded calls, and prefer settling on worker wake signals over long polling loops.
 
@@ -302,7 +301,7 @@ Assignment state is exactly:
 queued | prompting | working | blocked | completed | failed | ambiguous
 ```
 
-A wait timeout is a no-effect observation surfaced as a `timed_out` result. A potentially effected prompt, response, or resume converges on `ambiguous` and must be inspected before any recovery.
+A wait timeout is a no-effect observation surfaced as a `timed_out` result. A potentially effected prompt or resume converges on `ambiguous` and must be inspected before any recovery.
 
 ### `herdr_worker`
 
@@ -311,16 +310,40 @@ A wait timeout is a no-effect observation surfaced as a `timed_out` result. A po
 - `resume`: run coordinates, `worker_id`, exact `expected_session_id`.
 - `close`: run coordinates, `worker_id`, exact `expected_session_id`, fresh `expected_state_change_seq`.
 
-Use worker operations for lane observation and lifecycle only. Assignment delivery and blocked responses belong to `herdr_assignment`.
+Use worker operations for lane observation and lifecycle only. Assignment delivery belongs to `herdr_assignment`; answering a worker belongs to its report plus `wake_worker`.
 
 ### `herdr_message`
 
 - `wake_orch`: run coordinates, `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` — worker doorbell to the run's born ORCH (latest birth record).
 - `wake_peer`: run coordinates, `to_worker_id` — doorbell to a registered peer lane after a plan-authorized channel append.
 - `wake_worker`: run coordinates, `to_worker_id` — ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report; for decision-request workers that idled without a formal blocked state.
-- `notify_run`: run coordinates, `to_track_id`, `to_run_id`, `kind` from `fact`/`bottleneck`/`request`/`handoff`, one-line `note` ≤500 chars — orch-to-orch note for any cross-run need, not only handoff.
+- `notify_run`: run coordinates, `to_track_id`, `to_run_id` — ORCH-to-ORCH bell, refused unless this run's inter-run channel document for that target already exists.
 
-The server composes every delivered text, resolves targets from ORCH birth records and the worker registry, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); only invalid input errors, and every attempt is appended to the sending run's `a2a/messages.jsonl`. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
+Every doorbell points at a document and carries no content of its own. The server composes the delivered text, resolves targets from ORCH birth records and the worker registry, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); a transport outcome is never an error, and every attempt is appended to the sending run's `a2a/messages.jsonl`. Only invalid input hard-errors — including a bell whose document does not exist yet, which is the caller skipping the append, not a broken channel. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
+
+#### The inter-run channel document
+
+ORCH-to-ORCH conversation lives in one append-only document per direction, owned by the run that writes it:
+
+```text
+<run>/a2a/orch-to-<to_track_id>_<to_run_id>.md
+```
+
+It is the peer channel file's isomorph across runs: the conversation is never written into another run's directory, so the counterpart answers by appending to its own reverse channel and ringing its own bell. `_` cannot occur in a run coordinate, so the two coordinates in the file name always parse back. The one write into another run's directory is birth-time, before that run has an ORCH to own it: a handoff or reset source lays out the target run and writes its `orchestrator-instructions.md` (section 9). Once the target ORCH is born, every cross-run word travels through the channel documents.
+
+Append one entry per conversational turn. Each entry carries the kind and the note that used to ride on `notify_run`:
+
+```markdown
+## 2026-08-28T09:15:00Z fact from example-track/implementation
+
+One bounded line stating the fact, bottleneck, request, or handoff.
+
+Optional bounded body: coordinates, hashes, and the exact document to read.
+```
+
+`kind` is one of `fact`, `bottleneck`, `request`, or `handoff`. A handoff is simply the channel's first conversation, and the counterpart's append — one `handoff` entry naming what it revalidated and accepted — is the ack that signs it. Resource contention between runs is negotiated in the same two documents, and each side records the agreement it accepted in its own channel document; on failed negotiation both sides stop and raise decision requests to their own users.
+
+`notify_run` reads the document, hashes it, and rings the target ORCH with the path, SHA-256, and byte count; the result returns the same in `data.channel`. A missing or empty document fails with `channel_document_missing` or `channel_document_empty` before anything is delivered, so a bell can never point at nothing. A bell to a run whose ORCH is not born yet cannot be delivered either — `data.delivery` is `target_unresolved` and the warning names the missing birth record — which is why the handoff's first entry needs no bell: `start_orchestrator`'s own first prompt is what delivers it. A worker lane may not ring `notify_run` — cross-organization worker messaging is forbidden; escalate to your own ORCH instead.
 
 ### `herdr_friction`
 
@@ -342,9 +365,9 @@ Focus restoration is guarded: restore only displacement onto registry-owned coor
 ## 8. Communication boundaries
 
 - **Documents:** contract, decisions, ownership, durable results, completion, evidence, and handoff.
-- **MCP prompt/control:** canonical coordinates and hashes, wait requests, fresh blocked responses, and lifecycle actions.
+- **MCP prompt/control:** canonical coordinates and hashes, wait requests, and lifecycle actions.
 - **Herdr metadata:** display-only responsibility, assignment, assignment state, session/model attestation, and live status.
-- **`herdr_message` doorbells:** one bounded server-composed signal after a boundary — workers wake ORCH after a completion block or decision request, plan-authorized peers wake each other after channel appends, and orchestrators exchange bounded cross-run notes. Never authority: the named file alone carries facts.
+- **`herdr_message` doorbells:** one bounded server-composed pointer after a document append — workers wake ORCH after a completion block or decision request, ORCH wakes its own worker after appending an `[ORCH Response]`, plan-authorized peers wake each other after channel appends, and orchestrators ring each other after appending to the inter-run channel document. Never authority: the named file alone carries facts.
 
 Metadata is not contract, settlement, or session authority. Terminal output is not a report.
 
@@ -357,13 +380,13 @@ ORCH independently reproduces material worker claims and runs integration verifi
 A handoff needs no human intervention: the whole bootstrap is four tool-drivable steps run by the source ORCH.
 
 1. `herdr_track {action:"init"}` with the target `track_id`/`run_id` and the same canonical `cwd` (add `reset_of` for a reset sibling). Init lays out the deterministic run and its protocol documents.
-2. Complete `templates/handoff.md` into the target run and write `orchestrator-instructions.md` pointing at that handoff document. Both are ordinary file writes. `orchestrator-instructions.md` must exist before start — it is fingerprinted at first prompt and never replayed after a change — and it is the handoff's mandate analogue: the target ORCH writes its own `plan.md` after start. A reset sibling is the exception, because `init` copied the source plan and that `plan.md` must be present before start.
-3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md` and wake the source run via `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
+2. Write the handoff as the first entry of the source's inter-run channel document for the target — `a2a/orch-to-<target_track>_<target_run>.md`, `kind: handoff`, using `templates/handoff.md` as the entry body — and write the target run's `orchestrator-instructions.md` pointing at that channel document by absolute path. Both are ordinary file writes. `orchestrator-instructions.md` must exist before start (it is fingerprinted at first prompt and never replayed after a change) and it is the handoff's mandate analogue: the target ORCH writes its own `plan.md` after start. A reset sibling is the exception, because `init` copied the source plan and that `plan.md` must be present before start.
+3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md`, and reach another run only by appending to this run's channel document for it and then ringing `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
 4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 7.
 
 The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended — give that alias a `modelRoles` entry, or the spawn silently inherits the default chain and only the preflight warning names it.
 
-The target's start prompt names the source ORCH wake target: the target wakes the source after handoff revalidation, a terminal boundary, or a decision request, and the source may wake the target via its registry `agent_name`. Both directions are the same bounded non-authoritative doorbell — run documents stay the only authority.
+The target acks by appending to its own reverse channel — `a2a/orch-to-<source_track>_<source_run>.md` in the target run — and ringing `notify_run` back; that counterpart append is the handoff's signature. Every later cross-run turn is the same shape in whichever direction it travels: append to the channel you own, then ring. Both bells are bounded non-authoritative pointers — the channel documents stay the only authority.
 
 `/reload-plugins` refreshes the skill and MCP server. Validate a changed extension module in a new OMP session.
 
