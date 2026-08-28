@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promise
 import path from "node:path";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -40,6 +40,52 @@ function validOrchCreator(value: unknown): value is OrchCreatorRecord {
     typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
     typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
     typeof value.opened_at === "string" && value.opened_at.length <= 64;
+}
+
+const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "started_at"] as const;
+const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "retries", "requested_at", "settled_at"] as const;
+
+function validCount(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
+}
+
+function validBudgetExtension(value: unknown, index: number): value is BudgetExtension {
+  return isRecord(value) &&
+    onlyKeys(value, EXTENSION_KEYS) &&
+    value.ordinal === index + 1 &&
+    validCount(value.requested_tokens) &&
+    typeof value.justification_sha256 === "string" && SHA256_RE.test(value.justification_sha256) &&
+    typeof value.audit_path === "string" && value.audit_path.length <= 4096 &&
+    (value.audit_worker_id === undefined || (typeof value.audit_worker_id === "string" && WORKER_RE.test(value.audit_worker_id))) &&
+    (value.state === "pending" || value.state === "settled") &&
+    (value.verdict === undefined || BUDGET_VERDICTS.includes(value.verdict as BudgetVerdict)) &&
+    (value.granted_tokens === undefined || validCount(value.granted_tokens)) &&
+    validCount(value.retries, 64) &&
+    typeof value.requested_at === "string" && value.requested_at.length <= 64 &&
+    (value.settled_at === undefined || (typeof value.settled_at === "string" && value.settled_at.length <= 64));
+}
+
+/**
+ * Fail-closed budget validation. A registry whose budget record cannot be proved
+ * is never reinterpreted generously: the caller preserves and repairs it, because
+ * a misread cap is exactly how a run would spend without ever justifying itself.
+ */
+function validBudget(value: unknown): value is BudgetRecord {
+  return isRecord(value) &&
+    onlyKeys(value, BUDGET_KEYS) &&
+    validCount(value.seed_tokens) &&
+    validCount(value.seed_minutes) &&
+    (value.doorbell_policy === "full" || value.doorbell_policy === "notify") &&
+    validCount(value.granted_tokens) &&
+    validCount(value.granted_minutes) &&
+    Array.isArray(value.extensions) &&
+    value.extensions.every((entry, index) => validBudgetExtension(entry, index)) &&
+    (value.state === "active" || value.state === "parked") &&
+    (value.park_reason === undefined || BUDGET_PARK_REASONS.includes(value.park_reason as BudgetParkReason)) &&
+    (value.park_detail === undefined || (typeof value.park_detail === "string" && value.park_detail.length <= 500)) &&
+    (value.parked_at === undefined || (typeof value.parked_at === "string" && value.parked_at.length <= 64)) &&
+    (value.denied_clamp_sha256 === undefined || value.denied_clamp_sha256 === "absent" || (typeof value.denied_clamp_sha256 === "string" && SHA256_RE.test(value.denied_clamp_sha256))) &&
+    typeof value.started_at === "string" && value.started_at.length <= 64;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -153,7 +199,7 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
 
 function validateRegistry(value: unknown, runPath: string): asserts value is DelegationRegistry {
   const requiredKeys = ["version", "owner", "run_path", "revision", "responsibilities", "lanes", "assignments", "created_at", "updated_at"] as const;
-  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
+  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator", "budget"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
     throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "Preserve and repair the minimal registry; do not infer ownership.");
   }
   if (value.orch_births !== undefined && (!Array.isArray(value.orch_births) || !value.orch_births.every((birth, index) => validOrchBirth(birth, index)))) {
@@ -161,6 +207,9 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
   }
   if (value.orch_creator !== undefined && !validOrchCreator(value.orch_creator)) {
     throw new McpContractError("delegation_registry_invalid", "The ORCH creator record is malformed.", "storage", "Repair the creator record from the opening session's verified attestation, or remove it to reopen the track.");
+  }
+  if (value.budget !== undefined && !validBudget(value.budget)) {
+    throw new McpContractError("delegation_registry_invalid", "The budget record is malformed.", "storage", "Preserve the registry and the budget ledger, then repair the record from the ledger's recorded extensions and verdicts; never widen a cap by hand.");
   }
   for (const [key, responsibility] of Object.entries(value.responsibilities)) {
     if (!RESPONSIBILITY_RE.test(key) || !isRecord(responsibility) || !exactKeys(responsibility, ["key", "worker_ids"]) || responsibility.key !== key || !Array.isArray(responsibility.worker_ids) || responsibility.worker_ids.some((id) => typeof id !== "string" || !WORKER_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A responsibility route is malformed.", "storage", "Repair routing from verified worker identities.");
@@ -284,6 +333,11 @@ export class DelegationStore {
       for (const workerId of responsibility.worker_ids) reserve(workerId);
     }
     for (const assignment of Object.values(registry.assignments)) reserve(assignment.worker_id);
+    // A budget auditor holds a worker ordinal from the moment it is reserved: the
+    // lifecycle registry only learns about it once the spawn lands, and two
+    // sessions sharing an ordinal is exactly the identity confusion this
+    // reservation exists to prevent.
+    for (const extension of registry.budget?.extensions ?? []) reserve(extension.audit_worker_id);
 
     const lifecycle = await readRegistry(path.join(this.runPath, "a2a", "herdr-workers.json"));
     for (const worker of Object.values(lifecycle.workers)) reserve(worker.worker_id);
@@ -292,6 +346,19 @@ export class DelegationStore {
       if (match) reserved.add(Number(match[1]));
     }
     return reserved;
+  }
+
+  /**
+   * Next free worker ordinal for a server-spawned budget auditor. The auditor is
+   * not a responsibility lane — it never appears in `lanes`, so the ORCH cannot
+   * address it — but it must not collide with one, and its ordinal is never
+   * reused after the audit closes.
+   */
+  async nextAuditWorkerId(registry: DelegationRegistry): Promise<string> {
+    const reserved = await this.reservedWorkerOrdinals(registry);
+    let ordinal = 1;
+    while (reserved.has(ordinal)) ordinal += 1;
+    return `w${ordinal}`;
   }
 
   async select(assignmentId: string, responsibility: string, instructionsHash: string, separation: Separation | undefined, timeoutMs: number): Promise<LaneSelection> {

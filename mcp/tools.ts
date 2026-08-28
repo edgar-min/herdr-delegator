@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { initializeRun, inspectOrchestrator, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
+import { initializeRun, inspectOrchestrator, labelOwnedPane, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -13,7 +13,8 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
 
 
 // ---------------------------------------------------------------------------
@@ -678,6 +679,43 @@ function mandateBullets(values: readonly string[], field: string): string[] {
   });
 }
 
+
+// A clean auditor session on the strongest configured reasoning profile. The
+// responsibility key exists only to name its pane on the supervision surface:
+// an auditor is never a responsibility lane, so the ORCH cannot address it.
+const AUDIT_RESPONSIBILITY = "budget-audit";
+const AUDIT_PROFILE = "slow";
+
+/** The mandate's budget section: a declared estimate plus the cadence it buys. */
+function budgetSection(mandate: Mandate): string {
+  const seeded = seedBudget(mandate, nowIso());
+  const declared = mandate.budget?.tokens || mandate.budget?.minutes ? "declared in the mandate" : "not declared; these are the documented defaults";
+  return [
+    `- seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} minutes (${declared})`,
+    `- doorbell policy: ${seeded.doorbell_policy}`,
+    "",
+    "This seed is a calibration estimate, never a contract. Crossing it parks the run;",
+    "you then justify an extension (done / remaining / why more) through",
+    "herdr_track budget_extend, a clean auditor judges your run documents against the",
+    "machine facts, and the verdict is recorded in budget-ledger.md. Keep plan.md and",
+    "the lane reports current: an audit reads them, so stale documents cost budget.",
+  ].join("\n");
+}
+
+/** Bounded machine facts for the auditor: what the registry knows, not what the ORCH says. */
+function machineFacts(registry: DelegationRegistry): string[] {
+  const totals = trackTotals(registry);
+  const facts = [
+    `lanes: ${totals.lane_count}; assignments by state: ${ASSIGNMENT_STATE_ORDER.map((state) => `${state}=${totals.assignments_by_state[state]}`).join(" ")}`,
+    `settled observations: ${totals.settled_elapsed_observations} elapsed (${totals.settled_elapsed_ms} ms), ${totals.settled_token_usage.observations} token snapshots (${totals.settled_token_usage.total_tokens} tokens)`,
+    `ORCH generations born: ${(registry.orch_births ?? []).length}`,
+  ];
+  for (const assignment of Object.values(registry.assignments)) {
+    facts.push(`assignment ${assignment.assignment_id} (${assignment.responsibility_key}, lane ${assignment.worker_id}): state ${assignment.state}${assignment.report_sha256 ? `, report sha256=${assignment.report_sha256}` : ", no verified report hash"}${assignment.completed_at ? `, settled ${assignment.completed_at}` : ""}`);
+  }
+  return facts.slice(0, 64);
+}
+
 export function renderMandate(run: RunRef, mandate: Mandate): string {
   const intent = mandate.intent.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
   if (!intent) throw new McpContractError("mandate_invalid", "The mandate intent is empty after normalization.", "validate", "State why this track exists and what it must achieve, in the user's terms.");
@@ -713,6 +751,10 @@ ${constraints.length ? constraints.map((item) => `- ${item}`).join("\n") : "- No
 ## Shape of success
 
 ${success.map((item) => `- ${item}`).join("\n")}
+
+## Budget
+
+${budgetSection(mandate)}
 `;
   const bytes = Buffer.byteLength(document);
   if (bytes > MAX_MANDATE_BYTES) {
@@ -744,8 +786,10 @@ export class CompositeTools {
         const registry = await store.read();
         let orchestrator: unknown;
         try { const runtime = await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry) } };
+        const budget = await this.observeBudget(store, registry);
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget } };
       }
+      if (input.action === "budget_extend") return await this.extendBudget(input, run, store);
       const runtime = await loadFacts(this.adapter);
       if (input.action === "start_orchestrator") {
         // Legacy compatibility path only. On an open-managed run the spawn is
@@ -757,6 +801,7 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
       await assertOrchCommand(store, runtime.facts);
+      await this.judgeBudget(store, run, "close");
       const registry = await store.read();
       if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
       const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed");
@@ -831,7 +876,17 @@ export class CompositeTools {
         throw new McpContractError("track_open_in_progress", "Another session claimed this open while the mandate was being fixed.", "attest", "Let the opening session finish; a second opener would race the same birth.");
       }
       next.orch_creator = { session_id: runtime.facts.session_id, pane_id: runtime.facts.pane_id, mandate_sha256: mandateHash, opened_at: nowIso() };
+      // The seed is a calibration estimate, and the clock starts at the open that
+      // will spawn the ORCH — not at the first guarded op, so an idle-but-live run
+      // still ages against its declared wall clock.
+      next.budget ??= seedBudget(input.mandate, nowIso());
     });
+    const seeded = stamped.budget ?? seedBudget(input.mandate, nowIso());
+    await appendLedger(store.runPath, "seed", [
+      `seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} min (declared estimate, not a contract)`,
+      `doorbell policy: ${seeded.doorbell_policy}`,
+      `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
+    ]).catch(() => undefined);
 
     const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking, false);
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
@@ -879,6 +934,295 @@ export class CompositeTools {
       next.orch_births = [...births, recorded];
     });
     return recorded;
+  }
+
+  /**
+   * Read-only budget view for `inspect`: the record, the human clamp, and a
+   * fresh conservative metering. It never transitions state — an observation
+   * that could park a run would make inspection unsafe to run.
+   */
+  private async observeBudget(store: DelegationStore, registry: DelegationRegistry): Promise<Record<string, unknown>> {
+    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const clampReading = await readClamp(store.runPath);
+    const metering = await meterRun(registry, record, clampReading.clamp);
+    return {
+      record,
+      metering,
+      ledger_path: budgetLedgerPath(store.runPath),
+      clamp_path: budgetClampPath(store.runPath),
+      ...(clampReading.unreadable ? { clamp_unreadable: clampReading.unreadable } : {}),
+      ...(clampReading.clamp ? { clamp: clampReading.clamp } : {}),
+    };
+  }
+
+  /**
+   * The budget judgment every guarded op makes (decisions 7-8). Over the cap the
+   * run parks explicitly — reason in the registry, entry in the append-only
+   * ledger, marker on the ORCH pane name — and only the landing allowlist still
+   * runs: `wait` may settle work already in flight and `close` may clean up,
+   * while `add` and `resume` (new or restarted work) are refused. Nothing here
+   * ever kills a session: a parked run waits, and phase 6 revives it.
+   */
+  private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close"): Promise<{ metering: BudgetMetering; parked: boolean }> {
+    const registry = await store.read();
+    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const clampReading = await readClamp(store.runPath);
+    const metering = await meterRun(registry, record, clampReading.clamp);
+    const lastExtension = record.extensions[record.extensions.length - 1];
+    const reason: BudgetParkReason | undefined = clampReading.unreadable
+      ? "clamp-unreadable"
+      : !metering.over_cap
+        ? undefined
+        : lastExtension?.verdict === "deny"
+          ? "denied"
+          : record.doorbell_policy === "full" && record.granted_tokens > (clampReading.clamp?.max_tokens ?? record.seed_tokens)
+            ? "approval-required"
+            : "over-cap";
+    const detail = clampReading.unreadable
+      ? `The human-owned clamp file cannot be trusted: ${clampReading.unreadable}. No tool op raises what the human lowered, so the run waits.`
+      : `${meteringLedgerLine(metering)}.`;
+    if (reason && (record.state !== "parked" || record.park_reason !== reason)) {
+      const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.budget ?? seedBudget(undefined, next.created_at);
+        current.state = "parked";
+        current.park_reason = reason;
+        current.park_detail = detail.slice(0, 500);
+        current.parked_at = nowIso();
+        next.budget = current;
+      });
+      await this.budgetDoorbell(store, run, registry, parked.budget ?? record, `parked (${reason})`, [detail]);
+    } else if (!reason && record.state === "parked") {
+      const resumed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.budget ?? seedBudget(undefined, next.created_at);
+        current.state = "active";
+        delete current.park_reason;
+        delete current.park_detail;
+        delete current.parked_at;
+        next.budget = current;
+      });
+      await this.budgetDoorbell(store, run, registry, resumed.budget ?? record, "resumed", [detail]);
+    }
+    if (!reason) return { metering, parked: false };
+    if (action === "wait" || action === "close") return { metering, parked: true };
+    throw new McpContractError(
+      "budget_parked",
+      `This run is budget-parked (${reason}) and ${action} would start new work.`,
+      "budget",
+      reason === "clamp-unreadable"
+        ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
+        : reason === "denied"
+          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; only the human's clamp file can raise the ceiling now.`
+          : reason === "approval-required"
+            ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
+            : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`,
+      false,
+      true,
+    );
+  }
+
+  /**
+   * The human-facing doorbell for a budget boundary: a marker on the ORCH pane
+   * name plus an entry in the append-only ledger. It is async and ignorable by
+   * design — silence is consent — and a failed rename is a warning, never a
+   * failed budget transition.
+   */
+  private async budgetDoorbell(store: DelegationStore, run: RunRef, registry: DelegationRegistry, record: BudgetRecord, heading: string, lines: readonly string[]): Promise<string | undefined> {
+    const birth = latestBirth(registry);
+    const warning = birth ? await labelOwnedPane(birth.pane_id, orchPaneLabel(run, record)) : "No ORCH birth record: the budget marker has no pane to name.";
+    await appendLedger(store.runPath, heading, warning ? [...lines, `doorbell warning: ${warning}`] : lines).catch(() => undefined);
+    return warning;
+  }
+
+  /**
+   * Self-extension (decision 7): a guarded op that costs a bounded justification
+   * and buys nothing on its own. The ladder is self-justification -> machine
+   * audit -> human, and this method only ever walks the first two rungs. The
+   * server spawns the auditor; the ORCH never does, never learns its pane, and
+   * cannot address it, because the auditor is not a responsibility lane.
+   */
+  private async extendBudget(input: Extract<HerdrTrackInput, { action: "budget_extend" }>, run: RunRef, store: DelegationStore): Promise<McpResult> {
+    const runtime = await loadFacts(this.adapter);
+    await assertOrchCommand(store, runtime.facts);
+    const { normalized, sha256: justificationHash } = normalizeJustification(input.justification);
+    let registry = await store.read();
+    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const clampReading = await readClamp(store.runPath);
+    const metering = await meterRun(registry, record, clampReading.clamp);
+    const pending = record.extensions.find((entry) => entry.state === "pending");
+    if (pending) {
+      if (pending.justification_sha256 !== justificationHash) {
+        throw new McpContractError("budget_audit_in_flight", `Audit ${pending.ordinal} is still open for a different justification.`, "budget", `Re-send the identical justification to land audit ${pending.ordinal}, or read ${pending.audit_path} to see what the auditor has written so far. A second request would let one ORCH shop for a verdict.`, false, true);
+      }
+      return await this.landAudit(store, run, timeout(input));
+    }
+    // The ladder ends at the human. A denied run may not simply re-word its
+    // justification and buy a second audit: the next attempt is released only
+    // once a human has touched the clamp file, which is the human's own surface.
+    if (record.park_reason === "denied" && record.denied_clamp_sha256 !== undefined) {
+      const fingerprint = await clampFingerprint(store.runPath);
+      if (fingerprint === record.denied_clamp_sha256) {
+        throw new McpContractError("budget_denied", "A machine audit denied the last extension and no human has touched the clamp file since.", "budget", `Escalate to the human with ${budgetLedgerPath(store.runPath)} and the audit document; a change to ${budgetClampPath(store.runPath)} is what releases the next attempt. Re-wording the justification is not an escalation.`, false, true);
+      }
+    }
+    // Covenant: extensions may not arrive faster than the published interval, so
+    // a runaway becomes slow and visible instead of impossible.
+    const previous = record.extensions[record.extensions.length - 1];
+    const settledAt = previous?.settled_at ? Date.parse(previous.settled_at) : undefined;
+    if (settledAt !== undefined && Number.isFinite(settledAt) && Date.now() - settledAt < MIN_EXTENSION_INTERVAL_MS) {
+      const waitMinutes = Math.ceil((MIN_EXTENSION_INTERVAL_MS - (Date.now() - settledAt)) / 60_000);
+      throw new McpContractError("budget_extension_too_soon", `Extension ${previous.ordinal} settled less than ${Math.round(MIN_EXTENSION_INTERVAL_MS / 60_000)} minutes ago.`, "budget", `Wait about ${waitMinutes} more minutes and land work in the meantime; the frequency covenant exists so that repeated extensions stay visible.`, false, true);
+    }
+    const step = stepCap(record);
+    const requested = Math.min(input.requested_tokens ?? step, step);
+    const ordinal = record.extensions.length + 1;
+    const auditPath = budgetAuditPath(store.runPath, ordinal);
+    const auditWorkerId = await store.nextAuditWorkerId(registry);
+    await appendLedger(store.runPath, `extension ${ordinal} requested`, [
+      meteringLedgerLine(metering),
+      `done: ${normalized.done}`,
+      `remaining: ${normalized.remaining}`,
+      `why more: ${normalized.why_more}`,
+      `requested: +${requested} tokens (step cap +${step})`,
+      `audit: ${auditPath} (clean session ${auditWorkerId} on the slow profile)`,
+    ]);
+    registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      const current = next.budget ?? seedBudget(undefined, next.created_at);
+      current.extensions = [...current.extensions, {
+        ordinal,
+        requested_tokens: requested,
+        justification_sha256: justificationHash,
+        audit_path: auditPath,
+        audit_worker_id: auditWorkerId,
+        state: "pending",
+        retries: 0,
+        requested_at: nowIso(),
+      }];
+      next.budget = current;
+    });
+    const facts = machineFacts(registry);
+    await writeAtomic(auditPath, renderAuditInput(run, ordinal, record, normalized, requested, metering, facts));
+    try {
+      const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: auditWorkerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeout(input) }, runtime.ctx, runtime.thinking);
+      const agentName = stringField(ensured.worker, ["agent_name"]);
+      if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
+      await this.adapter.prompt(agentName, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. You are a clean auditor: do not contact the orchestrator, do not call any herdr_* tool, and change nothing else in this run.`, ["idle", "done"], timeout(input));
+    } catch (error) {
+      // Fail-closed: an audit that cannot run never becomes a grant. The run
+      // parks with the reason, the pending record survives for the retry, and
+      // the human sees the marker.
+      const detail = error instanceof Error ? error.message : String(error);
+      await this.parkForAudit(store, run, ordinal, `audit ${ordinal} could not run: ${detail}`);
+      throw new McpContractError("budget_audit_unavailable", `Audit ${ordinal} could not be run: ${detail}`, "budget", `The run is parked and audit ${ordinal} stays pending. Retry the identical budget_extend; nothing is granted until a verdict lands in ${auditPath}.`, false, true);
+    }
+    return await this.landAudit(store, run, timeout(input));
+  }
+
+  /**
+   * Lands a pending audit: read the verdict the auditor appended, record it
+   * server-side, and only then move the cap. A missing verdict is retried once
+   * and then parks — the ORCH cannot convert silence into budget.
+   */
+  private async landAudit(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<McpResult> {
+    let registry = await store.read();
+    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const pending = record.extensions.find((entry) => entry.state === "pending");
+    if (!pending) throw new McpContractError("budget_audit_missing", "No audit is pending for this run.", "budget", "Send a fresh budget_extend with a bounded justification.");
+    const audit = await readAuditDocument(pending.audit_path);
+    const verdict = audit ? parseVerdict(audit.document, pending.ordinal) : undefined;
+    if (!verdict) {
+      const retried = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.budget ?? seedBudget(undefined, next.created_at);
+        const entry = current.extensions.find((candidate) => candidate.ordinal === pending.ordinal);
+        if (entry) entry.retries += 1;
+        next.budget = current;
+      });
+      const retries = retried.budget?.extensions.find((entry) => entry.ordinal === pending.ordinal)?.retries ?? pending.retries + 1;
+      await this.parkForAudit(store, run, pending.ordinal, `audit ${pending.ordinal} has no verdict block yet (attempt ${retries})`);
+      return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries }, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists.` } };
+    }
+    const granted = verdict.verdict === "deny"
+      ? 0
+      : Math.min(verdict.granted_tokens ?? pending.requested_tokens, pending.requested_tokens);
+    // A grant moves both dimensions. Wall clock keeps accruing while a run is
+    // parked, so a token-only grant would leave a minutes-parked run parked
+    // forever — the cadence would become the wall this design refuses to be.
+    const grantedMinutes = granted > 0 ? Math.max(1, Math.floor(record.granted_minutes * BUDGET_STEP_FRACTION)) : 0;
+    const deniedFingerprint = verdict.verdict === "deny" ? await clampFingerprint(store.runPath) : undefined;
+    const settled = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      const current = next.budget ?? seedBudget(undefined, next.created_at);
+      const entry = current.extensions.find((candidate) => candidate.ordinal === pending.ordinal);
+      if (entry) {
+        entry.state = "settled";
+        entry.verdict = verdict.verdict;
+        entry.granted_tokens = granted;
+        entry.settled_at = nowIso();
+      }
+      current.granted_tokens += granted;
+      current.granted_minutes += grantedMinutes;
+      if (deniedFingerprint === undefined) delete current.denied_clamp_sha256;
+      else current.denied_clamp_sha256 = deniedFingerprint;
+      next.budget = current;
+    });
+    const settledRecord = settled.budget ?? record;
+    await appendLedger(store.runPath, `extension ${pending.ordinal} verdict ${verdict.verdict}`, [
+      `granted: +${granted} tokens, +${grantedMinutes} min -> cap ${settledRecord.granted_tokens} tokens / ${settledRecord.granted_minutes} min`,
+      `verdict read from ${pending.audit_path} sha256=${audit?.sha256 ?? "unreadable"}`,
+      "recorded server-side; the orchestrator never wrote this entry",
+      ...(verdict.verdict === "deny" ? [`escalation: the human decides from here, armed with this verdict and the ledger; the next attempt is released only by a change to ${budgetClampPath(store.runPath)} (fingerprint at deny: ${deniedFingerprint})`] : []),
+    ]);
+    const closeWarning = await this.closeAuditor(run, pending.audit_worker_id, timeoutMs);
+    // Re-judge with the new cap: a grant that still leaves the run over its
+    // ceiling stays parked, and the reason is recomputed rather than guessed.
+    const judged = await this.judgeBudget(store, run, "wait");
+    const fresh = await store.read();
+    return {
+      ok: true,
+      tool: "herdr_track",
+      action: "budget_extend",
+      run,
+      effect: "confirmed",
+      retryable: false,
+      registry_revision: fresh.revision,
+      data: {
+        budget: fresh.budget,
+        metering: judged.metering,
+        audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted },
+        ledger_path: budgetLedgerPath(store.runPath),
+        ...(closeWarning ? { warnings: [closeWarning] } : {}),
+        next_step: verdict.verdict === "deny"
+          ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here.`
+          : judged.parked
+            ? `Granted +${granted} tokens, and the run is still parked: read data.budget.park_reason.`
+            : `Granted +${granted} tokens; the run is active again.`,
+      },
+    };
+  }
+
+  /** Fail-closed parking for an audit that could not produce a verdict. */
+  private async parkForAudit(store: DelegationStore, run: RunRef, ordinal: number, detail: string): Promise<void> {
+    const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      const current = next.budget ?? seedBudget(undefined, next.created_at);
+      current.state = "parked";
+      current.park_reason = "audit-unavailable";
+      current.park_detail = detail.slice(0, 500);
+      current.parked_at = nowIso();
+      next.budget = current;
+    });
+    await this.budgetDoorbell(store, run, parked, parked.budget ?? seedBudget(undefined, parked.created_at), `parked (audit-unavailable, audit ${ordinal})`, [detail]);
+  }
+
+  /** The auditor is single-purpose: it is closed as soon as its verdict is recorded. */
+  private async closeAuditor(run: RunRef, workerId: string | undefined, timeoutMs: number): Promise<string | undefined> {
+    if (!workerId) return undefined;
+    try {
+      const live = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+      const sequence = numberField(live.worker, ["state_change_seq"]);
+      if (sequence === undefined) return `Auditor ${workerId} has no live state sequence; close it by hand after reading its verdict.`;
+      await closeWorker({ operation: "close_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, expected_state_change_seq: sequence });
+      return undefined;
+    } catch (error) {
+      return `Auditor ${workerId} stayed open: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   /**
@@ -981,6 +1325,7 @@ export class CompositeTools {
         }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
+        await this.judgeBudget(store, run, "add");
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
@@ -1027,12 +1372,15 @@ export class CompositeTools {
       // only the run's born ORCH session may issue it.
       const commandFacts = await loadFacts(this.adapter);
       await assertOrchCommand(store, commandFacts.facts);
+      // Landing allowlist: a parked run may still settle work in flight, but a
+      // promoted head is new work and stays queued until the budget is restored.
+      const budgetJudgment = await this.judgeBudget(store, run, "wait");
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
       if (assignment.state === "queued") {
         const queuedWarnings: string[] = [];
-        const dispatched = await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
+        const dispatched = budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
         if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
         const fresh = dispatched.assignments[input.assignment_id];
         const dispatchSettlement = settlementObservation(fresh, queuedWarnings.length ? queuedWarnings.join(" | ") : undefined);
@@ -1064,7 +1412,7 @@ export class CompositeTools {
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
       const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
       if (terminal) tailWarnings.push(terminal);
-      registry = await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings) ?? registry;
+      registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings)) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
@@ -1097,6 +1445,7 @@ export class CompositeTools {
       }
       const runtime = await loadFacts(this.adapter);
       await assertOrchCommand(store, runtime.facts);
+      await this.judgeBudget(store, run, input.action === "resume" ? "resume" : "close");
       const live = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id });
       const liveSequence = assertLiveWorkerSession(lane, live, input.expected_session_id, input.action);
       registry = await updateLaneFromWorker(store, input.worker_id, live);

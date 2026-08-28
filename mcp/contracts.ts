@@ -48,9 +48,32 @@ export const MAX_MANDATE_BYTES = 16_384;
 const MANDATE_TRANSPORT_STRING = 64_000;
 const MANDATE_TRANSPORT_ITEMS = 256;
 
+// Budget = justification cadence, not a wall (identity/comms redesign, decisions
+// 7-8). Metering is a run-level aggregate over the ORCH and every lane session,
+// judged at every guarded op with conservative margins; precise accounting is a
+// non-goal. The seed in the mandate is a declared estimate, never a contract, and
+// a run that declares none still gets these defaults so that no run can spend
+// unbounded without ever justifying itself.
+export const DEFAULT_BUDGET_TOKENS = 2_000_000;
+export const DEFAULT_BUDGET_MINUTES = 480;
+export const MAX_BUDGET_TOKENS = 1_000_000_000;
+export const MAX_BUDGET_MINUTES = 100_000;
+// Covenants: one extension may raise the cap by at most half of what is already
+// granted, and extensions may not arrive faster than this interval. Runaway
+// therefore becomes slow and visible instead of impossible.
+export const BUDGET_STEP_FRACTION = 0.5;
+export const MIN_EXTENSION_INTERVAL_MS = 15 * 60_000;
+// A session whose official JSONL cannot be read is charged this much rather than
+// nothing: an unmeasurable session must never look free.
+export const ASSUMED_SESSION_TOKENS = 50_000;
+export const MAX_JUSTIFICATION_ITEM = 500;
+export const BUDGET_POLICIES = ["full", "notify"] as const;
+export const BUDGET_VERDICTS = ["grant", "partial", "deny"] as const;
+export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unreadable", "approval-required", "denied"] as const;
+
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
-export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "settlement" | "resume" | "close";
+export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "budget" | "settlement" | "resume" | "close";
 export type AssignmentState = "queued" | "prompting" | "working" | "blocked" | "completed" | "failed" | "ambiguous";
 export type LaneState = "starting" | "idle" | "working" | "blocked" | "resume-needed" | "closing" | "closed" | "failed";
 export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto";
@@ -209,10 +232,85 @@ export type OrchCreatorRecord = {
   opened_at: string;
 };
 
+export type MandateBudget = {
+  tokens?: number;
+  minutes?: number;
+  doorbell_policy?: BudgetPolicy;
+};
+
 export type Mandate = {
   intent: string;
   constraints: string[];
   shape_of_success: string[];
+  budget?: MandateBudget;
+};
+
+export type BudgetPolicy = (typeof BUDGET_POLICIES)[number];
+export type BudgetVerdict = (typeof BUDGET_VERDICTS)[number];
+export type BudgetParkReason = (typeof BUDGET_PARK_REASONS)[number];
+
+/** Bounded self-justification for one extension: done, remaining, why more. */
+export type BudgetJustification = {
+  done: string;
+  remaining: string;
+  why_more: string;
+};
+
+/**
+ * One trip up the escalation ladder. `pending` means the auditor session was
+ * spawned and its verdict has not landed yet; the next `budget_extend` with the
+ * identical justification lands it. The ORCH never writes this record and never
+ * speaks to the auditor.
+ */
+export type BudgetExtension = {
+  ordinal: number;
+  requested_tokens: number;
+  justification_sha256: string;
+  audit_path: string;
+  audit_worker_id?: string;
+  state: "pending" | "settled";
+  verdict?: BudgetVerdict;
+  granted_tokens?: number;
+  retries: number;
+  requested_at: string;
+  settled_at?: string;
+};
+
+export type BudgetRecord = {
+  seed_tokens: number;
+  seed_minutes: number;
+  doorbell_policy: BudgetPolicy;
+  granted_tokens: number;
+  granted_minutes: number;
+  extensions: BudgetExtension[];
+  state: "active" | "parked";
+  park_reason?: BudgetParkReason;
+  park_detail?: string;
+  parked_at?: string;
+  // Set when an audit denies: the fingerprint of the human-owned clamp file at
+  // that moment. A denied run may not re-audit its way out — only a human
+  // touching the clamp file releases the next attempt (decision 7's ladder ends
+  // at the human, so the machine must be able to tell that the human acted).
+  denied_clamp_sha256?: string;
+  started_at: string;
+};
+
+/**
+ * The judgment a guarded op makes. `judged_tokens` is the conservative figure:
+ * measured usage plus a charge for every session whose JSONL could not be read.
+ */
+export type BudgetMetering = {
+  observed_at: string;
+  measured_tokens: number;
+  measured_sessions: number;
+  unmeasured_sessions: number;
+  assumed_tokens: number;
+  judged_tokens: number;
+  elapsed_minutes: number;
+  cap_tokens: number;
+  cap_minutes: number;
+  over_cap: boolean;
+  clamp?: { path: string; max_tokens?: number; max_minutes?: number };
 };
 
 export type DelegationRegistry = {
@@ -224,6 +322,7 @@ export type DelegationRegistry = {
   lanes: Record<string, WorkerLaneRecord>;
   orch_births?: OrchBirthRecord[];
   orch_creator?: OrchCreatorRecord;
+  budget?: BudgetRecord;
   assignments: Record<string, AssignmentRecord>;
   created_at: string;
   updated_at: string;
@@ -292,18 +391,32 @@ const separation = z.object({
   reason: z.string().min(1).max(500),
   conflicts_with_worker_id: workerId,
 }).strict();
+const mandateBudget = z.object({
+  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract. Defaults to ${DEFAULT_BUDGET_TOKENS}; exceeding it parks the run until the ORCH justifies an extension.`),
+  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op. Defaults to ${DEFAULT_BUDGET_MINUTES}.`),
+  doorbell_policy: z.enum(BUDGET_POLICIES).optional().describe("notify (default): the machine audit decides each extension and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap."),
+}).strict().optional().describe("Budget seed and extension policy. Omit it to accept the documented defaults.");
 const mandate = z.object({
   intent: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why this track exists and what it must achieve, in the user's terms. WHAT and WHY only — HOW is the born ORCH's to decide. Limit ${MAX_MANDATE_INTENT} characters.`),
   constraints: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).max(MANDATE_TRANSPORT_ITEMS).describe(`Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each; pass an empty array when there are none.`),
   shape_of_success: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).min(1).max(MANDATE_TRANSPORT_ITEMS).describe(`Observable conditions that make the track done. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each.`),
+  budget: mandateBudget,
 }).strict().describe(`Bounded mandate persisted as orchestrator-instructions.md and fingerprinted at the ORCH's first prompt. The whole rendered document is limited to ${MAX_MANDATE_BYTES} bytes.`);
+const justification = z.object({
+  done: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What the run has already delivered, in observable terms. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
+  remaining: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What concretely remains before the shape of success is met. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
+  why_more: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why the remaining work needs more budget than the current cap. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
+}).strict().describe("Bounded self-justification. It is appended verbatim to the append-only budget ledger and handed to a clean auditor session that never talks to you.");
 
 export const herdrTrackInputShape = {
   ...run,
-  action: z.enum(["open", "init", "inspect", "start_orchestrator", "close"]),
+  action: z.enum(["open", "init", "inspect", "start_orchestrator", "budget_extend", "close"]),
   cwd: z.string().min(1).optional(),
   mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
+  justification: justification.optional(),
+  requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(),
+  wait,
   expected_registry_revision: z.number().int().nonnegative().optional(),
 };
 export const herdrAssignmentInputShape = {
@@ -352,6 +465,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("init"), cwd: z.string().min(1), reset_of: z.object(run).strict().optional() }).strict(),
   z.object({ ...run, action: z.literal("inspect") }).strict(),
   z.object({ ...run, action: z.literal("start_orchestrator") }).strict(),
+  z.object({ ...run, action: z.literal("budget_extend"), justification, requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(), wait }).strict(),
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [

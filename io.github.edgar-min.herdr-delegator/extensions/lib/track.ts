@@ -1238,4 +1238,18 @@ function trackResultSummary(result: TrackResult): string {
   return `${result.operation} failed: ${result.error?.code ?? "unknown"} (${result.error?.message ?? "error"})`;
 }
 
-export { initializeRun, inspectOrchestrator, startOrchestrator, trackFailureResult, trackResultSummary };
+/**
+ * Display-only status marker on an already-verified pane (decision 4). It takes
+ * a pane id the caller already proved it owns — a registry birth record — so it
+ * adds no identity authority, and a failed rename degrades to a warning.
+ */
+async function labelOwnedPane(paneId: string, label: string, signal?: AbortSignal): Promise<string | undefined> {
+  try {
+    const { binary } = await requireHerdrEnvironment();
+    return await labelPane(binary, paneId, label, FOCUS_TIMEOUT_MS, signal);
+  } catch (error) {
+    return compactMessage(`Pane ${paneId} kept its previous name: ${error instanceof Error ? error.message : String(error)}`, "A pane rename failed.");
+  }
+}
+
+export { initializeRun, inspectOrchestrator, labelOwnedPane, startOrchestrator, trackFailureResult, trackResultSummary };

@@ -132,6 +132,7 @@ The mandate carries WHAT and WHY. HOW is forbidden: `plan.md` is the born ORCH's
 | `intent` | Why the track exists and what it must achieve, in the user's terms | 4096 characters |
 | `constraints` | Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. May be empty — the document then records that none were recorded | 32 entries, 500 characters each |
 | `shape_of_success` | Observable conditions that make the track done. At least one entry | 32 entries, 500 characters each |
+| `budget` | Optional seed: `tokens`, `minutes`, `doorbell_policy` (`notify` default, or `full`). Omit it to accept the documented defaults | see section 7 |
 | rendered document | The whole `orchestrator-instructions.md` | 16384 bytes |
 
 `constraints` and `shape_of_success` entries are normalized to single lines; `intent` keeps its paragraphs. Every oversize rejection is `mandate_too_large` and names the actual count against the limit, so trimming is arithmetic rather than trial and error. The mandate is fingerprinted at the ORCH's first prompt and never rewritten behind a live ORCH. Its identity is the SHA-256 of the rendered document, returned as `data.mandate.sha256`: any edit that changes those bytes is a different mandate, and presenting one on an already-opened coordinate fails with `mandate_conflict` — open a sibling run instead.
@@ -187,7 +188,7 @@ It also updates the tool-owned storage index. The born ORCH authors `plan.md` an
 
 ### Legacy init path
 
-`herdr_track init` plus `start_orchestrator` remains for exactly two cases: a sibling reset (`reset_of: {track_id, run_id}`, which copies the source plan under the fixed `close-settled-preserve-active` and `revalidate-before-import` policies and requires `plan.md` before start) and a handoff target (section 9). Both write `orchestrator-instructions.md` as an ordinary file instead of passing a mandate, and both are refused on a run that carries a creator record.
+`herdr_track init` plus `start_orchestrator` remains for exactly two cases: a sibling reset (`reset_of: {track_id, run_id}`, which copies the source plan under the fixed `close-settled-preserve-active` and `revalidate-before-import` policies and requires `plan.md` before start) and a handoff target (section 10). Both write `orchestrator-instructions.md` as an ordinary file instead of passing a mandate, and both are refused on a run that carries a creator record.
 
 ## 4. Plan responsibilities and assignments
 
@@ -275,8 +276,9 @@ The public MCP surface is exactly:
 
 - `open`: `track_id`, `run_id`, `cwd`, `mandate` — the single atomic birth (section 3).
 - `init`: `track_id`, `run_id`, `cwd`, optional `reset_of` — legacy layout for reset siblings and handoff targets.
-- `inspect`: `track_id`, `run_id`.
+- `inspect`: `track_id`, `run_id` — adds `data.budget` (record, fresh metering, ledger and clamp paths).
 - `start_orchestrator`: `track_id`, `run_id` — legacy spawn, refused on an open-managed run.
+- `budget_extend`: `track_id`, `run_id`, `justification` (`done`, `remaining`, `why_more`), optional `requested_tokens` and `wait` — section 7.
 - `close`: `track_id`, `run_id`, fresh `expected_registry_revision`.
 
 Track close is all-or-nothing. It rejects active or blocked lanes and fresh-inspects every close candidate before guarded closure.
@@ -329,7 +331,7 @@ ORCH-to-ORCH conversation lives in one append-only document per direction, owned
 <run>/a2a/orch-to-<to_track_id>_<to_run_id>.md
 ```
 
-It is the peer channel file's isomorph across runs: the conversation is never written into another run's directory, so the counterpart answers by appending to its own reverse channel and ringing its own bell. `_` cannot occur in a run coordinate, so the two coordinates in the file name always parse back. The one write into another run's directory is birth-time, before that run has an ORCH to own it: a handoff or reset source lays out the target run and writes its `orchestrator-instructions.md` (section 9). Once the target ORCH is born, every cross-run word travels through the channel documents.
+It is the peer channel file's isomorph across runs: the conversation is never written into another run's directory, so the counterpart answers by appending to its own reverse channel and ringing its own bell. `_` cannot occur in a run coordinate, so the two coordinates in the file name always parse back. The one write into another run's directory is birth-time, before that run has an ORCH to own it: a handoff or reset source lays out the target run and writes its `orchestrator-instructions.md` (section 10). Once the target ORCH is born, every cross-run word travels through the channel documents.
 
 Append one entry per conversational turn. Each entry carries the kind and the note that used to ride on `notify_run`:
 
@@ -352,7 +354,55 @@ Optional bounded body: coordinates, hashes, and the exact document to read.
 
 Reports append to a global local log (`<agent-dir>/herdr-delegator/friction/friction.jsonl`), never to an external tracker; promotion to issues is a separate human-gated triage pass. Report as `agent` only after resolving or abandoning a difficulty where the contract itself — not the call's input — was the obstacle; a `friction_hint` on a repeated error result marks such a moment. Never report every error. Transcribe a user-observed issue verbatim with `reporter: "human"`. Duplicate symptoms share a `fingerprint`; a report result's `prior_reports` shows how often the same symptom has already been recorded.
 
-## 7. Completion is not closure
+## 7. Spend against a justification cadence
+
+A budget here is not a wall. It is the point at which spending must be justified, and every guarded op judges it: `add`, `wait`, worker `resume`/`close`, and track `close`.
+
+Metering is a run-level aggregate over every session the registry knows — each ORCH generation's own session plus every lane session, read from the official OMP JSONL — plus wall clock since the track was opened. Precise accounting is a non-goal, so the figure is deliberately conservative *relative to zero*: a session whose snapshot cannot be read is charged 50,000 tokens rather than nothing. Read it with `herdr_track {action:"inspect"}`, which returns `data.budget` with the record, a fresh `metering` (`measured_tokens`, `assumed_tokens`, and the `judged_tokens` the gate actually uses), and both file paths; a refused guarded op also names the figures in its message.
+
+| Coordinate | Owner | Contents |
+|---|---|---|
+| `budget-ledger.md` | server, append-only | every seed, request, justification, verdict, park, and resume — the trail a human is handed on a deny |
+| `budget-clamp.json` | the human | `{"version":1,"max_tokens":N,"max_minutes":M}` — an absolute ceiling; clamping to 0 is the kill switch |
+| `budget-audit-<n>.md` | server, then the auditor | the request plus the machine facts, then the auditor's reasoning and verdict block |
+| `a2a/delegation.json` `budget` | tool-owned | seed, granted cap, extensions, verdicts, park reason |
+
+Defaults when the mandate declares no seed: 2,000,000 tokens and 480 minutes, policy `notify`. Under `notify` the machine audit decides each extension and the human is informed only by the ledger and the pane marker; under `full` the human approves every extension by raising the clamp, so a granted cap above the clamp does not exist yet and the run parks with `approval-required`. The effective ceiling is always the lower of what is granted and what the clamp allows. Never hand-edit the ledger or the registry; the clamp file is the human's, not yours.
+
+### When the run parks
+
+Crossing the cap parks the run explicitly: `data.budget.record.state` becomes `parked` with a `park_reason`, the ledger records it, and the ORCH pane name gains a `budget-parked:<reason>` marker so a human notices by name. Nothing is killed — a parked run waits.
+
+While parked, only the landing allowlist runs: `herdr_assignment wait`, `herdr_worker close`, `herdr_track close`, `herdr_track budget_extend`, every `herdr_message` doorbell, and every read-only action. Work already in flight therefore settles and lanes can be cleaned up, but a queued head is *not* dispatched, because that would be new work; `herdr_assignment add` and `herdr_worker resume` fail with `budget_parked`, and the error names the way out. Park reasons are exactly: `over-cap`, `audit-unavailable`, `clamp-unreadable`, `approval-required`, `denied`.
+
+A parked run resumes by itself: the next guarded op re-meters, and when the judgment is no longer over the ceiling the state returns to `active`, the ledger records the resume, and the pane marker clears. There is nothing to call — a park is a wait, never a death, and the run is never killed while it waits.
+
+### Extending the cap
+
+```json
+{
+  "action": "budget_extend",
+  "track_id": "example-track",
+  "run_id": "implementation",
+  "justification": {
+    "done": "One bounded line of observable delivery.",
+    "remaining": "One bounded line naming the concrete remaining work.",
+    "why_more": "One bounded line: why that work needs more than the current cap."
+  }
+}
+```
+
+Each line is at most 500 characters and is appended verbatim to the ledger. `requested_tokens` is optional and defaults to the full step cap; either way it is clamped to that cap. The covenants: one extension may raise the cap by at most half of what is already granted, and extensions may not arrive within 15 minutes of the previous one (`budget_extension_too_soon`). A grant moves both dimensions — the granted tokens and the same 50% step of wall clock — because the clock keeps running while a run is parked. Runaway is therefore slow and visible, not impossible.
+
+The escalation ladder is self-justification, then machine audit, then the human — never the ORCH's own word. The server (never you) spawns a clean auditor session on the `slow` worker profile, seeds `budget-audit-<n>.md` with your justification and the machine facts, and prompts it. The auditor is not a responsibility lane: it has no assignment, `wake_worker` cannot address it, and it may not call any tool. It judges your run documents against the registry's facts and appends a verdict block.
+
+An audit that has not produced a verdict yet returns `audit.state: "pending"` with the run parked; re-send the **identical** justification to land it. A different justification while one audit is open fails with `budget_audit_in_flight` — one ORCH cannot shop for a verdict. An audit that cannot run at all parks with `audit-unavailable` and is retried; silence never becomes budget.
+
+Verdicts are recorded server-side: `grant` raises the cap by the requested amount, `partial` by the auditor's stated number, `deny` by nothing and parks the run with reason `denied`. A deny ends the ladder at the human: the next attempt is refused with `budget_denied` until a human has changed the clamp file, so re-wording the justification buys nothing. Escalate with the ledger and the audit document. No tool op raises what a human lowered.
+
+Keep `plan.md`, the lane reports, and your evidence current. The auditor reads them against the machine facts, so stale run documents cost budget. Documentation freshness is enforced here by money, not by rules.
+
+## 8. Completion is not closure
 
 When MCP verifies a report completion block, it stores `report_sha256`, marks the assignment `completed` or `failed`, returns the lane to `idle`, and promotes the FIFO head. The worker tab and official OMP session remain open for the next assignment.
 
@@ -362,7 +412,7 @@ Close only when the responsibility lane or track is finished. Fresh inspection m
 
 Focus restoration is guarded: restore only displacement onto registry-owned coordinates, never unrelated user focus. Record partial restoration as a warning, not operation failure.
 
-## 8. Communication boundaries
+## 9. Communication boundaries
 
 - **Documents:** contract, decisions, ownership, durable results, completion, evidence, and handoff.
 - **MCP prompt/control:** canonical coordinates and hashes, wait requests, and lifecycle actions.
@@ -373,7 +423,7 @@ Metadata is not contract, settlement, or session authority. Terminal output is n
 
 Workers self-resolve from their assignment, `plan.md`, canonical project documents, and code. They request ORCH judgment only when evidence is absent or conflicting. ORCH escalates to the user only for plan-marked user decisions, irreversible external actions, governance, secrets/account access, or judgment only the user can supply.
 
-## 9. Verify and hand off
+## 10. Verify and hand off
 
 ORCH independently reproduces material worker claims and runs integration verification once at the integration boundary. Record acceptance or recovery in `[ORCH Response]` and `evidence.md` when used.
 
@@ -382,7 +432,7 @@ A handoff needs no human intervention: the whole bootstrap is four tool-drivable
 1. `herdr_track {action:"init"}` with the target `track_id`/`run_id` and the same canonical `cwd` (add `reset_of` for a reset sibling). Init lays out the deterministic run and its protocol documents.
 2. Write the handoff as the first entry of the source's inter-run channel document for the target — `a2a/orch-to-<target_track>_<target_run>.md`, `kind: handoff`, using `templates/handoff.md` as the entry body — and write the target run's `orchestrator-instructions.md` pointing at that channel document by absolute path. Both are ordinary file writes. `orchestrator-instructions.md` must exist before start (it is fingerprinted at first prompt and never replayed after a change) and it is the handoff's mandate analogue: the target ORCH writes its own `plan.md` after start. A reset sibling is the exception, because `init` copied the source plan and that `plan.md` must be present before start.
 3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md`, and reach another run only by appending to this run's channel document for it and then ringing `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
-4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 7.
+4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 8.
 
 The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended — give that alias a `modelRoles` entry, or the spawn silently inherits the default chain and only the preflight warning names it.
 
