@@ -7,18 +7,19 @@ This deterministic run is the durable channel between the OMP orchestrator (**OR
 - Official support is OMP-only.
 - Run identity is `(track_id, run_id)`; tool calls use those coordinates, never a model-supplied run path.
 - `storage.root` comes from strict user or project `herdr-delegator.json` configuration and must be absolute.
-- `herdr_track {action:"init"}` resolves `<storage.root>/<track_id>/<run_id>` and materializes this index plus the two role documents byte-identically from bundled templates.
+- `herdr_track {action:"open"}` is the single atomic entry for a new track: it lays out `<storage.root>/<track_id>/<run_id>`, materializes this index plus the two role documents byte-identically from bundled templates, fixes the mandate, spawns the ORCH pane, and records the ORCH birth that is this run's only command identity. The legacy `init` plus `start_orchestrator` pair remains for reset siblings and handoff targets.
+- A protocol document is never edited in place. A run keeps the protocol text it was created with: an older-but-shipped version is accepted with a named `template_drift_warning`, and any other content fails closed.
 
 ## Three-channel authority
 
 | Channel | Carries | Never substitutes for |
 |---|---|---|
-| Documents | contracts, plans, decisions, evidence, reports, and handoff state | live control or ownership proof |
+| Documents | contracts, plans, decisions, evidence, reports, budget ledger, and handoff state | live control or ownership proof |
 | MCP | canonical coordinates, hashes, guarded control, and lifecycle actions | durable contracts, results, or judgment |
-| Herdr metadata/UI | responsibility, assignment, state, session attestation, and live observations | contract, settlement, judgment, or session authority by itself |
-| `herdr_message` doorbells | one bounded server-composed signal naming a report, channel, or run after a boundary | authority of any kind — the named file alone carries facts |
+| Herdr metadata/UI | responsibility, assignment, state, session attestation, pane status markers, and live observations | contract, settlement, judgment, or session authority by itself |
+| `herdr_message` doorbells | one bounded server-composed pointer, sent after a document append, naming a report, channel, or run | authority of any kind — the named file alone carries facts |
 
-Terminal output is an observation, not a report or decision. Never place secrets in any document, control, observation, or audit channel.
+Every doorbell points at a document and carries no content of its own. Terminal output is an observation, not a report or decision. Never place secrets in any document, control, observation, or audit channel.
 
 ## Role-scoped rules
 

@@ -13,7 +13,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
 - **ID-002**: The package and plugin version MUST be `1.2.0`.
 - **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.2.0` under frontmatter metadata.
-- **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, and `herdr_message`.
+- **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
 - **ID-007**: The license MUST be Apache-2.0 with copyright 2026 Edgar Min.
@@ -67,7 +67,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **STO-003**: `run.json` MUST conform to [`run.schema.json`](../run.schema.json), bind run coordinates to canonical `cwd` and `run_path`, and reject unknown fields.
 - **STO-004**: `herdr_track {action:"init"}` MUST create or exactly reconcile only the run manifest, the bundled protocol set (`protocol.md`, `protocol-orch.md`, and `protocol-worker.md`), `a2a/`, the storage index row, and reset artifacts when requested.
 - **STO-005**: Initialization MUST NOT create placeholder plans, assignments, reports, evidence, registries, workspaces, tabs, panes, or OMP sessions.
-- **STO-006**: Existing `protocol.md`, `protocol-orch.md`, and `protocol-worker.md` MUST each be byte-identical to their corresponding bundled template.
+- **STO-006**: Existing `protocol.md`, `protocol-orch.md`, and `protocol-worker.md` MUST each match a digest this project has shipped for that document — byte-identical to the installed template, or a previously shipped version accepted with a named drift warning. Any other content MUST fail closed, and no template change MUST strand an existing run.
 - **STO-007**: `<storage.root>/index.json` MUST be strict version 1, atomic, lock-guarded, and consistent with the run manifest.
 - **STO-008**: `a2a/herdr-workers.json` version 3 MUST remain lifecycle identity authority; `a2a/delegation.json` version 1 MUST remain responsibility and assignment routing authority.
 - **STO-009**: Tool-owned manifests, indexes, registries, and locks MUST NOT be manually edited, moved, copied, or unlocked.
@@ -111,7 +111,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.1 Common result and input rules
 
-- **TOOL-001**: The public surface MUST contain exactly the four tools named in ID-004; raw Herdr management MUST NOT be public.
+- **TOOL-001**: The public surface MUST contain exactly the five tools named in ID-004; raw Herdr management MUST NOT be public.
 - **TOOL-002**: Every input MUST be a strict action-discriminated object and reject extra or action-inappropriate fields.
 - **TOOL-003**: Every action MUST include `track_id` and `run_id`.
 - **TOOL-004**: Where a `wait` object is accepted, `timeout_ms` MUST be an integer from 1,000 through 300,000 and default to 120,000; `until` values MUST be drawn from `idle`, `done`, and `blocked`.
@@ -123,13 +123,22 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.2 `herdr_track`
 
-- **RUN-001**: `init` MUST accept `cwd` and optional `reset_of`; `cwd` MUST be an existing absolute canonical project path.
-- **RUN-002**: `inspect` MUST accept no action-specific fields and return bounded delegation registry and target-ORCH observation, reporting unavailable bridge-dependent observation without mutating.
-- **RUN-003**: `start_orchestrator` MUST accept no action-specific fields and MUST derive canonical plan and orchestrator instruction coordinates.
-- **RUN-004**: `start_orchestrator` MUST resolve the configured OMP orchestrator role through bridge facts, pin the child to concrete provider/model/thinking, verify bootstrap attestation, and preserve prompt no-replay evidence.
-- **RUN-005**: `close` MUST require a fresh nonnegative `expected_registry_revision`.
-- **RUN-006**: Track close MUST fresh-inspect and session-verify every idle candidate before mutation and MUST reject the entire close when any lane is active, blocked, ambiguous, identity-conflicted, or unsafe.
-- **RUN-007**: A sibling reset MUST use a different coordinate under the same storage root, copy the source plan, and record `close-settled-preserve-active` plus `revalidate-before-import`.
+- **RUN-001**: `open` MUST be the single atomic entry for a new track and MUST, in one call, lay out the run, fix the bounded mandate as `orchestrator-instructions.md`, stamp the creating session, spawn the ORCH pre-aligned to the configured orchestrator role, and record the ORCH birth. `cwd` MUST be an existing absolute canonical project path.
+- **RUN-001a**: `open` MUST stamp the creator record before the spawn, so a failed spawn leaves a run no session can command and only that creator can complete; it MUST be re-entrant under an identical mandate and MUST refuse a different mandate with `mandate_conflict`.
+- **RUN-001b**: The session that calls `open` MUST be retired for that run: its later guarded calls MUST fail `creator_session_retired`, and the result MUST carry a redirection pointer naming the ORCH pane.
+- **RUN-001c**: Mandate limits MUST be published up front and named with the observed size on rejection: intent 4096 characters, each list entry 500 characters, at most 32 entries per list, whole rendered document 16384 bytes.
+- **RUN-002**: `init` MUST accept `cwd` and optional `reset_of` and MUST remain available for reset siblings and handoff targets; it MUST be refused on a run that carries a creator record.
+- **RUN-003**: `inspect` MUST accept no action-specific fields and return bounded delegation registry, target-ORCH, and budget observation, reporting unavailable bridge-dependent observation without mutating.
+- **RUN-004**: `start_orchestrator` MUST accept no action-specific fields, MUST resolve the configured OMP orchestrator role through bridge facts, pin the child to concrete provider/model/thinking, verify bootstrap attestation, and preserve prompt no-replay evidence; it MUST be refused with `track_opened_atomically` on an `open`-managed run.
+- **RUN-004a**: No alignment command MUST exist. Every ORCH MUST be born pre-aligned by its spawn, and caller model alignment MUST NOT be a precondition of `open`.
+- **RUN-005**: `budget_extend` MUST require a bounded justification (`done`, `remaining`, `why_more`) and MUST grant nothing on its own; see section 5.6.
+- **RUN-006**: `revive` MUST default to resuming the recorded birth session with no new generation, and MUST create generation+1 only under the gates in section 5.7.
+- **RUN-007**: `close` MUST require a fresh nonnegative `expected_registry_revision`.
+- **RUN-008**: Track close MUST fresh-inspect and session-verify every idle candidate before mutation and MUST reject the entire close when any lane is active, blocked, ambiguous, identity-conflicted, or unsafe.
+- **RUN-009**: A sibling reset MUST use a different coordinate under the same storage root, copy the source plan, and record `close-settled-preserve-active` plus `revalidate-before-import`.
+- **RUN-010**: A run's ORCH identity MUST be the latest record in the registry's birth chain. Guarded run-command ops MUST accept only that session, MUST reject a retired generation with `stale_orch_generation`, a stranger with `orch_identity_mismatch`, and the retired creator with `creator_session_retired`.
+- **RUN-011**: Names MUST be the supervision surface: space `herdr/<track_id>`, run anchor tab and ORCH pane `ORCH <track_id>/<run_id>` plus an optional status marker, worker pane `w<N> <responsibility_key>`. Labelling MUST be display-only and MUST degrade to a warning.
+- **RUN-012**: A run's materialized protocol documents MUST be accepted when they match any digest this project has shipped for that document; an older-but-shipped digest MUST be accepted with a named `template_drift_warning`, and any other content MUST fail closed. A template change MUST NOT make an existing run unloadable or unrevivable.
 
 ### 5.3 `herdr_assignment`
 
@@ -138,11 +147,11 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ASN-016**: `add` MUST verify the immutable artifact before routing, select exact responsibility reuse or valid separation, ensure session/model identity, record prompt intent, send only a canonical pointer, wait to a natural boundary, and verify persisted identity after prompt.
 - **ASN-017**: A duplicate identical assignment MUST return a no-effect observation; a queued assignment MUST remain queued without lifecycle wait.
 - **ASN-018**: `wait` MUST require only `assignment_id` plus optional `wait`; a timeout MUST have no mutation effect. An elapsed wait window MUST surface as a successful no-effect observation carrying `timed_out: true` and the freshly observed lane state, never as an error result.
-- **ASN-019**: `respond` MUST require `assignment_id`, a fresh nonnegative `expected_state_change_seq`, and one strict response.
-- **ASN-020**: A text response MUST contain 1–8,000 characters. A key response MUST contain 1–32 values drawn only from `enter`, `esc`, `up`, `down`, `left`, `right`, `tab`, `shift+tab`, `y`, and `n`.
-- **ASN-021**: `respond` MUST fresh-inspect the bound lane, require state `blocked`, and reject a stale sequence before sending input.
-- **ASN-022**: Text MUST be used only for free-form input; allowlisted keys MUST be used only for an inspected interactive surface.
-- **ASN-023**: A prompt, response, or active-assignment resume whose effect cannot be proved MUST converge on assignment state `ambiguous` with bounded replay facts.
+- **ASN-019**: There MUST be no assignment response action. ORCH answers a worker — decision request, ruling, or a worker blocked on input — by appending an `[ORCH Response]` block to `a2a/w<N>-report.md` and sending `herdr_message {action:"wake_worker"}`; the wake is pane input, so it reaches an idle and an input-waiting worker alike.
+- **ASN-020**: The report append MUST be the authority and the wake MUST be a pointer only; a missing or failed wake MUST NOT block settlement.
+- **ASN-021**: `blocked` MUST remain an observable assignment and lane state; only the response tool action is removed.
+- **ASN-022**: Secrets or account access MUST be escalated to the user, never requested through a worker report or a doorbell.
+- **ASN-023**: A prompt or active-assignment resume whose effect cannot be proved MUST converge on assignment state `ambiguous` with bounded replay facts.
 - **ASN-024**: Assignment state MUST be exactly `queued`, `prompting`, `working`, `blocked`, `completed`, `failed`, or `ambiguous`.
 - **ASN-025**: Internal lifecycle phases MUST NOT expand the public or persisted assignment state vocabulary.
 
@@ -155,22 +164,50 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **WRK-005**: Resume MUST fresh-inspect and exact-match requested, delegation-registry, lifecycle-registry, and JSONL session identity before mutation.
 - **WRK-006**: `close` MUST require `worker_id`, exact `expected_session_id`, and fresh nonnegative `expected_state_change_seq`.
 - **WRK-007**: Worker close MUST require a settled lane, exact registry/session ownership, and safe pane topology.
-- **WRK-008**: Assignment delivery and blocked response MUST be available only through `herdr_assignment`, not worker lifecycle actions.
+- **WRK-008**: Assignment delivery MUST be available only through `herdr_assignment`, not worker lifecycle actions; answering a worker MUST be a report append plus `herdr_message wake_worker`.
 
 ### 5.5 `herdr_message`
 
-- **MSG-001**: `wake_orch` MUST require `assignment_id` and a `boundary` from `completed`, `failed`, `blocked`, `decision-request`; `wake_peer` MUST require `to_worker_id`; `notify_run` MUST require `to_track_id`, `to_run_id`, a `kind` from `fact`, `bottleneck`, `request`, `handoff`, and a 1–500 character `note` normalized to one line.
-- **MSG-002**: The server MUST compose every delivered text and resolve every target from run records; callers MUST NOT supply prompt text, panes, agent names, or argv.
+- **MSG-001**: `wake_orch` MUST require `assignment_id` and a `boundary` from `completed`, `failed`, `blocked`, `decision-request`; `wake_peer` and `wake_worker` MUST require `to_worker_id`; `notify_run` MUST require exactly `to_track_id` and `to_run_id` and MUST accept no payload.
+- **MSG-002**: The server MUST compose every delivered text and resolve every target from birth records and the worker registry; callers MUST NOT supply prompt text, panes, agent names, or argv.
 - **MSG-003**: Delivery MUST be transported as Herdr agent-prompt pane input — the pane input is what triggers the receiving session — and MUST NOT use any other signaling channel.
 - **MSG-004**: A message call MUST hard-error only on invalid input; delivery outcome MUST surface as a successful observation with `delivery` drawn from `delivered`, `rejected_blocked`, `target_unresolved`, `failed`, so a broken channel is visible without inviting retry loops or halting flow.
 - **MSG-005**: Every send attempt and outcome MUST be appended best-effort to the sending run's `a2a/messages.jsonl`; log failure MUST NOT block the message.
 - **MSG-006**: Sender identity is advisory routing context: an unverifiable bridge MUST degrade the sender to `unverified` with a warning instead of refusing delivery, except `wake_peer`, whose channel name requires a verified sender lane.
-- **MSG-007**: Attested `init`, `add`, and `respond` calls MUST record the verified caller pane and session as the run's advisory ORCH wake target without blocking the guarded action when recording fails.
+- **MSG-007**: A doorbell MUST carry no content of its own. `notify_run` MUST require the sender-owned inter-run channel document `a2a/orch-to-<to_track_id>_<to_run_id>.md` to exist and be non-empty, MUST ring with that document's path, SHA-256, and byte count, and MUST hard-error `channel_document_missing` or `channel_document_empty` otherwise.
+- **MSG-008**: `notify_run` MUST be ORCH-to-ORCH only; a worker lane sender MUST be refused as the forbidden cross-organization message it is.
+
+### 5.6 Budget
+
+- **BUD-001**: A budget MUST be a justification cadence, not a wall: crossing a cap MUST park the run explicitly and MUST NOT terminate any session.
+- **BUD-002**: Metering MUST be a run-level aggregate over every session the registry knows — each ORCH generation and every lane — read from the official OMP JSONL on a generative basis (input, output, cache-write, reasoning; never cache-read or a total that includes it), plus wall clock from the recorded start. Precise accounting is a non-goal.
+- **BUD-003**: A session whose snapshot cannot be read MUST be charged a documented conservative allowance rather than nothing, and the observation MUST report measured, assumed, and judged totals separately.
+- **BUD-004**: The budget MUST be judged at every guarded op. While parked, only a landing allowlist MUST run: assignment `wait`, worker `close`, track `close`, `budget_extend`, doorbells, and read-only actions. A queued head MUST NOT be dispatched, and `add` and worker `resume` MUST fail `budget_parked`.
+- **BUD-005**: Park reasons MUST be exactly `over-cap`, `audit-unavailable`, `clamp-unreadable`, `approval-required`, `denied`, recorded in the registry with a bounded detail, appended to the append-only ledger, and marked on the ORCH pane name.
+- **BUD-006**: A parked run MUST resume automatically at the next guarded op whose judgment is no longer over the ceiling.
+- **BUD-007**: The mandate MAY declare a seed (`tokens`, `minutes`, `doorbell_policy`) as an estimate, never a contract; an undeclared seed MUST fall back to documented defaults so no run spends unbounded without ever justifying itself.
+- **BUD-008**: `budget_extend` MUST require a bounded justification, MUST be limited to at most +50% of the granted cap per extension, MUST NOT arrive within the published minimum interval of the previous extension, and MUST grant nothing without a recorded verdict.
+- **BUD-009**: The server — never the ORCH — MUST spawn the auditor as a clean session on the `slow` worker profile, seed its document with the request and machine facts, and record the verdict server-side. The auditor MUST NOT be a responsibility lane, MUST NOT be addressable by the ORCH, and MUST be closed once settled, with unclosed auditors swept at later budget ops.
+- **BUD-010**: A verdict MUST be `grant`, `partial`, or `deny`. A grant MUST move both the token and wall-clock dimensions. A deny MUST park the run and MUST end the ladder at the user: a further extension MUST be refused until the human-owned clamp file changes.
+- **BUD-011**: An audit that cannot run or produces no verdict MUST park fail-closed and be retried; silence MUST NOT become budget.
+- **BUD-012**: `budget-clamp.json` MUST be human-owned and MUST only lower the effective ceiling; clamping to 0 MUST be a kill switch. An unreadable or malformed clamp MUST park the run rather than degrade to no clamp. No tool op MUST raise what the human lowered.
+- **BUD-013**: Under doorbell policy `full` an audit verdict alone MUST NOT raise the effective cap; the human raises the clamp. Under `notify` the ledger and pane marker MUST be the notification.
+- **BUD-014**: The budget ledger MUST be server-written and append-only, and the ORCH MUST NOT write it or the registry's budget record.
+
+### 5.7 Revival
+
+- **REV-001**: `revive` MUST NOT require the caller to be the birth session, because the ORCH may be exactly what is missing; a caller from a retired generation MUST be refused `stale_orch_generation`.
+- **REV-002**: `resume` MUST reconnect the recorded birth session by its exact official path, MUST create no generation, and MUST refuse `revival_session_changed` without recording a birth when a different session identity returns.
+- **REV-003**: `rebirth` MUST create generation+1 only when all of: a human-owned `rebirth-approval.json` names exactly the next generation and acknowledges the context loss; the run's mandate and `plan.md` are non-empty and canonical; no assignment is `ambiguous`; and the previous ORCH agent is not live.
+- **REV-004**: Session retirement MUST drop only the recorded session identity and MUST preserve workspace, anchor tab, pane, agent name, instruction path, and launch profile; no public operation MUST close the retained workspace or kill a running session.
+- **REV-005**: A rebirth birth record MUST carry `origin: "rebirth"` and the approval's SHA-256, and MUST NOT exist at generation 1.
+- **REV-006**: The approval gate MUST be documented as a contents check, never an authorship proof: the guarantee is attributability through the artifact, the generation record, and the ledger.
+- **REV-007**: A parked run MUST remain revivable, and revival MUST re-apply the budget marker and record the revival in the ledger. A reborn generation MUST remain inside the run's metered aggregate.
 
 ## 6. Documents, control, and observation
 
-- **COM-001**: Documents MUST carry contracts, ownership, user boundaries, decisions, durable results, completion, verification, reset lineage, and handoff.
-- **COM-002**: MCP prompt/control MUST carry canonical coordinates and hashes, waits, bounded blocked responses, resume, and close.
+- **COM-001**: Documents MUST carry contracts, ownership, user boundaries, decisions, durable results, completion, verification, reset lineage, budget trail, and handoff.
+- **COM-002**: MCP prompt/control MUST carry canonical coordinates and hashes, waits, lifecycle actions, budget justification, and revival.
 - **COM-003**: Herdr metadata MUST carry display-only responsibility, assignment, assignment state, bootstrap identity, and live observation.
 - **COM-004**: Herdr metadata, terminal output, public settlement/staleness/total observations, and advisory ownership observations MUST NOT be treated as contract, judgment, settlement, attribution, or session authority by themselves.
 - **COM-005**: Observation metadata source MUST be `herdr-delegator:observation` and tokens MUST be limited to `responsibility`, `assignment`, and `assignment-state`.
@@ -228,7 +265,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **WAKE-002**: Workers SHOULD send exactly one `wake_orch` after a completion block or a decision request; the dispatch prompt MUST direct them to it.
 - **WAKE-003**: A peer wake MUST be sent only over a plan-authorized directional channel and only by its declared sender; a receiver MUST act on the named file, never on message text.
 - **WAKE-004**: On message receipt, settlement and state MUST still be established only through guarded tool actions; a missing, failed, or rejected message MUST NOT block settlement or recovery.
-- **WAKE-005**: Orchestrator-to-orchestrator `notify_run` covers any cross-run communication need — discovered facts, observed bottlenecks, bounded requests, handoff boundaries — and the receiving ORCH MUST record durable content in its own run documents.
+- **WAKE-005**: Orchestrator-to-orchestrator communication MUST be an append to the sender-owned inter-run channel document followed by a payload-free `notify_run`; the entry structure carries the kind (`fact`, `bottleneck`, `request`, `handoff`) and the note. The counterpart MUST answer in its own reverse channel, and both sides MUST record anything durable in their own run documents.
+- **WAKE-006**: Resource contention between runs MUST be negotiated in those channel documents with each side recording the agreement it accepted; on failed negotiation both sides MUST stop and raise decision requests to their own users. Server-side enforcement of an inter-run contract is a named non-goal.
 
 ## 9. Routing and user boundaries
 
@@ -248,7 +286,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **SEC-003**: Errors and live output returned to the model MUST be bounded.
 - **SEC-004**: Plans, assignments, reports, evidence, peer channels, examples, and tool responses MUST NOT contain secrets, authentication material, private keys, personal data, or unnecessary private-source excerpts.
 - **SEC-005**: This plugin MUST NOT be represented as a secret store, redaction layer, sandbox, authorization system, or data-loss-prevention system.
-- **SEC-006**: Secrets or account access MUST be escalated to the user rather than requested through worker reports or blocked responses.
+- **SEC-006**: Secrets or account access MUST be escalated to the user rather than requested through worker reports, doorbells, or any budget or revival artifact.
 - **SEC-007**: Public documentation and package metadata MUST remain product-neutral, English-only, and free of local machine paths.
 
 ## 11. Installation and packaging
@@ -274,15 +312,17 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 13. Observable acceptance scenarios
 
 - **ACC-001 — Clean initialization**: `herdr_track init` derives deterministic storage, creates the byte-identical three-document bundled protocol set plus only owned initialization artifacts, and creates no worker or placeholder work artifact.
-- **ACC-002 — Three-tool boundary**: MCP initialization lists exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the extension registers none of them.
+- **ACC-002 — Five-tool boundary**: MCP initialization lists exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`; the extension registers none of them.
 - **ACC-003 — Exact responsibility reuse**: Two sequential assignments with the same responsibility route to the same worker ID, workspace, tab, root pane, and official OMP session.
 - **ACC-004 — Context retention**: The second reused assignment can report a nonce or fact established only by the first assignment in that same official session.
 - **ACC-005 — Busy-lane FIFO**: A second same-responsibility assignment queues while the lane is active and does not create another worker.
 - **ACC-006 — Simple separation**: A second lane is created only with one valid separation kind, short reason, and existing conflicting worker.
 - **ACC-007 — Immutable assignment**: Hash mismatch, malformed Markdown, unsafe file identity, or duplicate ID/content conflict fails before prompt.
 - **ACC-008 — Seven states**: Persisted and public assignment observations use only the seven states in ASN-024.
-- **ACC-009 — Exact blocked response**: A stale sequence is rejected without input; a fresh allowlisted key response to an inspected dialog advances the sequence and reaches a natural boundary.
-- **ACC-010 — Ambiguous response recovery**: When response transport is ambiguous, no replay occurs; fresh inspection may prove the effect by a sequence advance and completed assignment.
+- **ACC-009 — Answer without a response action**: An `[ORCH Response]` append plus `wake_worker` reaches an idle worker and an input-waiting one alike; no response tool action exists to reject a stale sequence.
+- **ACC-010 — Budget cadence**: Crossing the cap parks the run with a named reason, ledger entry, and pane marker; `add` is refused while `wait` and `close` still land work; an extension's verdict is recorded server-side before the cap moves; a deny routes to the user and is not re-auditable until the clamp changes.
+- **ACC-010a — Revival**: A resume reconnects the recorded birth session with no new generation; a rebirth is refused without the user's approval file, sufficient documents, an ambiguity-free run, and a non-live ORCH.
+- **ACC-010b — Template compatibility**: A run materialized from a previously shipped protocol set still reconciles and still revives, with a named drift warning.
 - **ACC-011 — Completion retention**: A verified completion block stores report hash, returns the lane to idle, records last completion, and leaves the worker tab/session open.
 - **ACC-012 — Exact resume**: Resume succeeds only for the registry-bound, persisted-verified, non-duplicated official session.
 - **ACC-013 — Sidebar-aware close**: A settled lane closes only with the registry root pane and verified Sidebar auxiliaries; mixed or unproved topology fails closed.
@@ -301,21 +341,23 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **NG-008**: Automatically trusting evidence from a source reset run.
 - **NG-009**: Secret management, credential transport, redaction, privacy classification, or sandboxing.
 - **NG-010**: Guessing through malformed state, manually repairing registries, or bypassing conflicts with replacement identities.
-- **NG-011**: Phase 1 settlement observability enforcement, thresholds, hooks, resident monitoring, budget configuration keys, and money units.
+- **NG-011**: Money units and precise cost accounting. Budget itself is in scope (section 5.6): the machine meters conservatively, parks explicitly, and demands justification, but it never claims an exact spend figure or a currency amount.
+- **NG-012**: Server-enforced inter-run contracts, including file-boundary validation across runs. Contention is a contract pattern between orchestrators, recorded in both channel documents and arbitrated by the users.
+- **NG-013**: Preventing a budget-parked ORCH from opening a *different* track with a fresh seed. The escape is deliberately named rather than closed: the opener becomes that track's retired creator, so it gains no command there, and the new space and ORCH pane are loud on the supervision surface. Cross-track budget aggregation sits with the deferred items, not with the guarantees.
+- **NG-014**: Proving who authored a human-owned file. The clamp and rebirth-approval gates check contents, not authorship — the guarantee is attributability through durable artifacts, never prevention.
 
 ## Review checklist
 
 ### Implemented facts to verify against source
 
 - [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.2.0.
-- [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the namespaced OMP extension is bridge-only.
+- [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`; the namespaced OMP extension is bridge-only and registers no command.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.
 - [ ] Exact responsibility reuse, one active assignment, FIFO queueing, ordinal reservation, and simple separation match routing source.
 - [ ] Bridge fact derivation, strict file/session/metadata verification, and configured role resolution match bridge and MCP source.
 - [ ] Pre-prompt bootstrap and post-prompt JSONL gates preserve exact provider/model/thinking/session identity.
-- [ ] Prompt/response/resume ambiguity prohibits replay and converges on the single public `ambiguous` state.
-- [ ] Worker resume and close exact-session/sequence gates match composite and lifecycle source.
+- [ ] Prompt/resume ambiguity prohibits replay and converges on the single public `ambiguous` state.
 - [ ] Root `plugin.json`/`mcp.json`, executable plugin-relative launcher, namespaced extension path, publish allowlist, and direct runtime dependencies match Agent Plugins and compatibility metadata.
 - [ ] Documents, MCP control, and Herdr observation carry only their assigned authority.
 - [ ] Public artifacts contain no local machine path, secret, product dependency outside OMP/Herdr, or implementation history.
@@ -328,8 +370,12 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Sequential exact-responsibility assignments reuse the same worker ID, workspace/tab/pane, official session, and retained context.
 - [ ] A busy matching lane queues FIFO instead of creating a worker.
 - [ ] A new lane requires `direction`, `ownership`, or `dependency` plus a short reason and conflicting worker.
-- [ ] A fresh blocked assignment rejects stale sequence and accepts only bounded text or allowlisted keys for the inspected surface.
-- [ ] An ambiguous blocked response is inspected, never replayed blindly, and may settle only after the advanced sequence and report completion are proved.
+- [ ] A blocked or decision-requesting worker is answered by an `[ORCH Response]` append plus `wake_worker`, and the wake reaches it as pane input.
+- [ ] `notify_run` is refused without its channel document, and a worker lane cannot send one.
+- [ ] Crossing the budget cap parks the run with a named reason, ledger entry, and pane marker; `wait`/`close` still land work, `add`/`resume` are refused, and the run resumes by itself once under the ceiling.
+- [ ] An extension's verdict is recorded server-side before the cap moves; a failed or silent audit parks and never grants; a deny is not re-auditable until the clamp file changes.
+- [ ] A resume reconnects the recorded birth session with no new generation; a rebirth without approval, documents, an ambiguity-free run, or a dead ORCH is refused.
+- [ ] A run created from a previously shipped protocol set still reconciles, still revives, and reports a named drift warning.
 - [ ] Completion stores the report hash, returns the lane to idle, promotes FIFO, and retains the tab/session.
 - [ ] Track and worker close refuse active, blocked, ambiguous, stale-session, stale-sequence, or unsafe-topology state.
 - [ ] Terminal assignment results expose bounded settlement actuals without changing settlement prerequisites or the seven assignment states.

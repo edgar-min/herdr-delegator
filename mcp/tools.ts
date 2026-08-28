@@ -807,7 +807,7 @@ export class CompositeTools {
         // owned by `open`, so allowing it here would hand any attested session a
         // generation bump around the creator lockout.
         if ((await store.read()).orch_creator) throw new McpContractError("track_opened_atomically", "This run was opened with herdr_track open, which owns its ORCH spawn.", "attest", "Re-run herdr_track open with the identical mandate to reconcile the ORCH; start_orchestrator remains only for runs created by init.");
-        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking, true);
+        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
         const birth = await this.recordSpawnBirth(store, result.orchestrator);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
@@ -900,13 +900,13 @@ export class CompositeTools {
       `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
     ]).catch(() => undefined);
 
-    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking, false);
+    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
     if (!birth) {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
     }
     const observation = isObject(spawned.observation) ? spawned.observation : {};
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning].filter((value): value is string => typeof value === "string");
     // No skill routes here: plan and authoring boundaries belong to the ORCH,
     // and this result is read by the session that just retired.
     return {
@@ -990,7 +990,7 @@ export class CompositeTools {
       retired = retirement.observation;
     }
 
-    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, runtime.ctx, runtime.thinking, false);
+    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, runtime.ctx, runtime.thinking);
     const observedSession = stringField(started.orchestrator, ["session_id"]);
     if (mode === "resume" && observedSession && observedSession !== born.official_session_id) {
       // Fail closed: a resume that came back as a different session is a context
@@ -1020,7 +1020,7 @@ export class CompositeTools {
       ]).catch(() => undefined);
     }
     const observation = isObject(started.observation) ? started.observation : {};
-    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning]) {
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning]) {
       if (typeof candidate === "string") warnings.push(candidate);
     }
     return {

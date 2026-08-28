@@ -63,11 +63,11 @@ ORCH picks `profile` for each assignment from the assignment's work characterist
 
 Cost-efficient small mechanical work routes to host OMP task/subagents, so no persistent lane profile exists for it.
 
-### Session alignment
+### Every ORCH is born aligned
 
-`herdr_track open` needs attestation but not alignment: the opening session commands nothing, so its own model is irrelevant, and the ORCH it spawns launches pre-aligned to the configured `orchestrator.role`. Alignment binds only a session that commands a run itself, which is the legacy `init` + `start_orchestrator` path. There, guarded mutations fail closed with `orchestrator_model_mismatch` when the caller's model or thinking does not match the configured role — a fresh OMP session rarely starts on that role's model. On that error, ask the user to run `/herdr-align` once (a user-invoked OMP command from this plugin: it switches only this session's model/thinking to the configured role and refreshes bridge attestation), or to relaunch with the `omp --model`/`--thinking` values the error names.
+There is no alignment step and no alignment command. `herdr_track open` needs attestation but not alignment — the opening session commands nothing, so its own model is irrelevant — and the ORCH it spawns launches pre-aligned to the configured `orchestrator.role`. `orchestrator_model_mismatch` therefore fires only when the session dispatching work has drifted off that role; the error names both identities and the remedies.
 
-A configured role name that OMP recognizes but no `modelRoles` entry resolves inherits the default chain silently — a planning-grade name pre-aligning a default-grade model. The `open`/spawn preflight warns without blocking and returns the warning in `data.warnings`; report it to the user instead of dropping it.
+A configured role name that OMP recognizes but no `modelRoles` entry resolves inherits the default chain silently — a planning-grade name pre-aligning a default-grade model. The spawn preflight is the only place that notices: it warns without blocking and returns the warning in `data.warnings`. Report it to the user instead of dropping it; the run's ORCH keeps the model it was born with.
 
 Command singularity: a run's ORCH identity is its birth-record chain in tool-owned `a2a/delegation.json`. `herdr_track open` is the only path that births an ORCH for a new track; legacy `start_orchestrator` records a birth for an `init` run, and on a legacy run with no birth yet the first attested guarded command (assignment `add`/`wait`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`, a session from a retired generation fails with `stale_orch_generation`, and the session that opened the track fails with `creator_session_retired`. One run has exactly one commanding ORCH — never command a run another session already commands.
 
@@ -185,6 +185,8 @@ Runs are generations inside their track's space: a sibling run at the same `trac
 ```
 
 It also updates the tool-owned storage index. The born ORCH authors `plan.md` and every work artifact afterward. Never edit tool-owned manifests, indexes, `a2a/herdr-workers.json`, `a2a/delegation.json`, or their locks.
+
+A run keeps the protocol text it was created with. The three protocol documents are matched against every version this project has shipped: byte-identical to the installed template passes silently, a previously shipped version passes with a `template_drift_warning` in `data.warnings`, and anything else fails closed. So an installed upgrade never strands an existing run — but read that run's own `protocol-*.md`, not the newer template, and open a fresh track when you need the newer protocol.
 
 ### Legacy init path
 
@@ -371,7 +373,9 @@ One bounded line stating the fact, bottleneck, request, or handoff.
 Optional bounded body: coordinates, hashes, and the exact document to read.
 ```
 
-`kind` is one of `fact`, `bottleneck`, `request`, or `handoff`. A handoff is simply the channel's first conversation, and the counterpart's append — one `handoff` entry naming what it revalidated and accepted — is the ack that signs it. Resource contention between runs is negotiated in the same two documents, and each side records the agreement it accepted in its own channel document; on failed negotiation both sides stop and raise decision requests to their own users.
+`kind` is one of `fact`, `bottleneck`, `request`, or `handoff`. A handoff is simply the channel's first conversation, and the counterpart's append — one `handoff` entry naming what it revalidated and accepted — is the ack that signs it.
+
+Resource contention between runs is a contract pattern, not a lock: both orchestrators negotiate in these two documents, and each records the agreement it accepted in its own channel. On failed negotiation both sides stop and raise decision requests to their own users — do not proceed on an unacknowledged claim. The server does not enforce inter-run file boundaries; that is a named non-goal, so the discipline is yours and the record is what makes a broken agreement attributable.
 
 `notify_run` reads the document, hashes it, and rings the target ORCH with the path, SHA-256, and byte count; the result returns the same in `data.channel`. A missing or empty document fails with `channel_document_missing` or `channel_document_empty` before anything is delivered, so a bell can never point at nothing. A bell to a run whose ORCH is not born yet cannot be delivered either — `data.delivery` is `target_unresolved` and the warning names the missing birth record — which is why the handoff's first entry needs no bell: `start_orchestrator`'s own first prompt is what delivers it. A worker lane may not ring `notify_run` — cross-organization worker messaging is forbidden; escalate to your own ORCH instead.
 
@@ -430,6 +434,8 @@ Verdicts are recorded server-side: `grant` raises the cap by the requested amoun
 
 Keep `plan.md`, the lane reports, and your evidence current. The auditor reads them against the machine facts, so stale run documents cost budget. Documentation freshness is enforced here by money, not by rules.
 
+One escape is named rather than closed, so you know it is watched rather than unnoticed: nothing stops a parked ORCH from calling `herdr_track open` on a *different* track with a fresh seed. It buys little — the opener becomes that track's retired creator and commands nothing there, and a new space and ORCH pane appear on the supervision surface — and cross-track budget aggregation is a deferred non-goal. Doing it to dodge a park is a report you owe your user, not a workaround.
+
 ## 8. Completion is not closure
 
 When MCP verifies a report completion block, it stores `report_sha256`, marks the assignment `completed` or `failed`, returns the lane to `idle`, and promotes the FIFO head. The worker tab and official OMP session remain open for the next assignment.
@@ -459,7 +465,7 @@ A handoff needs no human intervention: the whole bootstrap is four tool-drivable
 
 1. `herdr_track {action:"init"}` with the target `track_id`/`run_id` and the same canonical `cwd` (add `reset_of` for a reset sibling). Init lays out the deterministic run and its protocol documents.
 2. Write the handoff as the first entry of the source's inter-run channel document for the target — `a2a/orch-to-<target_track>_<target_run>.md`, `kind: handoff`, using `templates/handoff.md` as the entry body — and write the target run's `orchestrator-instructions.md` pointing at that channel document by absolute path. Both are ordinary file writes. `orchestrator-instructions.md` must exist before start (it is fingerprinted at first prompt and never replayed after a change) and it is the handoff's mandate analogue: the target ORCH writes its own `plan.md` after start. A reset sibling is the exception, because `init` copied the source plan and that `plan.md` must be present before start.
-3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md`, and reach another run only by appending to this run's channel document for it and then ringing `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
+3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md`, and reach another run only by appending to this run's channel document for it and then ringing `notify_run`. No separate Herdr CLI step is needed — the target is born aligned like every other ORCH.
 4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 8.
 
 The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended — give that alias a `modelRoles` entry, or the spawn silently inherits the default chain and only the preflight warning names it.

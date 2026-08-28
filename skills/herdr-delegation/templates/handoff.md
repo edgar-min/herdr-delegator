@@ -104,8 +104,10 @@ Startup, inspection, revalidation, assignment, and source-lane lifecycle rules a
 - Inherited evidence dispositions: `<claim -> accept/defer/reject and ground>`
 - Preserved source-worker inspections and dispositions: `<worker -> evidence and disposition>`
 - Accepted work assignment artifacts and dispatch observations: `<IDs/hashes/results>`
-- Assignment-control and lane-lifecycle observations: `<wait/respond/list/inspect/resume/close effects>`
+- Assignment-control and lane-lifecycle observations: `<wait/list/inspect/resume/close effects; [ORCH Response] appends and wakes>`
 - Target acceptance, report, and relay ownership: `<coordinates and status>`
+- Budget state carried across: `<seed/granted cap, park state and reason, extension verdicts, ledger coordinate>`
+- Birth chain and revival history: `<generations with origin; any rebirth approval hash>`
 
 ## 8. Source closure record
 

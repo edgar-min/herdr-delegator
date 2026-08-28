@@ -99,7 +99,7 @@ Project values override user values. A run-local configuration may override prof
 
 Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
 
-If the live session does not match the configured orchestrator role, mutations fail closed with `orchestrator_model_mismatch`; the error names the expected identity and the remedies. Run `/herdr-align` in the session to switch it (session-only) to the configured role and refresh bridge attestation in one step.
+Every ORCH is born pre-aligned: `herdr_track open` spawns it with the configured role's `--model`/`--thinking`, so no session ever has to align itself and there is no alignment command. `orchestrator_model_mismatch` therefore fires only if the session dispatching work has drifted off that role, and the error names both sides plus the remedies.
 
 ### Advisory skill routing
 
@@ -112,16 +112,15 @@ Treat a routing rule like a dependency declaration: routed skill names become in
 1. Install the plugin, then `/reload-plugins` (or start a new OMP session).
 2. Create a user-layer `herdr-delegator.json` with an absolute `storage.root`, and map `orchestrator.role` and each worker profile to OMP roles you actually have configured (`@plan`, `@default`, ...).
 3. Open Herdr and start OMP inside a Herdr pane — every guarded mutation requires the pane bridge and fails closed outside it.
-4. Run `/herdr-align` once. A fresh session rarely starts on the configured orchestrator role's model, and guarded calls fail closed with `orchestrator_model_mismatch` until the session is aligned; the command switches this session's model/thinking to the configured role and refreshes bridge attestation.
-5. Invoke the bundled skill and let ORCH drive:
+4. Invoke the bundled skill and let ORCH drive:
 
 ```text
 /skill:herdr-delegation
 ```
 
-6. Optionally wire `skill_routing` rules to your trusted skills before the first real track — see above.
+5. Optionally wire `skill_routing` rules to your trusted skills before the first real track — see above.
 
-The ORCH chooses responsibilities, initializes a deterministic run, writes immutable assignment artifacts, dispatches them through MCP, verifies results, and performs recovery or closure. Target orchestrators started by `herdr_track start_orchestrator` launch pre-aligned (`--model`/`--thinking` from the configured role), so `/herdr-align` is only a caller-session concern.
+The session you invoke the skill in distills the conversation into a bounded mandate and calls `herdr_track open` once; that call creates the track's Herdr space and run, spawns the ORCH into its own pane pre-aligned, records the birth that is the run's only command identity, and retires the opening session for that track. From there the ORCH — not you — writes `plan.md`, chooses responsibilities, authors immutable assignments, dispatches them through MCP, verifies results, and performs recovery, budget justification, or closure. The user converses with the ORCH pane.
 
 ## Responsibility lanes
 
@@ -164,9 +163,12 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 
 ### `herdr_track`
 
-- `init`: run coordinates, canonical project `cwd`, optional sibling `reset_of`.
-- `inspect`: bounded run, registry, and ORCH observation.
-- `start_orchestrator`: starts or reconciles the configured OMP orchestrator.
+- `open`: run coordinates, canonical project `cwd`, and a bounded `mandate` (`intent`, `constraints`, `shape_of_success`, optional `budget`). The single atomic birth; the opening session is retired for that track.
+- `init`: run coordinates, canonical project `cwd`, optional sibling `reset_of` — legacy layout for reset siblings and handoff targets.
+- `inspect`: bounded run, registry, ORCH, and budget observation.
+- `start_orchestrator`: legacy spawn; refused on a run `open` manages.
+- `budget_extend`: a bounded justification (`done`, `remaining`, `why_more`), optional `requested_tokens`.
+- `revive`: optional `mode` — `resume` reconnects the recorded birth session, `rebirth` starts generation+1 with the user's written approval.
 - `close`: requires a fresh registry revision and safely closes a fully settled track.
 
 ### `herdr_assignment`
@@ -174,11 +176,12 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 - `preflight`: assignment/responsibility IDs; validates the canonical draft's grammar before immutability, returns its server-computed SHA-256 and `authoring` skill routes, and never mutates state.
 - `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation and wait.
 - `wait`: assignment ID and optional wait.
-- `respond`: assignment ID, fresh blocked sequence, and bounded text or allowlisted keys.
+
+There is no response action: a worker is answered by appending an `[ORCH Response]` block to its lane report and ringing `herdr_message wake_worker`.
 
 `wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
 
-Dispatch is self-healing: a settlement that promotes the lane's FIFO head also dispatches it in the same guarded call, and a `wait` on a queued head of an idle lane dispatches it too. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane. `respond` on a queued assignment errors with `assignment_not_prompted` rather than silently succeeding.
+Dispatch is self-healing: a settlement that promotes the lane's FIFO head also dispatches it in the same guarded call, and a `wait` on a queued head of an idle lane dispatches it too. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane.
 
 Assignment state is exactly:
 
@@ -195,12 +198,12 @@ queued | prompting | working | blocked | completed | failed | ambiguous
 
 ### `herdr_message`
 
-- `wake_orch`: assignment ID and boundary; worker doorbell to the run's recorded ORCH wake target.
+- `wake_orch`: assignment ID and boundary; worker doorbell to the run's born ORCH.
 - `wake_peer`: peer lane ID; doorbell after a plan-authorized channel append.
-- `wake_worker`: own-lane ID; ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report — for decision-request workers that idled without a formal blocked state.
-- `notify_run`: target run coordinates, kind, and a one-line note ≤500 chars; orch-to-orch note for any cross-run need.
+- `wake_worker`: own-lane ID; ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report.
+- `notify_run`: target run coordinates only; ORCH-to-ORCH bell, refused unless this run's inter-run channel document for that target already exists.
 
-The server composes every delivered text, resolves targets from run records, and transports messages as Herdr pane input. Delivery is a soft observation (`delivered`, `rejected_blocked`, `target_unresolved`, `failed`) — only invalid input errors — and every attempt is logged to the sending run's `a2a/messages.jsonl`.
+Every doorbell points at a document and carries no content of its own. The server composes every delivered text, resolves targets from birth records and the worker registry, and transports messages as Herdr pane input. Delivery is a soft observation (`delivered`, `rejected_blocked`, `target_unresolved`, `failed`) and every attempt is logged to the sending run's `a2a/messages.jsonl`; only invalid input hard-errors, including a bell whose document does not exist yet.
 
 ### `herdr_friction`
 
@@ -228,10 +231,22 @@ Focus restoration never overrides unrelated user focus. Safe close requires the 
 
 ## Channel boundaries
 
-- Documents: contract, ownership, decisions, durable results, completion, evidence, and handoff.
-- MCP prompt/control: canonical coordinates and hashes, waits, blocked responses, resume, and close.
-- Herdr metadata: display-only responsibility, assignment, assignment state, session/model attestation, and live status.
-- `herdr_message` doorbells: one bounded server-composed signal after a boundary; never authority — workers wake ORCH after completion or a decision request, plan-authorized peers wake each other after channel appends, and orchestrators exchange bounded cross-run notes.
+Communication is uniform across every relationship: a document append carries the authority, and a doorbell carries a pointer to it and nothing else.
+
+| Relationship | Conversations | Document (authority) | Doorbell |
+|---|---|---|---|
+| user → ORCH | delegate, intervene, stop | mandate, `budget-clamp.json`, `rebirth-approval.json` | direct pane chat |
+| ORCH → user | report, decision request | `budget-ledger.md`, `plan.md`, reports | pane-name status marker |
+| ORCH → worker | direct, respond, nudge | assignment, `[ORCH Response]` in the lane report | dispatch delivery, `wake_worker` |
+| worker → ORCH | completion, blocked, decision request | report append | `wake_orch` |
+| worker ↔ worker | adjacent coordination (plan-authorized) | `a2a/w<N>-to-w<M>.md` | `wake_peer` |
+| ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<track>_<run>.md` | `notify_run` |
+| server ↔ auditor | budget audit | `budget-audit-<n>.md` and the ledger verdict | internal |
+| forbidden | cross-organization worker messaging (escalate instead), ORCH↔auditor contact, shadow channels | — | — |
+
+- Documents: contract, ownership, decisions, durable results, completion, evidence, budget trail, and handoff.
+- MCP prompt/control: canonical coordinates and hashes, waits, lifecycle actions, budget justification, revival.
+- Herdr metadata: display-only responsibility, assignment, assignment state, session/model attestation, pane status markers, and live status.
 
 Metadata and terminal output are not contract or settlement authority.
 

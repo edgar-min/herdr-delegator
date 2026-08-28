@@ -350,26 +350,30 @@ export async function resolveLaunchProfile(
  * is identity with `@default`: a fallback always matches it, and the only false
  * positive — a role deliberately mapped to the default model — makes the warning
  * a harmless note. This never blocks (decision 6): it names what the operator is
- * actually getting.
+ * actually getting. The spawn preflight is its only caller, so the remedy is
+ * fixed rather than passed in.
  */
 export function silentFallbackRoleWarning(
   role: string,
   expected: { provider: string; model: string },
   ctx: OmpModelContext,
-  remedy: string,
 ): string | undefined {
   if (role === "@default") return undefined;
   const fallback = ctx.models.resolve("@default");
   if (!fallback || fallback.provider !== expected.provider || fallback.id !== expected.model) return undefined;
-  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then ${remedy}.`;
+  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then open a fresh track so its ORCH is born on the intended model; this run's ORCH keeps the model it was spawned with.`;
 }
-
+/**
+ * Resolves the configured orchestrator role for a spawn. There is no caller
+ * alignment to assert: every ORCH is born pre-aligned by the spawn itself
+ * (decisions 1 and 6), so a caller's own model is never a precondition, and the
+ * parameter that used to demand it is gone.
+ */
 export async function resolveOrchestratorProfile(
   runPath: string,
   cwd: string,
   ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
-  requireCallerAlignment: boolean,
 ): Promise<{
   launch: Omit<TargetOrchestratorRecordWithBootstrapFacts,
     "workspace_id" | "tab_id" | "pane_id" | "agent_name" | "session_path" | "session_id" |
@@ -380,23 +384,7 @@ export async function resolveOrchestratorProfile(
 }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
   const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  const current = modelIdentity(ctx.models.current());
   const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
-  // Only the legacy caller-is-an-ORCH path asserts this. A birth-based open is
-  // issued by an ordinary chat session that will never command the run.
-  if (
-    requireCallerAlignment &&
-    (resolved.provider !== current.provider ||
-      resolved.model !== current.model ||
-      orchestratorThinking !== currentThinking)
-  ) {
-    throw orchestratorMismatchError(
-      "The live caller ORCH identity",
-      config.orchestrator.role,
-      { ...resolved, thinking: orchestratorThinking },
-      { ...current, thinking: currentThinking },
-    );
-  }
   const profile = {
     config_sources: sources,
     requested_role: config.orchestrator.role,

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { acceptProtocolDocument } from "./templates";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, verifiedHerdrSidebarAuxiliaryPane, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
@@ -23,6 +24,9 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
     const templatePath = path.join(protocolTemplateDirectory, name);
     return { name, templatePath, template: await readFile(templatePath) };
   }));
+  // Older-but-shipped protocol documents are accepted with a named warning, and
+  // the warning has to reach the caller's result, so it lives at function scope.
+  const templateWarnings: string[] = [];
   let resetCoordinate: { track_id: string; run_id: string; path: string } | undefined;
   let sourcePlanPath: string | undefined;
   let sourcePlanHash: string | undefined;
@@ -135,13 +139,19 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         const protocolPath = path.join(runPath, protocol.name);
         try {
           const protocolStat = await lstat(protocolPath);
-          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(protocol.template)) {
+          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(protocolPath)) !== protocolPath) {
             throw new ContractError(
               "run_init_conflict",
-              `Existing ${protocol.name} is not canonical or differs from the bundled template.`,
+              `Existing ${protocol.name} is not a canonical regular file.`,
               "storage",
             );
           }
+          // The pin accepts any digest this project has shipped for this
+          // document, so a template edit never strands a run that was created
+          // before it — including on the revival path, which re-checks these
+          // same bytes. Older-but-shipped is accepted loudly, never silently.
+          const accepted = acceptProtocolDocument(protocol.name, await readFile(protocolPath), protocol.template);
+          if (accepted.warning) templateWarnings.push(accepted.warning);
         } catch (error: unknown) {
           if (error instanceof ContractError) throw error;
           if (!isObject(error) || error.code !== "ENOENT") {
@@ -349,7 +359,7 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         protocol_path: path.join(runPath, "protocol.md"),
         reset_of: resetCoordinate,
       },
-      observation: { index_path: indexPath, storage_root: storageRoot },
+      observation: { index_path: indexPath, storage_root: storageRoot, ...(templateWarnings.length ? { template_drift_warning: templateWarnings.join(" | ") } : {}) },
     };
   } catch (error: unknown) {
     if (stagingPath !== undefined) {
@@ -899,17 +909,14 @@ async function inspectOrchestrator(
 }
 
 /**
- * Spawns and first-prompts the run's target ORCH. `requireCallerAlignment` is
- * the legacy `start_orchestrator` contract, where the caller was itself an ORCH
- * and had to already run the configured orchestrator role. A birth-based `open`
- * passes false: the creator session commands nothing and dies for this run
- * (decisions 3 and 6), so its own model is irrelevant to the spawn.
+ * Spawns and first-prompts the run's target ORCH. Every ORCH is born pre-aligned
+ * here, so a caller's own model is never a precondition of a spawn: there is no
+ * alignment step left for any session to perform (decisions 1, 3 and 6).
  */
 async function startOrchestrator(
   params: TrackParams,
   ctx: OmpModelContext,
   currentThinking: ThinkingLevel,
-  requireCallerAlignment: boolean,
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -920,34 +927,42 @@ async function startOrchestrator(
   const instructionPath = await canonicalOrchestratorInstruction(runPath);
   const orchestratorProtocolPath = path.join(runPath, "protocol-orch.md");
   const orchestratorProtocolTemplatePath = path.join(path.dirname(PROTOCOL_TEMPLATE_PATH), "protocol-orch.md");
+  // Revival comes through here too, so this check decides whether a run created
+  // before a template edit can ever get its ORCH back. It therefore accepts any
+  // digest this project has shipped for protocol-orch.md and names an older one,
+  // instead of pinning the run to the installed bytes.
+  let protocolDriftWarning: string | undefined;
   try {
     const protocolStat = await lstat(orchestratorProtocolPath);
     if (
       !protocolStat.isFile() ||
       protocolStat.isSymbolicLink() ||
-      (await realpath(orchestratorProtocolPath)) !== orchestratorProtocolPath ||
-      !(await readFile(orchestratorProtocolPath)).equals(await readFile(orchestratorProtocolTemplatePath))
+      (await realpath(orchestratorProtocolPath)) !== orchestratorProtocolPath
     ) {
-      throw new Error("protocol mismatch");
+      throw new Error("protocol path is not canonical");
     }
   } catch {
-    throw new ContractError("invalid_instruction_path", "protocol-orch.md is missing, non-canonical, or differs from its bundled template.", "validate");
+    throw new ContractError("invalid_instruction_path", "protocol-orch.md is missing or not a canonical regular file.", "validate");
   }
+  protocolDriftWarning = acceptProtocolDocument(
+    "protocol-orch.md",
+    await readFile(orchestratorProtocolPath),
+    await readFile(orchestratorProtocolTemplatePath),
+  ).warning;
   const instructionFingerprint = sha256(await readFile(instructionPath));
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
   const { registryPath } = registryPaths(runPath);
-  const resolved = await resolveOrchestratorProfile(runPath, cwd, ctx, currentThinking, requireCallerAlignment);
-  // Silent-fallback preflight (decision 6): an unconfigured-but-recognized OMP
-  // role inherits the default chain instead of failing, so the spawn would be
-  // pre-aligned to a default-grade model under a planning-grade name. This warns
-  // and never blocks — the spawn is still legitimate, just possibly cheaper than
-  // the operator believes.
+  const resolved = await resolveOrchestratorProfile(runPath, cwd, ctx, currentThinking);
+  // Silent-fallback preflight (decision 6), and now its only home: an
+  // unconfigured-but-recognized OMP role inherits the default chain instead of
+  // failing, so the spawn would be pre-aligned to a default-grade model under a
+  // planning-grade name. This warns and never blocks — the spawn is still
+  // legitimate, just possibly cheaper than the operator believes.
   const fallbackWarning = silentFallbackRoleWarning(
     resolved.launch.requested_role,
     { provider: resolved.launch.expected_provider, model: resolved.launch.expected_model },
     ctx,
-    "reopen the track once the role is configured",
   );
   const { binary, paneId } = await requireHerdrEnvironment();
   const caller = await observeOrchestrator(binary, paneId, resolved.caller, timeoutMs, signal);
@@ -1204,6 +1219,7 @@ async function startOrchestrator(
       pane_label: paneLabel,
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
       ...(fallbackWarning ? { role_fallback_warning: fallbackWarning } : {}),
+      ...(protocolDriftWarning ? { template_drift_warning: protocolDriftWarning } : {}),
       report_exists: await isFile(path.join(runPath, "orchestrator-report.md")),
       report_path: path.join(runPath, "orchestrator-report.md"),
     },

@@ -11,19 +11,27 @@ The 1.0.0 package follows Agent Plugins 1.0.0: portable `plugin.json`, `skills/`
 - A **responsibility** is durable direction, ownership, and context.
 - A **worker lane** is one persistent registry-owned Herdr tab and official OMP session serving a responsibility.
 - An **assignment** is one immutable unit of work routed to a lane.
-- An **ORCH** is the OMP session that decomposes, routes, decides, verifies, and recovers.
+- An **ORCH** is born, never appointed: the session `herdr_track open` spawns into the track's own pane. Its birth record is the run's only command identity, and the session that opened the track is retired for it.
+- A **mandate** fixes what a track must achieve and why; `plan.md` is the born ORCH's own document and the only place how belongs.
+- A **budget** is a justification cadence: metered at every guarded op, parked explicitly when exceeded, extended only against a bounded justification a clean auditor judges.
 
 Exact responsibility reuse is the default. Each lane has one active assignment and a FIFO queue. Assignment completion returns the lane to idle without closing its tab or OMP session.
 
 ```mermaid
 flowchart LR
-  O[OMP ORCH] -->|contract| D[Deterministic documents]
-  O -->|3 composite tools| M[Bun stdio MCP]
+  U[User] -->|mandate| B[Bootstrapper session]
+  B -->|herdr_track open, then retires| M[Bun stdio MCP]
+  M -->|births| O[ORCH pane]
+  O -->|contract| D[Deterministic documents]
+  O -->|5 composite tools| M
   X[Bridge-only OMP extension] -->|session/model facts| M
   M -->|bounded lifecycle| H[Herdr]
   H --> W[Persistent responsibility lanes]
-  W -->|results| D
+  W -->|report appends| D
+  M -->|spawns, reads verdict| A[Clean budget auditor]
+  A -->|verdict| D
   H -->|live observation| O
+  O -->|pane name status| U
 ```
 
 ## Product boundaries
@@ -81,19 +89,35 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `mcp/tools.ts` | composite track/assignment/worker transactions, bridge verification, settlement, observation, close preparation |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` | layered configuration, deterministic run coordinates, manifests, atomic file authority |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session/model verification, resume, focus, and guarded close |
-| `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/respond/close operations consumed by MCP |
-| `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization and target-ORCH lifecycle consumed by MCP |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/close operations consumed by MCP |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
+| `mcp/budget.ts` | metering, clamp parsing, covenant math, audit document rendering, verdict parsing |
+| `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates |
 
-Public calls terminate at the three MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
+Public calls terminate at the five MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
 
 ## Three-channel authority
 
 | Channel | Carries | Does not carry |
 |---|---|---|
 | Documents | goal, ownership, dependencies, user boundaries, decisions, durable results, completion, verification, handoff | live terminal control |
-| MCP prompt/control | canonical IDs and hashes, waits, fresh blocked responses, resume/close gates | ad hoc duplicated contracts or raw Herdr commands |
-| Herdr metadata/UI | responsibility, assignment, assignment state, live status, bootstrap observation | contract, settlement, judgment, or session authority by itself |
-| Wake prompts | one bounded doorbell naming a report or channel path after a boundary | authority of any kind — the named file alone carries facts |
+| MCP prompt/control | canonical IDs and hashes, waits, lifecycle gates, budget justification, revival | ad hoc duplicated contracts or raw Herdr commands |
+| Herdr metadata/UI | responsibility, assignment, assignment state, live status, pane status markers, bootstrap observation | contract, settlement, judgment, or session authority by itself |
+| Doorbells | one bounded pointer, sent after a document append, naming a report, channel, or run | authority of any kind — the named file alone carries facts |
+
+Communication is uniform across every relationship: the document append carries authority and the doorbell carries a pointer.
+
+| Relationship | Conversations | Document (authority) | Doorbell |
+|---|---|---|---|
+| user → ORCH | delegate, intervene, stop | mandate, `budget-clamp.json`, `rebirth-approval.json` | direct pane chat |
+| ORCH → user | report, decision request | `budget-ledger.md`, `plan.md`, reports | pane-name status marker |
+| ORCH → worker | direct, respond, nudge | assignment, `[ORCH Response]` in the lane report | dispatch delivery, `wake_worker` |
+| worker → ORCH | completion, blocked, decision request | report append | `wake_orch` |
+| worker ↔ worker | adjacent coordination (plan-authorized) | `a2a/w<N>-to-w<M>.md` | `wake_peer` |
+| ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<track>_<run>.md` | `notify_run` |
+| server ↔ auditor | budget audit | `budget-audit-<n>.md`, ledger verdict | internal |
+| forbidden | cross-organization worker messaging (escalate instead), ORCH↔auditor contact, shadow channels | — | — |
 
 Terminal output is a bounded observation, not a durable result.
 
@@ -177,9 +201,12 @@ There is no fixed number of lanes and no complex scoring policy.
 
 ### `herdr_track`
 
-- `init {cwd, reset_of?}`
-- `inspect`
-- `start_orchestrator`
+- `open {cwd, mandate}` — the single atomic birth; retires the calling session for that track
+- `init {cwd, reset_of?}` — legacy layout for reset siblings and handoff targets
+- `inspect` — registry, ORCH, totals, and budget
+- `start_orchestrator` — legacy spawn; refused on an `open`-managed run
+- `budget_extend {justification, requested_tokens?, wait?}`
+- `revive {mode?}` — `resume` (default) or `rebirth`
 - `close {expected_registry_revision}`
 
 ### `herdr_assignment`
@@ -187,7 +214,8 @@ There is no fixed number of lanes and no complex scoring policy.
 - `preflight {assignment_id, responsibility_key}` — grammar validation and server-computed hash before immutability; no mutation
 - `add {assignment_id, responsibility_key, instructions_sha256, separation?, wait?}`
 - `wait {assignment_id, wait?}`
-- `respond {assignment_id, expected_state_change_seq, response}`
+
+There is no response action: a worker is answered by an `[ORCH Response]` append to its report plus `herdr_message wake_worker`.
 
 ### `herdr_worker`
 
@@ -216,15 +244,14 @@ stateDiagram-v2
   queued --> prompting: lane available
   prompting --> working: prompt effect verified
   working --> blocked: worker requests input
-  blocked --> working: exact-sequence response
+  blocked --> working: [ORCH Response] append plus wake
   working --> completed: completed report verified
   working --> failed: failed report verified
   prompting --> ambiguous: prompt effect uncertain
-  blocked --> ambiguous: response effect uncertain
   working --> ambiguous: active resume effect uncertain
 ```
 
-A wait timeout does not mutate state and surfaces as a successful `timed_out` observation with the fresh lane state, never an error. Potentially effected prompt, response, or active-assignment resume ambiguity converges on `ambiguous`. Internal operation details do not become additional public assignment states.
+A wait timeout does not mutate state and surfaces as a successful `timed_out` observation with the fresh lane state, never an error. Potentially effected prompt or active-assignment resume ambiguity converges on `ambiguous`. Internal operation details do not become additional public assignment states.
 
 At terminal settlement the lane becomes idle, records the last assignment, and promotes the FIFO head. Lane close is a separate lifecycle transition.
 
@@ -236,7 +263,15 @@ The unowned-change observation compares bounded Git porcelain paths with the uni
 
 Worker inspection returns `staleness` from persisted pane-revision activity timing plus the exact queued-assignment `queue_depth`, excluding the active assignment. Track inspection returns lane count, exact counts across the unchanged seven assignment states, counts and cumulative elapsed/token observations, and a `saturated` flag. Cumulative values clamp to `Number.MAX_SAFE_INTEGER` only when addition would overflow; that clamping sets `saturated`.
 
-ORCH uses settlement actuals, staleness, queue depth, track totals, and unowned-change paths as bounded signals for possible over- or under-spend and scope drift. They never authorize mutation, prove attribution or correctness, impose a threshold, or replace ORCH judgment. Phase 1 adds no enforcement, hooks, resident monitor, budget configuration keys, or money units.
+ORCH uses settlement actuals, staleness, queue depth, track totals, and unowned-change paths as bounded signals for possible over- or under-spend and scope drift. They never authorize mutation, prove attribution or correctness, impose a threshold, or replace ORCH judgment.
+
+## Budget and revival
+
+Settlement observability is advisory; the budget machine is not. Every guarded op meters the run — each ORCH generation and every lane session, from the official OMP JSONL on a generative basis, plus wall clock — and judges it against a cap seeded by the mandate. Crossing the cap parks the run: a named reason in the registry, an entry in the append-only `budget-ledger.md`, and a marker on the ORCH pane name. Only a landing allowlist runs while parked, and the run resumes by itself once judged back under the ceiling.
+
+An extension costs a bounded justification, obeys a per-extension step cap and a minimum interval, and grants nothing until a clean auditor — spawned by the server, never by the ORCH, and not a responsibility lane — appends a verdict the server records. A deny ends the ladder at the user. `budget-clamp.json` is the user's file and only lowers; no tool op raises what the user lowered. Money units and precise cost accounting remain out of scope.
+
+Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. A reborn generation inherits the metered spend it did not spend.
 
 ## Model and session verification
 

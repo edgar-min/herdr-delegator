@@ -440,7 +440,9 @@ function boundedIdentity(identity: OrchestratorIdentity): { model: string; think
  * The single `orchestrator_model_mismatch` constructor. Code, phase, retryable
  * and ambiguous-effect stay exactly as the fail-closed gates always set them;
  * only the bounded message and recovery text are enriched, so both sides of the
- * comparison and the three available remedies are visible at the callsite.
+ * comparison and the remaining remedies are visible at the callsite. A born ORCH
+ * is spawned pre-aligned, so this now fires only when the session dispatching
+ * work has drifted off its role — there is no alignment command to run.
  */
 export function orchestratorMismatchError(subject: string, role: string, expected: OrchestratorIdentity, live: OrchestratorIdentity): ContractError {
   const want = boundedIdentity(expected);
@@ -455,7 +457,7 @@ export function orchestratorMismatchError(subject: string, role: string, expecte
     "model_verify",
     {
       recovery: compactMessage(
-        `Run /herdr-align in the caller OMP session, or /switch to ${want.model} with thinking ${want.thinking}, or relaunch with omp --model ${want.model} --thinking ${want.thinking}.`,
+        `Guarded dispatch runs from the run's born ORCH, which is spawned pre-aligned. If you are that ORCH, /switch to ${want.model} with thinking ${want.thinking} — or relaunch with omp --model ${want.model} --thinking ${want.thinking} — before retrying; if you are not, converse with the ORCH pane instead of commanding its run.`,
         "Select the configured orchestrator role and thinking level before mutating Herdr state.",
       ),
     },
