@@ -65,6 +65,8 @@ Cost-efficient small mechanical work routes to host OMP task/subagents, so no pe
 
 Guarded mutations fail closed with `orchestrator_model_mismatch` when this session's model or thinking does not match the configured `orchestrator.role` — a fresh OMP session rarely starts on that role's model. At track start, or on that error, ask the user to run `/herdr-align` once (a user-invoked OMP command from this plugin: it switches only this session's model/thinking to the configured role and refreshes bridge attestation), or to relaunch with the `omp --model`/`--thinking` values the error names. Target orchestrators started via `herdr_track start_orchestrator` launch pre-aligned and never need this.
 
+Command singularity: a run's ORCH identity is its birth record chain in tool-owned `a2a/delegation.json`. `herdr_track start_orchestrator` records the spawned target ORCH as the newest birth generation; on a run with no birth yet, the first attested guarded command (assignment `add`/`wait`/`respond`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`; a session from a retired generation fails with `stale_orch_generation`. One run has exactly one commanding ORCH — never command a run another session already commands.
+
 ### Skill routing
 
 An optional `skill_routing.rules` array (at most 16 rules) routes installed skills to protocol boundaries:
@@ -243,12 +245,12 @@ Use worker operations for lane observation and lifecycle only. Assignment delive
 
 ### `herdr_message`
 
-- `wake_orch`: run coordinates, `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` — worker doorbell to the run's recorded ORCH wake target.
+- `wake_orch`: run coordinates, `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` — worker doorbell to the run's born ORCH (latest birth record).
 - `wake_peer`: run coordinates, `to_worker_id` — doorbell to a registered peer lane after a plan-authorized channel append.
 - `wake_worker`: run coordinates, `to_worker_id` — ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report; for decision-request workers that idled without a formal blocked state.
 - `notify_run`: run coordinates, `to_track_id`, `to_run_id`, `kind` from `fact`/`bottleneck`/`request`/`handoff`, one-line `note` ≤500 chars — orch-to-orch note for any cross-run need, not only handoff.
 
-The server composes every delivered text, resolves targets from run records, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); only invalid input errors, and every attempt is appended to the sending run's `a2a/messages.jsonl`. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
+The server composes every delivered text, resolves targets from ORCH birth records and the worker registry, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); only invalid input errors, and every attempt is appended to the sending run's `a2a/messages.jsonl`. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
 
 ### `herdr_friction`
 

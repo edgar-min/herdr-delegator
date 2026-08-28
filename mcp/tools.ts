@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import { appendFile, lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -13,34 +13,57 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 
 
 // ---------------------------------------------------------------------------
-// Messaging support. Delivery is deliberately soft: a message call only
-// hard-errors on invalid input. A dropped message is a silent failure, so every
-// attempt and outcome is appended to the sender run's a2a/messages.jsonl and the
-// result always reports a delivery observation instead of a retryable error.
+// Birth-based ORCH identity (identity/comms redesign, decision 1-2). The
+// latest birth record in a2a/delegation.json is the sole command identity for
+// a run: guarded run-command ops accept only the latest-generation birth
+// session and reject zombies (stale generations) and strangers. Until the
+// atomic `open` op exists, a run with no birth is claimed by the first
+// attested guarded command (origin "claim"); `start_orchestrator` records the
+// spawned ORCH as a new generation (origin "spawn").
 // ---------------------------------------------------------------------------
 
-type OrchWakeTarget = { pane_id: string; official_session_id: string; updated_at: string };
-
-function orchTargetPath(runPath: string): string { return path.join(runPath, "a2a", "orch-target.json"); }
-
-/** Best-effort advisory routing record; never blocks the guarded action that triggered it. */
-async function recordOrchTarget(runPath: string, facts: OmpRuntimeFacts): Promise<void> {
-  const target: OrchWakeTarget = { pane_id: facts.pane_id, official_session_id: facts.session_id, updated_at: nowIso() };
-  try { await writeFile(orchTargetPath(runPath), `${JSON.stringify(target, null, 2)}\n`, { mode: 0o600 }); } catch { /* advisory only */ }
+function latestBirth(registry: DelegationRegistry): OrchBirthRecord | undefined {
+  const births = registry.orch_births;
+  return births && births.length ? births[births.length - 1] : undefined;
 }
 
-async function readOrchTarget(runPath: string): Promise<OrchWakeTarget | undefined> {
-  try {
-    const parsed = JSON.parse(await readFile(orchTargetPath(runPath), "utf8")) as Partial<OrchWakeTarget>;
-    if (typeof parsed.pane_id === "string" && BOUNDED_TOKEN_RE.test(parsed.pane_id) && typeof parsed.official_session_id === "string") {
-      return { pane_id: parsed.pane_id, official_session_id: parsed.official_session_id, updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : "" };
+function orchIdentityError(births: readonly OrchBirthRecord[], sessionId: string): McpContractError {
+  const latest = births[births.length - 1];
+  if (births.some((birth) => birth.official_session_id === sessionId)) {
+    return new McpContractError("stale_orch_generation", `Caller session belongs to a retired ORCH generation; generation ${latest.generation} commands this run.`, "attest", "Stop commanding this run: a newer ORCH was born. Converse with the current ORCH pane instead.");
+  }
+  return new McpContractError("orch_identity_mismatch", `Caller session is not this run's ORCH (generation ${latest.generation}).`, "attest", "Only the run's born ORCH session may command it. Coordinate via herdr_message notify_run or the run documents.");
+}
+
+/** Singularity gate for guarded run-command ops; claims birth on first command. */
+export async function assertOrchCommand(store: DelegationStore, facts: OmpRuntimeFacts): Promise<void> {
+  const registry = await store.read();
+  const births = registry.orch_births ?? [];
+  const latest = births[births.length - 1];
+  if (latest) {
+    if (latest.official_session_id !== facts.session_id) throw orchIdentityError(births, facts.session_id);
+    return;
+  }
+  await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+    const current = next.orch_births ?? [];
+    const head = current[current.length - 1];
+    if (head) {
+      if (head.official_session_id !== facts.session_id) throw orchIdentityError(current, facts.session_id);
+      return;
     }
-  } catch { /* unresolved */ }
-  return undefined;
+    next.orch_births = [...current, {
+      generation: current.length + 1,
+      official_session_id: facts.session_id,
+      ...(facts.reported_session_path ? { official_session_path: facts.reported_session_path } : {}),
+      pane_id: facts.pane_id,
+      origin: "claim",
+      born_at: nowIso(),
+    }];
+  });
 }
 
 async function appendMessageLog(runPath: string, entry: Record<string, unknown>): Promise<void> {
@@ -594,10 +617,12 @@ export class CompositeTools {
     const run = runRef(input);
     try {
       if (input.action === "init") {
-        const initFacts = await loadFacts(this.adapter);
+        // Attestation-gated, but identity-free: init records no ORCH identity
+        // (friction 8a9dc4d2 — handoff init must never stamp the source
+        // session as the target run's wake target).
+        await loadFacts(this.adapter);
         const result = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd, reset_of: input.reset_of });
         const initialized = await DelegationStore.resolve(input.track_id, input.run_id);
-        await recordOrchTarget(initialized.runPath, initFacts.facts);
         const boundaries: SkillRouteBoundary[] = input.reset_of ? ["plan", "authoring", "reset"] : ["plan", "authoring"];
         const routes = await advisorySkillRoutes(initialized.runPath, initialized.cwd, boundaries, "orch");
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, ...skillRouteFields(routes), data: result };
@@ -612,8 +637,10 @@ export class CompositeTools {
       const runtime = await loadFacts(this.adapter);
       if (input.action === "start_orchestrator") {
         const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: result };
+        const birth = await this.recordSpawnBirth(store, result.orchestrator);
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
+      await assertOrchCommand(store, runtime.facts);
       const registry = await store.read();
       if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
       const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed");
@@ -630,6 +657,23 @@ export class CompositeTools {
       const closed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { for (const lane of Object.values(next.lanes)) if (lane.state !== "failed") lane.state = "closed"; });
       return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes) } };
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
+  }
+
+  /** Records the spawned target ORCH as the run's newest birth generation (idempotent per identity). */
+  private async recordSpawnBirth(store: DelegationStore, orchestrator: unknown): Promise<OrchBirthRecord | undefined> {
+    const paneId = stringField(orchestrator, ["pane_id"]);
+    const sessionId = stringField(orchestrator, ["session_id"]);
+    const sessionPath = stringField(orchestrator, ["session_path"]);
+    if (!paneId || !sessionId || paneId.length > 80 || sessionId.length > 80 || !BOUNDED_TOKEN_RE.test(paneId) || !BOUNDED_TOKEN_RE.test(sessionId)) return undefined;
+    let recorded: OrchBirthRecord | undefined;
+    await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      const births = next.orch_births ?? [];
+      const latest = births[births.length - 1];
+      if (latest && latest.official_session_id === sessionId && latest.pane_id === paneId) { recorded = latest; return; }
+      recorded = { generation: births.length + 1, official_session_id: sessionId, ...(sessionPath && sessionPath.length <= 4096 ? { official_session_path: sessionPath } : {}), pane_id: paneId, origin: "spawn", born_at: nowIso() };
+      next.orch_births = [...births, recorded];
+    });
+    return recorded;
   }
 
   /**
@@ -731,7 +775,7 @@ export class CompositeTools {
           throw new McpContractError("invalid_run_layout", "protocol-worker.md is missing or not a canonical regular file.", "validate", "Re-initialize and reconcile the exact run before dispatching an assignment.");
         }
         const runtime = await loadFacts(this.adapter);
-        await recordOrchTarget(store.runPath, runtime.facts);
+        await assertOrchCommand(store, runtime.facts);
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
@@ -774,6 +818,10 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
       }
 
+      // wait/respond are guarded run-command ops (they respond and dispatch
+      // promoted heads): only the run's born ORCH session may issue them.
+      const commandFacts = await loadFacts(this.adapter);
+      await assertOrchCommand(store, commandFacts.facts);
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
@@ -804,8 +852,6 @@ export class CompositeTools {
         waitTimedOut = waited.timedOut === true;
         if (waited.warning) tailWarnings.push(waited.warning);
       } else {
-        const respondFacts = await loadFacts(this.adapter);
-        await recordOrchTarget(store.runPath, respondFacts.facts);
         const currentLane = registry.lanes[lane.worker_id];
         if (currentLane.state !== "blocked") throw new McpContractError("agent_blocked", "Worker is not freshly proved blocked.", "respond", "Inspect and respond only at the latest blocked sequence.", false, true);
         if (currentLane.state_change_seq !== input.expected_state_change_seq) throw new McpContractError("stale_state_change_seq", "Blocked response sequence is stale.", "respond", "Inspect and use the exact latest sequence.", false, true);
@@ -865,6 +911,7 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data };
       }
       const runtime = await loadFacts(this.adapter);
+      await assertOrchCommand(store, runtime.facts);
       const live = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id });
       const liveSequence = assertLiveWorkerSession(lane, live, input.expected_session_id, input.action);
       registry = await updateLaneFromWorker(store, input.worker_id, live);
@@ -921,10 +968,10 @@ export class CompositeTools {
       let text = "";
       let unresolvedReason: string | undefined;
       if (input.action === "wake_orch") {
-        const orch = await readOrchTarget(store.runPath);
-        if (!orch) unresolvedReason = "No recorded ORCH wake target; any attested orch action (init, add, respond) records one.";
-        else if (senderSession && orch.official_session_id === senderSession) unresolvedReason = "Caller is the recorded ORCH; wake_orch is for workers.";
-        else target = orch.pane_id;
+        const birth = latestBirth(registry);
+        if (!birth) unresolvedReason = "Run has no ORCH birth record; birth is recorded at ORCH spawn or by its first guarded command.";
+        else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Caller is the run's ORCH; wake_orch is for workers.";
+        else target = birth.pane_id;
         const laneId = registry.assignments[input.assignment_id]?.worker_id ?? senderLane;
         text = `wake: ${input.assignment_id} ${input.boundary} (run ${input.track_id}/${input.run_id}); read ${laneId ? `a2a/${laneId}-report.md` : "the lane report"} — non-authoritative signal, verify via herdr_assignment.`;
       } else if (input.action === "wake_peer") {
@@ -939,8 +986,10 @@ export class CompositeTools {
         // ORCH-to-own-worker doorbell (dogfooded contract gap): a worker that
         // posted a decision request and idled without a formal blocked state was
         // previously unreachable by its own ORCH.
+        const birth = latestBirth(registry);
         if (!senderSession) unresolvedReason = "Worker wake requires an attested ORCH sender.";
         else if (senderLane) unresolvedReason = "wake_worker is ORCH-to-own-worker; a worker lane wakes peers via wake_peer.";
+        else if (birth && birth.official_session_id !== senderSession) unresolvedReason = registry.orch_births?.some((prior) => prior.official_session_id === senderSession) ? `Sender is a retired ORCH generation; generation ${birth.generation} commands this run.` : `Sender is not this run's ORCH (generation ${birth.generation}).`;
         else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
         else {
           target = workerAgentName(store.runPath, input.to_worker_id);
@@ -949,9 +998,10 @@ export class CompositeTools {
       } else {
         try {
           const targetStore = await DelegationStore.resolve(input.to_track_id, input.to_run_id);
-          const orch = await readOrchTarget(targetStore.runPath);
-          if (!orch) unresolvedReason = `Run ${input.to_track_id}/${input.to_run_id} has no recorded ORCH wake target yet.`;
-          else target = orch.pane_id;
+          const birth = latestBirth(await targetStore.read());
+          if (!birth) unresolvedReason = `Run ${input.to_track_id}/${input.to_run_id} has no ORCH birth record yet.`;
+          else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Target run's ORCH is the caller; a note to yourself is never delivered.";
+          else target = birth.pane_id;
         } catch (error) { unresolvedReason = `Target run unresolved: ${error instanceof Error ? error.message : String(error)}`; }
         text = `orch note (${input.kind}) from ${input.track_id}/${input.run_id}: ${singleLine(input.note)} — non-authoritative; verify against that run's documents.`;
       }

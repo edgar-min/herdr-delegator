@@ -168,6 +168,20 @@ export type ResponsibilityRecord = {
   worker_ids: string[];
 };
 
+// Birth-based ORCH identity (identity/comms redesign, decision 1): ORCH is
+// born, never appointed. The latest birth record is the sole command identity
+// for a run; stale-generation (zombie) sessions are rejected at guarded ops.
+export const ORCH_BIRTH_ORIGINS = ["claim", "spawn"] as const;
+export type OrchBirthOrigin = (typeof ORCH_BIRTH_ORIGINS)[number];
+export type OrchBirthRecord = {
+  generation: number;
+  official_session_id: string;
+  official_session_path?: string;
+  pane_id: string;
+  origin: OrchBirthOrigin;
+  born_at: string;
+};
+
 export type DelegationRegistry = {
   version: 1;
   owner: "herdr-delegator";
@@ -175,6 +189,7 @@ export type DelegationRegistry = {
   revision: number;
   responsibilities: Record<string, ResponsibilityRecord>;
   lanes: Record<string, WorkerLaneRecord>;
+  orch_births?: OrchBirthRecord[];
   assignments: Record<string, AssignmentRecord>;
   created_at: string;
   updated_at: string;

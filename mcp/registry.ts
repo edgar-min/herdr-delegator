@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promise
 import path from "node:path";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, DELEGATION_VERSION, McpContractError, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type DelegationRegistry, type OrchBirthRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -18,6 +18,18 @@ const MAX_ARTIFACT_BYTES = 64 * 1024;
 
 const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
 const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
+const BIRTH_KEYS = ["generation", "official_session_id", "official_session_path", "pane_id", "origin", "born_at"] as const;
+
+function validOrchBirth(value: unknown, index: number): value is OrchBirthRecord {
+  return isRecord(value) &&
+    onlyKeys(value, BIRTH_KEYS) &&
+    value.generation === index + 1 &&
+    typeof value.official_session_id === "string" && value.official_session_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.official_session_id) &&
+    (value.official_session_path === undefined || (typeof value.official_session_path === "string" && value.official_session_path.length <= 4096)) &&
+    typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
+    (value.origin === "claim" || value.origin === "spawn") &&
+    typeof value.born_at === "string" && value.born_at.length <= 64;
+}
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -129,8 +141,12 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
 }
 
 function validateRegistry(value: unknown, runPath: string): asserts value is DelegationRegistry {
-  if (!isRecord(value) || !exactKeys(value, ["version", "owner", "run_path", "revision", "responsibilities", "lanes", "assignments", "created_at", "updated_at"]) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
+  const requiredKeys = ["version", "owner", "run_path", "revision", "responsibilities", "lanes", "assignments", "created_at", "updated_at"] as const;
+  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
     throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "Preserve and repair the minimal registry; do not infer ownership.");
+  }
+  if (value.orch_births !== undefined && (!Array.isArray(value.orch_births) || !value.orch_births.every((birth, index) => validOrchBirth(birth, index)))) {
+    throw new McpContractError("delegation_registry_invalid", "An ORCH birth record is malformed.", "storage", "Repair births from verified spawn or claim evidence; generations are contiguous from 1.");
   }
   for (const [key, responsibility] of Object.entries(value.responsibilities)) {
     if (!RESPONSIBILITY_RE.test(key) || !isRecord(responsibility) || !exactKeys(responsibility, ["key", "worker_ids"]) || responsibility.key !== key || !Array.isArray(responsibility.worker_ids) || responsibility.worker_ids.some((id) => typeof id !== "string" || !WORKER_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A responsibility route is malformed.", "storage", "Repair routing from verified worker identities.");
