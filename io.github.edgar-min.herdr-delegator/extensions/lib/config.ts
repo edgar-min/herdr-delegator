@@ -281,6 +281,30 @@ export function effectiveThinking(
   return roleBoundThinking(ctx, profile.role) ?? currentThinking;
 }
 
+/**
+ * Fail-closed ORCH identity gate, owned in one place. `resolveLaunchProfile`
+ * runs it during `ensure_worker`, and `herdr_assignment add` runs it before it
+ * allocates any registry record — a mismatch used to surface only after `select`
+ * had already created a lane and an assignment, leaving a worker-less `starting`
+ * lane and a `failed` assignment behind (friction cf7c4a8eb2bdb9c1).
+ */
+export function assertOrchestratorAligned(
+  config: DelegatorConfig,
+  ctx: OmpModelContext,
+  currentThinking: ThinkingLevel,
+): void {
+  const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
+  const live = modelIdentity(ctx.models.current());
+  const thinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
+  if (resolved.provider === live.provider && resolved.model === live.model && thinking === currentThinking) return;
+  throw orchestratorMismatchError(
+    "The live ORCH identity",
+    config.orchestrator.role,
+    { ...resolved, thinking },
+    { ...live, thinking: currentThinking },
+  );
+}
+
 export async function resolveLaunchProfile(
   params: ToolParams,
   runPath: string,
@@ -289,21 +313,9 @@ export async function resolveLaunchProfile(
   currentThinking: ThinkingLevel,
 ): Promise<{ launch: ResolvedLaunchProfile; orchestrator: Omit<OrchestratorRecord, "pane_id" | "observed_at"> }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
+  assertOrchestratorAligned(config, ctx, currentThinking);
   const resolvedOrchestrator = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  const currentOrchestrator = modelIdentity(ctx.models.current());
   const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
-  if (
-    resolvedOrchestrator.provider !== currentOrchestrator.provider ||
-    resolvedOrchestrator.model !== currentOrchestrator.model ||
-    orchestratorThinking !== currentThinking
-  ) {
-    throw orchestratorMismatchError(
-      "The live ORCH identity",
-      config.orchestrator.role,
-      { ...resolvedOrchestrator, thinking: orchestratorThinking },
-      { ...currentOrchestrator, thinking: currentThinking },
-    );
-  }
   if (typeof params.profile !== "string" || !PROFILE_RE.test(params.profile)) {
     throw new ContractError(
       "invalid_profile",

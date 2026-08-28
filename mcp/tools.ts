@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { assertOrchestratorAligned, loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
@@ -816,7 +816,15 @@ export class CompositeTools {
       await this.judgeBudget(store, run, "close");
       const registry = await store.read();
       if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
-      const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed");
+      // A lane that never reached a live session is never-born, not unsettled:
+      // `select` stamps `starting` before `ensure_worker` runs, so a rejected
+      // dispatch used to leave a worker-less `starting` lane that no close path
+      // accepted — the run itself could never be closed (friction
+      // cf7c4a8eb2bdb9c1). It carries nothing to settle and is collected below
+      // with the rest of the lanes.
+      const neverBorn = (lane: WorkerLaneRecord): boolean =>
+        lane.state === "starting" && !lane.official_session_id && !lane.official_session_path;
+      const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed" && !neverBorn(lane));
       if (unsafe.length) throw new McpContractError("track_not_settled", "At least one responsibility lane is active or blocked.", "close", "Settle every lane before track closure.");
       const closeCandidates: { lane: WorkerLaneRecord; liveSequence: number }[] = [];
       for (const lane of Object.values(registry.lanes)) if (lane.state === "idle") {
@@ -1475,6 +1483,15 @@ export class CompositeTools {
         }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
+        // Model verification before allocation (friction cf7c4a8eb2bdb9c1): a
+        // mismatch discovered inside ensure_worker used to surface only after
+        // `select` had already created a lane and an assignment, so a drifted
+        // ORCH left registry residue behind on every rejected dispatch.
+        assertOrchestratorAligned(
+          (await loadDelegatorConfig(store.runPath, store.cwd)).config,
+          runtime.ctx,
+          runtime.thinking,
+        );
         await this.judgeBudget(store, run, "add");
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
@@ -1490,7 +1507,14 @@ export class CompositeTools {
             assignment.updated_at = nowIso();
             if (lane.active_assignment_id === input.assignment_id) delete lane.active_assignment_id;
             lane.queued_assignment_ids = lane.queued_assignment_ids.filter((id) => id !== input.assignment_id);
-            lane.state = selected.lane.state;
+            // A lane this call brought into being and that never reached a live
+            // session is not a lane: leaving it `starting` made it a ghost no
+            // close path accepted (friction cf7c4a8eb2bdb9c1). `failed` is the
+            // honest terminal record — track close treats it as settled, and a
+            // re-add of the same assignment rebinds onto a fresh lane.
+            lane.state = selected.lane.state === "starting" && lane.official_session_id === undefined
+              ? "failed"
+              : selected.lane.state;
             lane.updated_at = assignment.updated_at;
             const following = lane.queued_assignment_ids.shift();
             if (following) lane.active_assignment_id = following;
