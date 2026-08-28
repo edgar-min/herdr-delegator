@@ -186,6 +186,7 @@ export type McpResult<T = unknown> = {
   worker?: Partial<WorkerLaneRecord>;
   assignment?: { assignment_id: string; state: AssignmentState; settlement?: AssignmentSettlementObservation };
   skill_routes?: SkillRouteAdvisory[];
+  skill_routes_note?: string;
   data?: T;
   error?: { code: string; phase: ErrorPhase; message: string; recovery: string; ambiguous_effect: boolean };
 };

@@ -2,8 +2,8 @@
 
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
-- Package/plugin: `herdr-delegator` 1.1.0
-- Skill: `herdr-delegation` 1.1.0
+- Package/plugin: `herdr-delegator` 1.1.1
+- Skill: `herdr-delegation` 1.1.1
 - Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`
 - Official runtime: OMP only
 - License: Apache-2.0
@@ -103,7 +103,7 @@ If the live session does not match the configured orchestrator role, mutations f
 
 ### Advisory skill routing
 
-Optional `skill_routing.rules` (at most 16) route installed skills to protocol boundaries. `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`; `surface` is `orch` or `worker`; each rule names 1–8 skills. The plugin ships no skill names — rules live in user, project, or run configuration, so any skill pack plugs in without touching the plugin. Matching routes are delivered deterministically as `skill_routes` in tool results (`init`, `preflight`, terminal assignment results) and inside the worker dispatch prompt. Routes are advisory only: they raise discovery reliability, never gate settlement or lifecycle, and never prove a skill ran.
+Optional `skill_routing.rules` (at most 16) route installed skills to protocol boundaries. `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`; `surface` is `orch` or `worker`; each rule names 1–8 skills. The plugin ships no skill names — rules live in user, project, or run configuration, so any skill pack plugs in without touching the plugin. Matching routes are delivered deterministically as `skill_routes` plus an imperative `skill_routes_note` in tool results (`init`, `preflight`, terminal assignment results) and inside the worker dispatch prompt; the note names the `skill://<name>` resolution scheme. Routes are advisory only: they raise discovery reliability, never gate settlement or lifecycle, and never prove a skill ran.
 
 ## Start
 

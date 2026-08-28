@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "1.1.0"
+  version: "1.1.1"
 ---
 
 # Herdr delegation
@@ -26,7 +26,7 @@ Worker tabs share the configured project `cwd`. Parallelize only disjoint owners
 
 At planning, assignment-authoring, dispatch, pre-completion, verification, reset, and handoff boundaries, scan the runtime's already available skill catalog for a directly applicable skill from any installed skill pack. Read and invoke only a skill whose own description matches the present work. Missing skills are a no-op: never install, update, emulate, or block on them during a run.
 
-Configuration may declare deterministic advisory skill routes (see section 2). Matching routes appear as `skill_routes` in tool results and inside the worker dispatch prompt. Routes raise discovery reliability only; a route never proves a skill ran and is never a settlement or lifecycle condition.
+Configuration may declare deterministic advisory skill routes (see section 2). Matching routes appear as `skill_routes` (with an imperative `skill_routes_note`) in tool results and inside the worker dispatch prompt. When a result carries routes, read each installed routed skill — resolve the name via `skill://<name>` or the runtime's skill catalog — and apply it before proceeding at that boundary. Routes raise discovery reliability only; a route never proves a skill ran and is never a settlement or lifecycle condition.
 
 An optional skill remains subordinate to this protocol. It may improve reasoning or an owned artifact, but it never changes scope, authority, write ownership, immutable or tool-owned files, completion grammar, lifecycle state, settlement, or recovery. Preserve user-invoked-only semantics declared by the skill.
 

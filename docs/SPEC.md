@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.1.0 and the bundled `herdr-delegation` skill 1.1.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.1.1 and the bundled `herdr-delegation` skill 1.1.1.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,8 +11,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `1.1.0`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.1.0` under frontmatter metadata.
+- **ID-002**: The package and plugin version MUST be `1.1.1`.
+- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.1.1` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -58,6 +58,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **SRT-004**: Routes are advisory text only. They MUST NOT gate settlement, lifecycle, recovery, or any mutation; a delivered route MUST NOT be recorded or represented as proof that a skill ran.
 - **SRT-005**: Advisory route lookup MUST NOT block control flow; a failed lookup degrades to an empty route set while configuration-as-authority paths keep failing closed.
 - **SRT-006**: The shipped configuration MUST name no skills; skill names live only in user, project, or run configuration layers.
+- **SRT-007**: A result carrying non-empty `skill_routes` MUST also carry one bounded imperative `skill_routes_note` naming the skill resolution scheme (`skill://<name>` or the runtime's skill catalog); the note remains advisory text with no authority.
 
 ## 3. Deterministic storage and authority
 
@@ -234,9 +235,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.1.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.1.1, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server using bare command `sh`, sole arg `${PLUGIN_ROOT}/bin/herdr-delegator-mcp`, and `${PLUGIN_ROOT}` as `cwd`; `.mcp.json` MUST NOT exist.
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.1.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.1.1, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
 - **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
 - **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
@@ -288,7 +289,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.1.0.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.1.1.
 - [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the namespaced OMP extension is bridge-only.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.

@@ -104,7 +104,7 @@ Callers never supply raw Herdr targets, arbitrary paths, argv, terminal commands
 
 ### Advisory skill routes
 
-Configuration may declare `skill_routing.rules` mapping boundaries (`plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`) and surfaces (`orch`, `worker`) to installed skill names. Matching routes are delivered deterministically: `init` results carry `plan`/`authoring` (plus `reset` on a sibling reset), `preflight` results carry `authoring`, the dispatch prompt carries worker-surface `dispatch`/`completion` routes, and terminal assignment results carry `settlement`. Apply each installed applicable routed skill at its boundary; a missing skill is a no-op. Routes are advisory text only — never invocation proof, settlement condition, or authority over scope, ownership, or lifecycle.
+Configuration may declare `skill_routing.rules` mapping boundaries (`plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`) and surfaces (`orch`, `worker`) to installed skill names. Matching routes are delivered deterministically: `init` results carry `plan`/`authoring` (plus `reset` on a sibling reset), `preflight` results carry `authoring`, the dispatch prompt carries worker-surface `dispatch`/`completion` routes, and terminal assignment results carry `settlement`. When a result carries `skill_routes`, read each routed skill that is installed — resolve the name via `skill://<name>` or the runtime's skill catalog — and apply it before proceeding at that boundary. A missing skill is a no-op. Routes are advisory text only — never invocation proof, settlement condition, or authority over scope, ownership, or lifecycle.
 
 ## Dispatch and settlement judgment
 

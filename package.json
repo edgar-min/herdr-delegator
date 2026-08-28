@@ -1,6 +1,6 @@
 {
   "name": "herdr-delegator",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
   "type": "module",
   "private": false,
