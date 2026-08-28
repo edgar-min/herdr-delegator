@@ -229,6 +229,10 @@ export type DelegationRegistry = {
 const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
 const boundedTokenSchema = z.string().min(1).max(80).regex(BOUNDED_TOKEN_RE);
 const concreteModelSchema = z.object({ provider: boundedTokenSchema, model: boundedTokenSchema }).strict();
+// The bridge annotates a role with its bound thinking level when one is
+// observable (extensions/lib/bridge.ts, observeRoleThinking); the entry is a
+// plain concrete model otherwise. Friction 59457ca435b3fce7.
+const roleModelSchema = concreteModelSchema.extend({ thinking: thinkingSchema.optional() }).strict();
 export const ompRuntimeFactsSchema = z.object({
   version: z.literal(1),
   session_id: boundedTokenSchema,
@@ -236,7 +240,7 @@ export const ompRuntimeFactsSchema = z.object({
   pane_id: boundedTokenSchema,
   cwd: z.string().min(1).max(4096),
   current: concreteModelSchema.extend({ thinking: thinkingSchema }).strict(),
-  roles: z.record(z.string().regex(ROLE_RE), concreteModelSchema),
+  roles: z.record(z.string().regex(ROLE_RE), roleModelSchema),
   config_sources: z.array(z.object({
     scope: boundedTokenSchema,
     path: z.string().min(1).max(4096),
