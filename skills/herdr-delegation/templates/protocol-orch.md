@@ -12,7 +12,7 @@ Workers share the project `cwd`. Concurrent code-editing workers require disjoin
 
 - Run identity is `(track_id, run_id)`; every tool call uses those coordinates rather than a model-supplied path.
 - `storage.root` comes from strict user or project `herdr-delegator.json` configuration and must be absolute.
-- `herdr_track {action:"open"}` resolves `<storage.root>/<track_id>/<run_id>`, writes the strict run manifest and the three bundled protocol documents, creates `a2a/`, updates the tool-owned index, fixes the mandate, spawns this ORCH pre-aligned, and records the birth that is this run's only command identity. `init` plus `start_orchestrator` does the same layout without the mandate and remains for reset siblings and handoff targets.
+- `herdr_track {action:"open"}` resolves `<storage.root>/<track_id>/<run_id>`, writes the strict run manifest and the three bundled protocol documents, creates `a2a/`, updates the tool-owned index, fixes the mandate, spawns this ORCH pre-aligned, and records the birth that is this run's only command identity. `init` plus `start_orchestrator` lays out the same run without a mandate and remains for reset siblings and handoff targets; its `start_orchestrator` records a birth exactly like `open`'s spawn does, and is refused only on a run that already carries `open`'s creator record. However this run was created, its ORCH has a birth record.
 - You are that birth. Your identity is the latest birth record: guarded commands from any other session fail `orch_identity_mismatch`, from a retired generation `stale_orch_generation`, and from the session that opened the track `creator_session_retired`. You write `plan.md` after birth, in conversation with the user; nobody wrote it for you.
 - Tool-owned manifests, indexes, `a2a/herdr-workers.json`, `a2a/delegation.json`, and locks are never edited, moved, copied, or unlocked.
 
@@ -33,7 +33,7 @@ The bridge-only OMP extension publishes session-scoped runtime facts. The stdio 
 | `a2a/w<N>-report.md` | worker `w<N>` | append-only evidence, result, decision request, and completion block |
 | `[ORCH Response]` report blocks | ORCH | decision, acceptance, or recovery judgment |
 | `a2a/w<N>-to-w<M>.md` | declared sender | append-only peer facts for a plan-authorized directional channel |
-| `a2a/orch-to-<track>_<run>.md` | this run's ORCH | append-only inter-run conversation this run owns; the counterpart owns its reverse channel |
+| `a2a/orch-to-<to_track_id>_<to_run_id>.md` | this run's ORCH | append-only inter-run conversation this run owns, named for the run it is *addressed to*; the counterpart owns the mirror file in its own run directory |
 | `budget-ledger.md` | MCP | append-only seed, justifications, verdicts, parks, resumes — the trail a human is handed on a deny |
 | `budget-clamp.json` | the user | absolute ceiling on this run's budget; clamping to 0 is the kill switch |
 | `budget-audit-<n>.md` | MCP, then the auditor | the extension request plus machine facts, then the auditor's reasoning and verdict |
@@ -42,8 +42,11 @@ The bridge-only OMP extension publishes session-scoped runtime facts. The stdio 
 | `a2a/herdr-workers.json` | lifecycle authority | workspace, tab, pane, official session, model verification, and guarded close state |
 | `orchestrator-instructions.md` | `open`, or a source ORCH | the mandate: what this track must achieve and why, fingerprinted at first prompt |
 | `orchestrator-report.md` | target ORCH | optional target-ORCH result |
+| `a2a/messages.jsonl` | MCP | append-only log of every doorbell this run sent, delivered or not; a bounded observation, never authority |
 
 There are no separate assignment contract or receipt files. MCP stores the verified worker-report hash in `delegation.json`. Terminal output and Herdr metadata are observations, not reports or decisions. Never place secrets in any audit or control channel.
+
+You hold write access to every lane report, and the only content that is yours to add is a response block: a `[ORCH Response]` heading line, then the assignment ID, the judgment, the grounds, and any changed conditions. A completion or failure block is the worker's word and only the worker's; writing one yourself fabricates a settlement MCP will hash and store under your birth record. The write is possible, attributable, and permanent — that is the whole guarantee, so do not spend it.
 
 ## Responsibility routing
 
@@ -99,7 +102,7 @@ The public surface contains exactly five composite tools. Every action receives 
 
 There is no response action. Answering a worker — a decision request, a ruling, or a worker genuinely blocked on input — is always an `[ORCH Response]` append to its report followed by `herdr_message {action:"wake_worker"}`; the wake is pane input, so it reaches an idle worker and an input-waiting one alike.
 
-`wait.until` values are `idle`, `done`, and `blocked` — request all three that apply; an OMP worker commonly reports `done` at a turn boundary, not only `idle`. `timeout_ms` is 1,000–300,000; the server clamps one call's effective wait, so compose longer logical waits by repeating bounded `wait` calls. Waiting discipline: settle on wake messages plus bounded `wait` verification, never fixed sleep loops — a sleep both overshoots finished work and undershoots slow work. Assignment state is exactly `queued | prompting | working | blocked | completed | failed | ambiguous`.
+The `wait` field named in the tables above is an object: `{until: [...], timeout_ms: N}`. Its `until` values are *agent* states — `idle`, `done`, `blocked` — a separate vocabulary from assignment state; request all three that apply, because an OMP worker commonly reports `done` at a turn boundary, not only `idle`. `timeout_ms` is 1,000–300,000; the server clamps one call's effective wait, so compose longer logical waits by repeating bounded `wait` calls. Waiting discipline: settle on wake messages plus bounded `wait` verification, never fixed sleep loops — a sleep both overshoots finished work and undershoots slow work. Assignment state, the other vocabulary, is exactly `queued | prompting | working | blocked | completed | failed | ambiguous`.
 
 ### `herdr_worker`
 
@@ -193,7 +196,7 @@ ORCH independently reproduces material claims and runs integration verification 
 
 A sibling reset uses `herdr_track {action:"init", reset_of:{...}}` at a different coordinate. It copies planning context, not truth. Revalidate inherited evidence; close only freshly proved safe settled source lanes; preserve active or unsafe source lanes.
 
-The built-in target ORCH role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended. A handoff writes its first entry into this run's `a2a/orch-to-<target_track>_<target_run>.md` (kind `handoff`, `handoff.md` as the body), points the target's `orchestrator-instructions.md` at that document, then starts the target with `herdr_track {action:"start_orchestrator"}` and inspects before judgment or recovery. The target acks in its own reverse channel and rings back; that append is the signature.
+The built-in target ORCH role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended. A handoff writes its first entry into this run's `a2a/orch-to-<target_track>_<target_run>.md` (kind `handoff`), using the `handoff.md` observation list bundled with the delegation skill as the body — it is a checklist of what to state, not a file to copy into the run. Point the target's `orchestrator-instructions.md` at that channel document, then start the target with `herdr_track {action:"start_orchestrator"}` and inspect before judgment or recovery. The target acks in its own reverse channel and rings back; that append is the signature.
 
 ## Budget: a justification cadence
 

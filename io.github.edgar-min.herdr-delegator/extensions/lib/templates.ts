@@ -17,7 +17,8 @@ import { ContractError, sha256 } from "./contracts";
 // rather than silently: the run keeps working, and the operator is told its
 // protocol text is older than the installed one.
 //
-// Regenerate the historical sets with, for each name:
+// The sets include the installed template's own digest, so the command below
+// reproduces this file exactly. Regenerate with, for each name:
 //   for c in $(git log --format=%H -- skills/herdr-delegation/templates/<name>); do
 //     git show "$c:skills/herdr-delegation/templates/<name>" | sha256sum; done | sort -u
 // Append — never replace — when a template changes, or runs created on the
@@ -26,24 +27,28 @@ import { ContractError, sha256 } from "./contracts";
 
 const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
   "protocol.md": [
-    "302100b99b63b1c2538ff094c7234373a2d58bb2f66d655619e056e18edf07a6",
-    "892159ab6c7cce8eef6cd67982a7755dd2b89f8b65984f832fe58a3ebce69800",
-    "541e6e67513b57ed30169dacc80f01cdeddbd6256603ab3f9c496e1b4d585e49",
     "03f41b8b2d06386542288d5d34d2cae74bcdbd6a3a5e54cfec31edb21d2a0007",
     "12bd5e79a351343bf640dffa2bf1f611755b65093f515f83e21242de510404fa",
+    "302100b99b63b1c2538ff094c7234373a2d58bb2f66d655619e056e18edf07a6",
+    "541e6e67513b57ed30169dacc80f01cdeddbd6256603ab3f9c496e1b4d585e49",
+    "892159ab6c7cce8eef6cd67982a7755dd2b89f8b65984f832fe58a3ebce69800",
     "928983a4525fc1af5c7c63e2b838e9b3a2ba9f27c4f38f5215302871ea06b410",
+    "afaef27d683fbddb6e4efbcbcb9d966911de1c3bbda465a071cf83a2798565a0",
   ],
   "protocol-orch.md": [
-    "d6ab3311f9e00ebd998c90830921d245802713135f4cde785b7f126301c1b2b3",
-    "a07b6449a6e335303645b813e494f8aa0c06d6093050e147c042954081941747",
+    "215c6d9298498edd08f0f094dd03710bec1cf9d85fc800ed29e67bcc3503cb9c",
     "3a38ad75adcfd8cf53159a420a7ec2bd1207181f5d9a6ca0547fb20071e8d845",
+    "a07b6449a6e335303645b813e494f8aa0c06d6093050e147c042954081941747",
+    "d6ab3311f9e00ebd998c90830921d245802713135f4cde785b7f126301c1b2b3",
     "df9d6dffe8247bccc9835fe7568cc804014bd477307a45bc401bec9ebd4a7243",
+    "ec5abf2dbed74ab294db61332ed31b92c879493cc291c6d346eb673a3e30f79b",
   ],
   "protocol-worker.md": [
-    "ddbd8536ae5e7cea0f5adbc9a91fbaf4b20aa70edd76a39c3f7eebc89811bb57",
-    "cbac8e71bfe47fc0e9f79675ffb34a2afe6cfc28cf3c9dc85fb1ba1a0544f011",
+    "0207d67b390abc449c2424bed0e51df398406fa3b8a4c708dbf01b6496d8679e",
     "8d7be06c72c1a0d0524f32a5d318fc47bf25c3a1070ce3f7bab56ff45cf10ce9",
+    "cbac8e71bfe47fc0e9f79675ffb34a2afe6cfc28cf3c9dc85fb1ba1a0544f011",
     "cc887b4ec3a45e05aec752c7fdd39dd45cad488c9cf1673773ceeb7df8ae8d10",
+    "ddbd8536ae5e7cea0f5adbc9a91fbaf4b20aa70edd76a39c3f7eebc89811bb57",
   ],
 };
 

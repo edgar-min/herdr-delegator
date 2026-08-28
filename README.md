@@ -240,7 +240,7 @@ Communication is uniform across every relationship: a document append carries th
 | ORCH → worker | direct, respond, nudge | assignment, `[ORCH Response]` in the lane report | dispatch delivery, `wake_worker` |
 | worker → ORCH | completion, blocked, decision request | report append | `wake_orch` |
 | worker ↔ worker | adjacent coordination (plan-authorized) | `a2a/w<N>-to-w<M>.md` | `wake_peer` |
-| ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<track>_<run>.md` | `notify_run` |
+| ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<to_track_id>_<to_run_id>.md` | `notify_run` |
 | server ↔ auditor | budget audit | `budget-audit-<n>.md` and the ledger verdict | internal |
 | forbidden | cross-organization worker messaging (escalate instead), ORCH↔auditor contact, shadow channels | — | — |
 
