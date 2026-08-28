@@ -1,6 +1,6 @@
 ---
 name: herdr-delegation
-description: Delegate substantial independent work from OMP to persistent Herdr responsibility lanes with deterministic storage, immutable assignments, verified sessions, recovery, and guarded closure.
+description: Delegate substantial independent work from OMP to persistent Herdr responsibility lanes with a born orchestrator, deterministic storage, immutable assignments, verified sessions, recovery, and guarded closure.
 license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
@@ -10,7 +10,7 @@ metadata:
 
 # Herdr delegation
 
-The session using this skill is the orchestrator (**ORCH**). ORCH owns decomposition, routing, judgment, verification, and recovery. Herdr workers are persistent responsibility lanes: an assignment is work routed to a lane, not the worker's identity.
+**ORCH is born, never appointed.** A track's orchestrator (**ORCH**) is the session `herdr_track open` spawns into the track's own pane, and the birth record it writes is that run's only command identity. The session reading this skill is therefore one of two roles: the *bootstrapper*, which distills the conversation into a bounded mandate, calls `open` once, and is retired for that track at birth; or a *born ORCH*, which owns decomposition, routing, judgment, verification, and recovery for its run. Herdr workers are persistent responsibility lanes: an assignment is work routed to a lane, not the worker's identity.
 
 Official support is OMP-only. The Agent Plugins package contains a bridge-only OMP extension under `io.github.edgar-min.herdr-delegator/`, one Bun stdio MCP server declared by package-root `mcp.json`, and this bundled skill. Do not design or infer another agent adapter.
 
@@ -19,6 +19,8 @@ Official support is OMP-only. The Agent Plugins package contains a bridge-only O
 Use the host OMP task/subagent mechanism for bounded mechanical work. It creates no Herdr worker, durable assignment, or plugin model-verification claim.
 
 Use Herdr for substantial independent work that benefits from persistent context, explicit ownership, exact-session resume, blocked-state handling, or durable assignment routing.
+
+Opening a track is neither free nor undoable in place: it moves the conversation gate into another pane and costs a session spin-up. Work that never needs ORCH command — bounded, already specified, mechanical — routes to host OMP task/subagents instead.
 
 Worker tabs share the configured project `cwd`. Parallelize only disjoint ownership. Serialize overlapping code edits in one shared working directory.
 
@@ -46,7 +48,7 @@ The built-in profiles are:
 - worker `task`: role `@default`, thinking `inherit`;
 - worker `slow`: role `@default`, thinking `inherit`.
 
-`@task` and `@slow` are recognized OMP role names but do not resolve without a corresponding `modelRoles` setting, so the built-ins fail safely to `@default`. Configuration may select another bounded OMP role alias or worker profile. It never stores a concrete model ID. The OMP bridge resolves configured roles to concrete provider/model facts and publishes the current session, model, thinking, configuration hashes, and nonce through a session-scoped mode-0600 fact file. MCP derives that file from the verified caller pane and active OMP agent directory; callers never supply its path.
+The built-ins deliberately name `@default` rather than `@task`/`@slow`: OMP recognizes those two names but resolves neither without a matching `modelRoles` entry, so naming them would pre-align a default-grade model under a distinct-looking name. Configuration may select another bounded OMP role alias or worker profile. It never stores a concrete model ID. The OMP bridge resolves configured roles to concrete provider/model facts and publishes the current session, model, thinking, configuration hashes, and nonce through a session-scoped mode-0600 fact file. MCP derives that file from the verified caller pane and active OMP agent directory; callers never supply its path.
 
 ### Profile selection
 
@@ -63,9 +65,11 @@ Cost-efficient small mechanical work routes to host OMP task/subagents, so no pe
 
 ### Session alignment
 
-Guarded mutations fail closed with `orchestrator_model_mismatch` when this session's model or thinking does not match the configured `orchestrator.role` — a fresh OMP session rarely starts on that role's model. At track start, or on that error, ask the user to run `/herdr-align` once (a user-invoked OMP command from this plugin: it switches only this session's model/thinking to the configured role and refreshes bridge attestation), or to relaunch with the `omp --model`/`--thinking` values the error names. Target orchestrators started via `herdr_track start_orchestrator` launch pre-aligned and never need this.
+`herdr_track open` needs attestation but not alignment: the opening session commands nothing, so its own model is irrelevant, and the ORCH it spawns launches pre-aligned to the configured `orchestrator.role`. Alignment binds only a session that commands a run itself, which is the legacy `init` + `start_orchestrator` path. There, guarded mutations fail closed with `orchestrator_model_mismatch` when the caller's model or thinking does not match the configured role — a fresh OMP session rarely starts on that role's model. On that error, ask the user to run `/herdr-align` once (a user-invoked OMP command from this plugin: it switches only this session's model/thinking to the configured role and refreshes bridge attestation), or to relaunch with the `omp --model`/`--thinking` values the error names.
 
-Command singularity: a run's ORCH identity is its birth record chain in tool-owned `a2a/delegation.json`. `herdr_track start_orchestrator` records the spawned target ORCH as the newest birth generation; on a run with no birth yet, the first attested guarded command (assignment `add`/`wait`/`respond`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`; a session from a retired generation fails with `stale_orch_generation`. One run has exactly one commanding ORCH — never command a run another session already commands.
+A configured role name that OMP recognizes but no `modelRoles` entry resolves inherits the default chain silently — a planning-grade name pre-aligning a default-grade model. The `open`/spawn preflight warns without blocking and returns the warning in `data.warnings`; report it to the user instead of dropping it.
+
+Command singularity: a run's ORCH identity is its birth-record chain in tool-owned `a2a/delegation.json`. `herdr_track open` is the only path that births an ORCH for a new track; legacy `start_orchestrator` records a birth for an `init` run, and on a legacy run with no birth yet the first attested guarded command (assignment `add`/`wait`/`respond`, worker `resume`/`close`, track `close`) claims generation 1. Guarded commands from any other session fail with `orch_identity_mismatch`, a session from a retired generation fails with `stale_orch_generation`, and the session that opened the track fails with `creator_session_retired`. One run has exactly one commanding ORCH — never command a run another session already commands.
 
 ### Skill routing
 
@@ -82,7 +86,7 @@ An optional `skill_routing.rules` array (at most 16 rules) routes installed skil
 }
 ```
 
-`boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`. `surface` is `orch` or `worker`. Each rule names 1–8 bounded skill names; the shipped configuration names none. Delivery is deterministic: `herdr_track init` returns `plan`/`authoring` (plus `reset` for a sibling reset) routes, `herdr_assignment preflight` returns `authoring` routes, the dispatch prompt carries `dispatch`/`completion` routes to the worker, and terminal assignment results carry `settlement` routes. Routes are advisory text only — never invocation proof, settlement gate, or authority.
+`boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`. `surface` is `orch` or `worker`. Each rule names 1–8 bounded skill names; the shipped configuration names none. Delivery is deterministic: `herdr_track init` returns `plan`/`authoring` (plus `reset` for a sibling reset) routes, `herdr_assignment preflight` returns `authoring` routes, the dispatch prompt carries `dispatch`/`completion` routes to the worker, and terminal assignment results carry `settlement` routes. `herdr_track open` deliberately carries none: its result is read by the retiring creator, not by the ORCH that will plan. A born ORCH meets its own `authoring` routes at `herdr_assignment preflight`. Routes are advisory text only — never invocation proof, settlement gate, or authority.
 
 Route only trusted skills: routed names become instructions executed inside ORCH and worker sessions, so treat a routing rule like a dependency declaration. Prefer a vetted skill pack or skills the user wrote themselves, matched to the boundary they improve (context inquiry at `plan`, review at `settlement`). When no rules are configured, suggest this once during planning rather than silently proceeding forever without them.
 
@@ -93,7 +97,7 @@ Launches remain fail-closed behind two gates:
 
 Never send a synthetic prompt to create JSONL. Never accept a model-supplied session path, launch argv, pane, tab, or workspace target.
 
-## 3. Initialize a deterministic run
+## 3. Open the track
 
 Run identity is `(track_id, run_id)`. Both coordinates match:
 
@@ -101,13 +105,73 @@ Run identity is `(track_id, run_id)`. Both coordinates match:
 ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$
 ```
 
-Call:
+`herdr_track open` is the single entry, and one call is one atomic birth:
 
 ```json
-{"track_id":"example-track","run_id":"implementation","action":"init","cwd":"/absolute/project/path"}
+{
+  "action": "open",
+  "track_id": "example-track",
+  "run_id": "implementation",
+  "cwd": "/absolute/project/path",
+  "mandate": {
+    "intent": "Why this track exists and what it must achieve, in the user's terms.",
+    "constraints": ["Boundary the ORCH may not cross"],
+    "shape_of_success": ["Observable condition that makes the track done"]
+  }
+}
 ```
 
-`herdr_track` resolves `<storage.root>/<track_id>/<run_id>` and materializes the three protocol documents byte-identically from their bundled templates:
+It ensures the track's Herdr space, lays out the run and its protocol documents, fixes the mandate as `orchestrator-instructions.md`, stamps the creating session, spawns the ORCH pane pre-aligned to the configured orchestrator role, and records the ORCH birth. No part of that sequence is a step you perform yourself.
+
+### Author the mandate
+
+The mandate carries WHAT and WHY. HOW is forbidden: `plan.md` is the born ORCH's own document, written after birth in clean context with the user. Distill the conversation you already had into bounded lines; do not interview the user for a specification you are about to hand away.
+
+| Field | Content | Published limit |
+|---|---|---|
+| `intent` | Why the track exists and what it must achieve, in the user's terms | 4096 characters |
+| `constraints` | Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. May be empty — the document then records that none were recorded | 32 entries, 500 characters each |
+| `shape_of_success` | Observable conditions that make the track done. At least one entry | 32 entries, 500 characters each |
+| rendered document | The whole `orchestrator-instructions.md` | 16384 bytes |
+
+`constraints` and `shape_of_success` entries are normalized to single lines; `intent` keeps its paragraphs. Every oversize rejection is `mandate_too_large` and names the actual count against the limit, so trimming is arithmetic rather than trial and error. The mandate is fingerprinted at the ORCH's first prompt and never rewritten behind a live ORCH. Its identity is the SHA-256 of the rendered document, returned as `data.mandate.sha256`: any edit that changes those bytes is a different mandate, and presenting one on an already-opened coordinate fails with `mandate_conflict` — open a sibling run instead.
+
+### Redirect the user, then stop
+
+A successful `open` returns the pointer the user needs: `data.space`, `data.orch_pane`, `data.orch_pane_id`, `data.orch_birth`, `data.mandate` (path, sha256, bytes), `data.creator_retired`, optional `data.warnings`, and `data.next_step` — a ready sentence naming the pane to continue in. Deliver `data.next_step` to the user, then stop working this track.
+
+That stop is contract, not courtesy. The opening session is retired for the run at birth: every guarded call it makes now fails with `creator_session_retired`, and accumulating more track context in it re-creates the dual-command failure this design exists to prevent. Refuse further work on the track here; the work happens in the ORCH pane, where the user now converses.
+
+Re-opening a born track with the same mandate bytes is a safe idempotent lookup: `effect: "none"` with `data.already_open` and the same pointer. Use it to answer "where is my ORCH".
+
+### Read the creator and birth state before recovering
+
+`open` stamps the creator before it spawns anything, so the creator record doubles as the "this run is open-managed" marker. It is three-valued — creator with a birth, creator alone, or no creator at all — and the birth chain refines the last case. Read both before recovering anything; each combination permits exactly one move:
+
+| Creator | Birth | Meaning | Legal move |
+|---|---|---|---|
+| present | present | live open-managed track | converse in the ORCH pane; the creator is retired for this run |
+| present | absent | an `open` that did not finish | only that creator, re-running the identical `open`, completes the birth; a second opener gets `track_open_in_progress`, a guarded command gets `orch_birth_missing`, and the attempt that failed reported `orch_birth_incomplete` |
+| absent | present | a legacy `init` run whose ORCH was spawned by `start_orchestrator` | the latest birth generation commands it; the session that spawned it is not the ORCH and is rejected as a stranger (`orch_identity_mismatch`), or as a zombie (`stale_orch_generation`) if it once held an earlier generation |
+| absent | absent | a legacy `init` run with no ORCH yet | the first attested guarded command claims generation 1 |
+
+Failure is fail-closed, never compensating. A failed `open` may leave the run directory, the mandate, the track space, and even the started ORCH pane in place; each is named in the failure's recovery text and reused by the identical retry. Never delete that residue by hand. `start_orchestrator` on a run that carries a creator record is refused with `track_opened_atomically`.
+
+### Names are the supervision surface
+
+| Coordinate | Name |
+|---|---|
+| Herdr space | `herdr/<track_id>` — one space per track |
+| Run anchor tab | `ORCH <track_id>/<run_id>` — one per run, inside the track space |
+| ORCH pane | `ORCH <track_id>/<run_id>` — the pane inside that anchor tab, where the user converses |
+| Worker tab | the deterministic registry agent name, never a human name |
+| Worker pane | `w<N> <responsibility_key>` |
+
+Runs are generations inside their track's space: a sibling run at the same `track_id` — reset or handoff — shares that space and gets its own anchor tab, while a handoff to a new `track_id` gets its own space. The ORCH's anchor tab and the pane inside it deliberately carry one name; worker tabs are the exception, keeping the deterministic agent name so that only the worker pane carries a human one. Labelling is display-only and degrades to a warning, never a failed operation. Runs created before this scheme carry the old `herdr-run-<hash>` space label and fail `identity_conflict` on their next lifecycle call; their leftover spaces are inert, and since no tool operation closes a retained space, the user closes them in Herdr.
+
+### Run layout
+
+`open` — and legacy `init` — resolves `<storage.root>/<track_id>/<run_id>` and materializes the protocol documents byte-identically from their bundled templates:
 
 ```text
 <run>/
@@ -115,14 +179,19 @@ Call:
   protocol.md
   protocol-orch.md
   protocol-worker.md
+  orchestrator-instructions.md   (the mandate; written by open)
   a2a/
 ```
 
-It also updates the tool-owned storage index. ORCH authors `plan.md` and work artifacts afterward. A sibling reset adds `reset_of: {track_id, run_id}` and copies the source plan under the fixed `close-settled-preserve-active` and `revalidate-before-import` policies.
+It also updates the tool-owned storage index. The born ORCH authors `plan.md` and every work artifact afterward. Never edit tool-owned manifests, indexes, `a2a/herdr-workers.json`, `a2a/delegation.json`, or their locks.
 
-Never edit tool-owned manifests, indexes, `a2a/herdr-workers.json`, `a2a/delegation.json`, or their locks.
+### Legacy init path
+
+`herdr_track init` plus `start_orchestrator` remains for exactly two cases: a sibling reset (`reset_of: {track_id, run_id}`, which copies the source plan under the fixed `close-settled-preserve-active` and `revalidate-before-import` policies and requires `plan.md` before start) and a handoff target (section 9). Both write `orchestrator-instructions.md` as an ordinary file instead of passing a mandate, and both are refused on a run that carries a creator record.
 
 ## 4. Plan responsibilities and assignments
+
+`plan.md` is the ORCH's own document, written after birth in conversation with the user — never by the bootstrapper, and never a transcription of the mandate. It is the only place HOW belongs.
 
 `plan.md` states:
 
@@ -204,9 +273,10 @@ The public MCP surface is exactly:
 
 ### `herdr_track`
 
-- `init`: `track_id`, `run_id`, `cwd`, optional `reset_of`.
+- `open`: `track_id`, `run_id`, `cwd`, `mandate` — the single atomic birth (section 3).
+- `init`: `track_id`, `run_id`, `cwd`, optional `reset_of` — legacy layout for reset siblings and handoff targets.
 - `inspect`: `track_id`, `run_id`.
-- `start_orchestrator`: `track_id`, `run_id`.
+- `start_orchestrator`: `track_id`, `run_id` — legacy spawn, refused on an open-managed run.
 - `close`: `track_id`, `run_id`, fresh `expected_registry_revision`.
 
 Track close is all-or-nothing. It rejects active or blocked lanes and fresh-inspects every close candidate before guarded closure.
@@ -287,11 +357,11 @@ ORCH independently reproduces material worker claims and runs integration verifi
 A handoff needs no human intervention: the whole bootstrap is four tool-drivable steps run by the source ORCH.
 
 1. `herdr_track {action:"init"}` with the target `track_id`/`run_id` and the same canonical `cwd` (add `reset_of` for a reset sibling). Init lays out the deterministic run and its protocol documents.
-2. Write the target's `plan.md`, complete `templates/handoff.md` into the target run, and write `orchestrator-instructions.md` pointing at the handoff document. These are ordinary file writes; both `plan.md` and `orchestrator-instructions.md` must exist before start, and the instruction file is fingerprinted at first prompt and never replayed after change.
+2. Complete `templates/handoff.md` into the target run and write `orchestrator-instructions.md` pointing at that handoff document. Both are ordinary file writes. `orchestrator-instructions.md` must exist before start — it is fingerprinted at first prompt and never replayed after a change — and it is the handoff's mandate analogue: the target ORCH writes its own `plan.md` after start. A reset sibling is the exception, because `init` copied the source plan and that `plan.md` must be present before start.
 3. `herdr_track {action:"start_orchestrator"}` on the target run. The server itself ensures the run workspace with its anchor tab/pane, starts the target ORCH agent pre-aligned with the configured orchestrator role's model and thinking, and delivers the first prompt: read `orchestrator-instructions.md` plus `protocol-orch.md` and wake the source run via `notify_run`. No separate Herdr CLI or `/herdr-align` step is needed for the target.
 4. Preserve active or unsafe source lanes, revalidate inherited evidence from the target side, and settle source closure per section 7.
 
-The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended.
+The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended — give that alias a `modelRoles` entry, or the spawn silently inherits the default chain and only the preflight warning names it.
 
 The target's start prompt names the source ORCH wake target: the target wakes the source after handoff revalidation, a terminal boundary, or a decision request, and the source may wake the target via its registry `agent_name`. Both directions are the same bounded non-authoritative doorbell — run documents stay the only authority.
 
