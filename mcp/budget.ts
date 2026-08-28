@@ -178,14 +178,15 @@ async function sessionTokens(sessionPath: string): Promise<number | undefined> {
       const message = parsed.message;
       if (message.role !== "assistant" || !isObject(message.usage)) continue;
       const usage = message.usage;
-      // `totalTokens` already includes the component counts when OMP reports it;
-      // summing both would double-charge the run.
-      let spent = typeof usage.totalTokens === "number" && Number.isSafeInteger(usage.totalTokens) && usage.totalTokens >= 0 ? usage.totalTokens : 0;
-      if (!spent) {
-        for (const name of ["input", "output", "cacheRead", "cacheWrite", "reasoningTokens"]) {
-          const value = usage[name];
-          if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) spent += value;
-        }
+      // Generative basis: cacheRead is a context re-read, not spend — charging
+      // it (directly or through `totalTokens`, which includes it) re-bills the
+      // whole retained context every turn, so judged spend grows superlinearly
+      // in turns with no relation to work done. Audit 1 of herdr-redesign/r1
+      // denied on exactly that arithmetic; friction d5dc8d0ebf17472a.
+      let spent = 0;
+      for (const name of ["input", "output", "cacheWrite", "reasoningTokens"]) {
+        const value = usage[name];
+        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) spent += value;
       }
       const next = total + spent;
       if (!Number.isSafeInteger(next)) return undefined;

@@ -303,6 +303,10 @@ function settlementObservation(assignment: AssignmentRecord, warning?: string): 
 function trackTotals(registry: DelegationRegistry): TrackTotals {
   const assignmentsByState = Object.fromEntries(ASSIGNMENT_STATE_ORDER.map((state) => [state, 0])) as Record<AssignmentState, number>;
   const tokenTotals: TrackTotals["settled_token_usage"] = { observations: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, total_tokens: 0 };
+  // Settlement snapshots are cumulative per session, so summing every snapshot
+  // re-counts a lane once per settled assignment (the triple-count audit 1 of
+  // herdr-redesign/r1 called out). Only the latest snapshot per session counts.
+  const latestBySession = new Map<string, TokenUsageObservation>();
   let settledElapsedMs = 0;
   let settledElapsedObservations = 0;
   let saturated = false;
@@ -320,13 +324,19 @@ function trackTotals(registry: DelegationRegistry): TrackTotals {
     }
     if (assignment.token_usage) {
       tokenTotals.observations += 1;
-      for (const [, fieldName] of TOKEN_FIELDS) {
-        const nextTokenTotal = tokenTotals[fieldName] + (assignment.token_usage[fieldName] ?? 0);
-        if (Number.isSafeInteger(nextTokenTotal)) tokenTotals[fieldName] = nextTokenTotal;
-        else {
-          tokenTotals[fieldName] = Number.MAX_SAFE_INTEGER;
-          saturated = true;
-        }
+      const previous = latestBySession.get(assignment.token_usage.session_id);
+      if (!previous || Date.parse(assignment.token_usage.observed_at) >= Date.parse(previous.observed_at)) {
+        latestBySession.set(assignment.token_usage.session_id, assignment.token_usage);
+      }
+    }
+  }
+  for (const usage of latestBySession.values()) {
+    for (const [, fieldName] of TOKEN_FIELDS) {
+      const nextTokenTotal = tokenTotals[fieldName] + (usage[fieldName] ?? 0);
+      if (Number.isSafeInteger(nextTokenTotal)) tokenTotals[fieldName] = nextTokenTotal;
+      else {
+        tokenTotals[fieldName] = Number.MAX_SAFE_INTEGER;
+        saturated = true;
       }
     }
   }
@@ -1011,7 +1021,7 @@ export class CompositeTools {
       reason === "clamp-unreadable"
         ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
         : reason === "denied"
-          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; only the human's clamp file can raise the ceiling now.`
+          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)} — the clamp releases the attempt but never raises the cap.`
           : reason === "approval-required"
             ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
             : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`,
