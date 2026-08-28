@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promise
 import path from "node:path";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, SHA256_RE, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -43,9 +43,8 @@ function validOrchCreator(value: unknown): value is OrchCreatorRecord {
     typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
     typeof value.opened_at === "string" && value.opened_at.length <= 64;
 }
-
 const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "started_at"] as const;
-const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "retries", "requested_at", "settled_at"] as const;
+const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
 
 function validCount(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
@@ -59,6 +58,7 @@ function validBudgetExtension(value: unknown, index: number): value is BudgetExt
     typeof value.justification_sha256 === "string" && SHA256_RE.test(value.justification_sha256) &&
     typeof value.audit_path === "string" && value.audit_path.length <= 4096 &&
     (value.audit_worker_id === undefined || (typeof value.audit_worker_id === "string" && WORKER_RE.test(value.audit_worker_id))) &&
+    (value.audit_worker_closed === undefined || typeof value.audit_worker_closed === "boolean") &&
     (value.state === "pending" || value.state === "settled") &&
     (value.verdict === undefined || BUDGET_VERDICTS.includes(value.verdict as BudgetVerdict)) &&
     (value.granted_tokens === undefined || validCount(value.granted_tokens)) &&
@@ -201,8 +201,23 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
 
 function validateRegistry(value: unknown, runPath: string): asserts value is DelegationRegistry {
   const requiredKeys = ["version", "owner", "run_path", "revision", "responsibilities", "lanes", "assignments", "created_at", "updated_at"] as const;
-  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator", "budget"]) || requiredKeys.some((key) => value[key] === undefined) || value.version !== DELEGATION_VERSION || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
-    throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "Preserve and repair the minimal registry; do not infer ownership.");
+  // Version first, and with its own error: a server that predates a schema growth
+  // must say so, because "malformed" sent an agent to repair a healthy tool-owned
+  // file (friction 8c1e0ea5). Unknown-key rejection stays exact within a version.
+  if (isRecord(value) && typeof value.version === "number" && !SUPPORTED_DELEGATION_VERSIONS.includes(value.version as 1 | 2)) {
+    throw new McpContractError(
+      "registry_version_unsupported",
+      `delegation.json declares schema version ${value.version}; this server supports ${SUPPORTED_DELEGATION_VERSIONS.join(", ")}.`,
+      "storage",
+      value.version > DELEGATION_VERSION
+        ? "This server is older than the registry it is reading: respawn it with /reload-plugins (or start a new OMP session) and retry the identical call. The registry is healthy — never hand-edit a tool-owned file to make a call succeed."
+        : "Preserve the registry and migrate it deliberately; a version this server no longer supports is never reinterpreted in place.",
+      false,
+      value.version > DELEGATION_VERSION,
+    );
+  }
+  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator", "budget"]) || requiredKeys.some((key) => value[key] === undefined) || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
+    throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "If this server is older than the fields the file carries, respawn it with /reload-plugins first — a stale reader reports a healthy registry as malformed. Otherwise preserve the registry and repair it from verified evidence; never hand-edit a tool-owned file to make a call succeed.");
   }
   if (value.orch_births !== undefined && (!Array.isArray(value.orch_births) || !value.orch_births.every((birth, index) => validOrchBirth(birth, index)))) {
     throw new McpContractError("delegation_registry_invalid", "An ORCH birth record is malformed.", "storage", "Repair births from verified spawn or claim evidence; generations are contiguous from 1.");
@@ -258,7 +273,7 @@ export class DelegationStore {
 
   private empty(): DelegationRegistry {
     const now = nowIso();
-    return { version: 1, owner: "herdr-delegator", run_path: this.runPath, revision: 0, responsibilities: {}, lanes: {}, assignments: {}, created_at: now, updated_at: now };
+    return { version: DELEGATION_VERSION, owner: "herdr-delegator", run_path: this.runPath, revision: 0, responsibilities: {}, lanes: {}, assignments: {}, created_at: now, updated_at: now };
   }
 
   async read(): Promise<DelegationRegistry> {
@@ -282,6 +297,10 @@ export class DelegationStore {
       const result = await operation(registry);
       registry.revision += 1;
       registry.updated_at = nowIso();
+      // Writes always emit the current schema version, so a version-1 file is
+      // upgraded the first time anything mutates it. Version 2 only adds optional
+      // fields, so the upgrade changes no existing field's meaning.
+      registry.version = DELEGATION_VERSION;
       // Validate before writing, not only on the next read. The fail-closed
       // gate is the same one, but running it here attributes a malformed record
       // to the call that produced it instead of to whoever reads next — a

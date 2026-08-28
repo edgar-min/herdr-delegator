@@ -17,7 +17,16 @@ export const MAX_TIMEOUT_MS = 300_000;
 // single-call wait below that bound; longer logical waits are composed by
 // repeating bounded `wait` calls.
 export const MAX_EFFECTIVE_WAIT_MS = 25_000;
-export const DELEGATION_VERSION = 1 as const;
+// The delegation registry's schema version. It is bumped whenever the schema
+// grows a field, so that a server process which predates the growth fails with a
+// named `registry_version_unsupported` telling the operator to respawn — instead
+// of reporting a healthy file as malformed and inviting a hand-repair of a
+// tool-owned file (friction 8c1e0ea5). Reading accepts every version in
+// SUPPORTED_DELEGATION_VERSIONS; writing always emits the current one. Version 2
+// is version 1 plus the optional `budget` record and a birth's optional
+// `approval_sha256`, so an upgrade changes no existing field's meaning.
+export const DELEGATION_VERSION = 2 as const;
+export const SUPPORTED_DELEGATION_VERSIONS = [1, 2] as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
 // Inter-run conversation (identity/comms redesign, decisions 10-12). A doorbell
@@ -280,6 +289,8 @@ export type BudgetExtension = {
   state: "pending" | "settled";
   verdict?: BudgetVerdict;
   granted_tokens?: number;
+  /** True once the server proved the auditor session was closed and its tab gone. */
+  audit_worker_closed?: boolean;
   retries: number;
   requested_at: string;
   settled_at?: string;
@@ -323,7 +334,7 @@ export type BudgetMetering = {
 };
 
 export type DelegationRegistry = {
-  version: 1;
+  version: (typeof SUPPORTED_DELEGATION_VERSIONS)[number];
   owner: "herdr-delegator";
   run_path: string;
   revision: number;

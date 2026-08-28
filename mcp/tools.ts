@@ -1157,6 +1157,10 @@ export class CompositeTools {
   private async extendBudget(input: Extract<HerdrTrackInput, { action: "budget_extend" }>, run: RunRef, store: DelegationStore): Promise<McpResult> {
     const runtime = await loadFacts(this.adapter);
     await assertOrchCommand(store, runtime.facts);
+    // Every guarded budget op sweeps first: an auditor whose close did not land
+    // must not survive as an orphan pane, and this is the one op that is already
+    // talking to Herdr (friction fa85b380).
+    await this.sweepAuditors(store, run, timeout(input));
     const { normalized, sha256: justificationHash } = normalizeJustification(input.justification);
     let registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
@@ -1284,7 +1288,7 @@ export class CompositeTools {
       "recorded server-side; the orchestrator never wrote this entry",
       ...(verdict.verdict === "deny" ? [`escalation: the human decides from here, armed with this verdict and the ledger; the next attempt is released only by a change to ${budgetClampPath(store.runPath)} (fingerprint at deny: ${deniedFingerprint})`] : []),
     ]);
-    const closeWarning = await this.closeAuditor(run, pending.audit_worker_id, timeoutMs);
+    const closeWarning = await this.closeAuditor(store, run, pending.ordinal, pending.audit_worker_id, timeoutMs);
     // Re-judge with the new cap: a grant that still leaves the run over its
     // ceiling stays parked, and the reason is recomputed rather than guessed.
     const judged = await this.judgeBudget(store, run, "wait");
@@ -1325,17 +1329,49 @@ export class CompositeTools {
     await this.budgetDoorbell(store, run, parked, parked.budget ?? seedBudget(undefined, parked.created_at), `parked (audit-unavailable, audit ${ordinal})`, [detail]);
   }
 
-  /** The auditor is single-purpose: it is closed as soon as its verdict is recorded. */
-  private async closeAuditor(run: RunRef, workerId: string | undefined, timeoutMs: number): Promise<string | undefined> {
+  /**
+   * Closes the auditor once it has actually settled, and records that it is gone.
+   *
+   * The first cut closed it the instant its verdict block landed, but an auditor
+   * is usually still `working` at that moment and `close_worker` accepts only a
+   * settled state — so every audit leaked a live pane that no public op could
+   * reach, since the auditor is deliberately not a lane (friction fa85b380).
+   * Waiting for the boundary fixes the common case; `sweepAuditors` covers the
+   * rest, because a leaked session must not depend on one call succeeding.
+   */
+  private async closeAuditor(store: DelegationStore, run: RunRef, ordinal: number, workerId: string | undefined, timeoutMs: number): Promise<string | undefined> {
     if (!workerId) return undefined;
     try {
-      const live = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
-      const sequence = numberField(live.worker, ["state_change_seq"]);
-      if (sequence === undefined) return `Auditor ${workerId} has no live state sequence; close it by hand after reading its verdict.`;
+      const observed = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+      const agentName = stringField(observed.worker, ["agent_name"]);
+      if (agentName) await this.adapter.wait(agentName, ["idle", "done"], Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS)).catch(() => undefined);
+      const settled = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId });
+      const sequence = numberField(settled.worker, ["state_change_seq"]);
+      if (sequence === undefined) return `Auditor ${workerId} has no live state sequence; it stays recorded for the next sweep.`;
       await closeWorker({ operation: "close_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, expected_state_change_seq: sequence });
+      await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const entry = next.budget?.extensions.find((candidate) => candidate.ordinal === ordinal);
+        if (entry) entry.audit_worker_closed = true;
+      });
+      await appendLedger(store.runPath, `audit ${ordinal} session closed`, [`auditor ${workerId} settled and closed; no orphan pane remains`]).catch(() => undefined);
       return undefined;
     } catch (error) {
-      return `Auditor ${workerId} stayed open: ${error instanceof Error ? error.message : String(error)}`;
+      return `Auditor ${workerId} stayed open and is queued for the next sweep: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
+  /**
+   * Server-side sweep of auditors whose close never landed. It runs at the
+   * budget ops that already talk to Herdr, never on a pending audit (that
+   * session is still working), and adds no public action on the auditor — the
+   * ORCH still cannot address it.
+   */
+  private async sweepAuditors(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<void> {
+    const registry = await store.read();
+    for (const extension of registry.budget?.extensions ?? []) {
+      if (extension.state !== "settled" || !extension.audit_worker_id || extension.audit_worker_closed) continue;
+      const warning = await this.closeAuditor(store, run, extension.ordinal, extension.audit_worker_id, timeoutMs);
+      if (warning) await appendLedger(store.runPath, `audit ${extension.ordinal} session sweep failed`, [warning]).catch(() => undefined);
     }
   }
 
