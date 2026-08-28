@@ -2,8 +2,8 @@
 
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
-- Package/plugin: `herdr-delegator` 1.2.0
-- Skill: `herdr-delegation` 1.2.0
+- Package/plugin: `herdr-delegator` 2.0.0
+- Skill: `herdr-delegation` 2.0.0
 - Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, `herdr_friction`
 - Official runtime: OMP only
 - License: Apache-2.0
