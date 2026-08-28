@@ -18,6 +18,11 @@ export const BOOTSTRAP_METADATA_TTL_MS = 300_000;
 // Re-issued an order of magnitude more often than the TTL above, so a live
 // session's published facts never sit near the edge of the freshness window.
 export const BOOTSTRAP_REFRESH_INTERVAL_MS = 25_000;
+// Longest a caller waits on one refresh attempt. Above the 15s an honest
+// attempt can spend (10s pane convergence plus a 5s metadata report) and below
+// both the refresh interval and OMP's per-handler event budget, so a stalled
+// attempt can neither stack ticks nor hold a lifecycle handler open.
+export const BOOTSTRAP_REFRESH_DEADLINE_MS = 20_000;
 export const BOOTSTRAP_TOKEN_PREFIX = "herdr-delegator-";
 export const BOOTSTRAP_TOKENS = {
   sessionId: `${BOOTSTRAP_TOKEN_PREFIX}session`,
@@ -31,6 +36,7 @@ const MAX_PATH_BYTES = 4_096;
 let lastBootstrapSequence = 0;
 let activeBridgeRefresh: AbortController | undefined;
 let activeBridgeLoop: AbortController | undefined;
+let latestBridgeContext: ExtensionContext | undefined;
 
 type ConcreteModel = { provider: string; model: string };
 
@@ -486,28 +492,68 @@ function loopDelay(ms: number, signal: AbortSignal): Promise<boolean> {
   });
 }
 
+/**
+ * One refresh attempt, bounded for the caller. `refreshOmpBridge` awaits a
+ * config read, per-role observation and up to three Herdr subprocesses, and
+ * only the subprocess waits honor the abort signal — so an attempt can outlive
+ * its usefulness. The deadline bounds what the caller waits for, never the
+ * attempt itself: the next attempt supersedes a straggler through
+ * `activeBridgeRefresh.abort()`. Unbounded, a single stalled attempt froze the
+ * heartbeat for the rest of the session (friction bb2aec9368fa7a59).
+ */
+async function refreshWithinDeadline(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  let cancelDeadline = (): void => {};
+  try {
+    await Promise.race([
+      refreshOmpBridge(pi, ctx),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, BOOTSTRAP_REFRESH_DEADLINE_MS);
+        timer.unref();
+        cancelDeadline = () => clearTimeout(timer);
+      }),
+    ]);
+  } finally {
+    cancelDeadline();
+  }
+}
+
 function stopBridgeRefreshLoop(): void {
   activeBridgeLoop?.abort();
   activeBridgeLoop = undefined;
 }
 
-function startBridgeRefreshLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
+/**
+ * Idempotent heartbeat, owned by the session rather than by any one event.
+ * Registration used to stop the loop and rebuild it inside every lifecycle
+ * handler, so publication liveness depended on that handler reaching its last
+ * line: one stall between the stop and the restart left the session with no
+ * publisher, and nothing inside the session could start one again — the shape of
+ * the entry-gate outage in friction bb2aec9368fa7a59. The loop now starts once,
+ * reads whichever context is current, and stops only at session shutdown.
+ */
+function ensureBridgeRefreshLoop(pi: ExtensionAPI): void {
+  if (activeBridgeLoop) return;
   const aborter = new AbortController();
   activeBridgeLoop = aborter;
   void (async () => {
     while (await loopDelay(BOOTSTRAP_REFRESH_INTERVAL_MS, aborter.signal)) {
       if (activeBridgeLoop !== aborter) return;
-      await refreshOmpBridge(pi, ctx);
+      const ctx = latestBridgeContext;
+      if (ctx) await refreshWithinDeadline(pi, ctx);
     }
   })();
 }
 
-
 export function registerOmpBridge(pi: ExtensionAPI): void {
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
-    stopBridgeRefreshLoop();
-    await refreshOmpBridge(pi, ctx);
-    startBridgeRefreshLoop(pi, ctx);
+    latestBridgeContext = ctx;
+    // Heartbeat before the attempt, never after it: the attempt below can fail
+    // or stall, and a session that publishes nothing has no in-session way
+    // back. `/reload-plugins` reloads skills, commands, agents and MCP servers
+    // but never re-runs an extension, so a silent bridge stays silent for the
+    // life of the session (friction bb2aec9368fa7a59).
+    ensureBridgeRefreshLoop(pi);
+    await refreshWithinDeadline(pi, ctx);
   };
   pi.on("session_start", refresh);
   pi.on("session_switch", refresh);
@@ -517,5 +563,6 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
     stopBridgeRefreshLoop();
     activeBridgeRefresh?.abort();
     activeBridgeRefresh = undefined;
+    latestBridgeContext = undefined;
   });
 }
