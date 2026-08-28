@@ -84,6 +84,7 @@ The public surface contains exactly three composite tools. Every action receives
 
 | Action | Required action-specific fields | Effect |
 |---|---|---|
+| `preflight` | `assignment_id`, `responsibility_key` | validates the canonical draft's grammar before immutability, returns its server-computed `instructions_sha256` and configured `authoring` skill routes, and never mutates state |
 | `add` | `assignment_id`, `responsibility_key`, `instructions_sha256`; optional `separation`, `wait` | reuses, queues, or creates a lane and dispatches the canonical assignment |
 | `wait` | `assignment_id`; optional `wait` | waits on the active assignment without mutation on timeout |
 | `respond` | `assignment_id`, fresh `expected_state_change_seq`, bounded `response` | answers only a freshly proved blocked assignment |
@@ -100,6 +101,10 @@ The public surface contains exactly three composite tools. Every action receives
 | `close` | `worker_id`, exact `expected_session_id`, fresh `expected_state_change_seq` | safely closes a settled responsibility lane |
 
 Callers never supply raw Herdr targets, arbitrary paths, argv, terminal commands, or generic close operations.
+
+### Advisory skill routes
+
+Configuration may declare `skill_routing.rules` mapping boundaries (`plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`) and surfaces (`orch`, `worker`) to installed skill names. Matching routes are delivered deterministically: `init` results carry `plan`/`authoring` (plus `reset` on a sibling reset), `preflight` results carry `authoring`, the dispatch prompt carries worker-surface `dispatch`/`completion` routes, and terminal assignment results carry `settlement`. Apply each installed applicable routed skill at its boundary; a missing skill is a no-op. Routes are advisory text only — never invocation proof, settlement condition, or authority over scope, ownership, or lifecycle.
 
 ## Dispatch and settlement judgment
 

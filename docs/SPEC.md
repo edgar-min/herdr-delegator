@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.0.0 and the bundled `herdr-delegation` skill 1.0.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.1.0 and the bundled `herdr-delegation` skill 1.1.0.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,8 +11,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `1.0.0`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.0.0` under frontmatter metadata.
+- **ID-002**: The package and plugin version MUST be `1.1.0`.
+- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.1.0` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -49,6 +49,15 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **CFG-018**: Bridge facts MUST be written atomically to an owner-only, session-scoped file under the active OMP agent directory; callers MUST NOT supply that file path.
 - **CFG-019**: MCP MUST derive the bridge coordinate from the verified caller pane and official OMP session, then verify ownership, non-symlink type, restrictive modes, strict schema, freshness, nonce, pane/session correspondence, and bootstrap metadata equality.
 - **CFG-020**: [`config.schema.json`](../config.schema.json) and [`config.example.json`](../config.example.json) MUST remain the public configuration schema and built-in profile example.
+
+### 2.3 Advisory skill routing
+
+- **SRT-001**: Configuration MAY declare `skill_routing.rules` as at most 16 rules, each with exactly `boundary` from `plan | authoring | dispatch | completion | settlement | reset`, `surface` from `orch | worker`, and 1–8 skill names matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; malformed routing MUST fail closed with the rest of the layer.
+- **SRT-002**: A later configuration layer's `skill_routing` MUST replace the earlier layer's value as one leaf.
+- **SRT-003**: Matching routes MUST be delivered deterministically: `herdr_track init` results carry orch-surface `plan`/`authoring` routes (plus `reset` for a sibling reset), `herdr_assignment preflight` results carry orch-surface `authoring` routes, the worker dispatch prompt carries worker-surface `dispatch`/`completion` routes, and terminal assignment results carry orch-surface `settlement` routes.
+- **SRT-004**: Routes are advisory text only. They MUST NOT gate settlement, lifecycle, recovery, or any mutation; a delivered route MUST NOT be recorded or represented as proof that a skill ran.
+- **SRT-005**: Advisory route lookup MUST NOT block control flow; a failed lookup degrades to an empty route set while configuration-as-authority paths keep failing closed.
+- **SRT-006**: The shipped configuration MUST name no skills; skill names live only in user, project, or run configuration layers.
 
 ## 3. Deterministic storage and authority
 
@@ -123,6 +132,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.3 `herdr_assignment`
 
+- **ASN-014a**: `preflight` MUST require `assignment_id` and `responsibility_key`, validate the canonical draft grammar at the derived coordinate, return the server-computed SHA-256 of the exact validated bytes, and never mutate the registry, a lane, or the artifact; an already-registered assignment MUST return its immutable state instead.
 - **ASN-015**: `add` MUST require `assignment_id`, `responsibility_key`, and `instructions_sha256`; it MAY accept `separation` and `wait`.
 - **ASN-016**: `add` MUST verify the immutable artifact before routing, select exact responsibility reuse or valid separation, ensure session/model identity, record prompt intent, send only a canonical pointer, wait to a natural boundary, and verify persisted identity after prompt.
 - **ASN-017**: A duplicate identical assignment MUST return a no-effect observation; a queued assignment MUST remain queued without lifecycle wait.
@@ -224,9 +234,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.0.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.1.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server using bare command `sh`, sole arg `${PLUGIN_ROOT}/bin/herdr-delegator-mcp`, and `${PLUGIN_ROOT}` as `cwd`; `.mcp.json` MUST NOT exist.
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.0.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.1.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
 - **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
 - **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
@@ -278,7 +288,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.0.0.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.1.0.
 - [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the namespaced OMP extension is bridge-only.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.

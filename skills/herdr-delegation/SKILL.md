@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Herdr delegation
@@ -22,6 +22,14 @@ Use Herdr for substantial independent work that benefits from persistent context
 
 Worker tabs share the configured project `cwd`. Parallelize only disjoint ownership. Serialize overlapping code edits in one shared working directory.
 
+### Optional skill discovery and routing
+
+At planning, assignment-authoring, dispatch, pre-completion, verification, reset, and handoff boundaries, scan the runtime's already available skill catalog for a directly applicable skill from any installed skill pack. Read and invoke only a skill whose own description matches the present work. Missing skills are a no-op: never install, update, emulate, or block on them during a run.
+
+Configuration may declare deterministic advisory skill routes (see section 2). Matching routes appear as `skill_routes` in tool results and inside the worker dispatch prompt. Routes raise discovery reliability only; a route never proves a skill ran and is never a settlement or lifecycle condition.
+
+An optional skill remains subordinate to this protocol. It may improve reasoning or an owned artifact, but it never changes scope, authority, write ownership, immutable or tool-owned files, completion grammar, lifecycle state, settlement, or recovery. Preserve user-invoked-only semantics declared by the skill.
+
 ## 2. Configure the plugin
 
 At least one `herdr-delegator.json` layer must set an absolute `storage.root`:
@@ -29,7 +37,7 @@ At least one `herdr-delegator.json` layer must set an absolute `storage.root`:
 - user: `${PI_CODING_AGENT_DIR}/herdr-delegator.json`, or `~/.omp/agent/herdr-delegator.json` when unset;
 - project: `<cwd>/.omp/herdr-delegator.json`.
 
-Project values override user values. A run-local `<run>/herdr-delegator.json` may override model-profile leaves but may not relocate the run.
+Project values override user values. A run-local `<run>/herdr-delegator.json` may override model-profile and skill-routing leaves but may not relocate the run.
 
 The built-in profiles are:
 
@@ -52,6 +60,23 @@ ORCH picks `profile` for each assignment from the assignment's work characterist
 | `slow` | Deepest, most careful reasoning for hard problems where cost is secondary |
 
 Cost-efficient small mechanical work routes to host OMP task/subagents, so no persistent lane profile exists for it.
+
+### Skill routing
+
+An optional `skill_routing.rules` array (at most 16 rules) routes installed skills to protocol boundaries:
+
+```json
+{
+  "skill_routing": {
+    "rules": [
+      { "boundary": "authoring", "surface": "orch", "skills": ["readchk", "shower"] },
+      { "boundary": "completion", "surface": "worker", "skills": ["sip"] }
+    ]
+  }
+}
+```
+
+`boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`. `surface` is `orch` or `worker`. Each rule names 1–8 bounded skill names; the shipped configuration names none. Delivery is deterministic: `herdr_track init` returns `plan`/`authoring` (plus `reset` for a sibling reset) routes, `herdr_assignment preflight` returns `authoring` routes, the dispatch prompt carries `dispatch`/`completion` routes to the worker, and terminal assignment results carry `settlement` routes. Routes are advisory text only — never invocation proof, settlement gate, or authority.
 
 Launches remain fail-closed behind two gates:
 
@@ -178,6 +203,7 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 
 ### `herdr_assignment`
 
+- `preflight`: run coordinates, `assignment_id`, `responsibility_key`.
 - `add`: run coordinates, `assignment_id`, `responsibility_key`, exact `instructions_sha256`, optional `separation`, optional `wait`.
 - `wait`: run coordinates, `assignment_id`, optional `wait`.
 - `respond`: run coordinates, `assignment_id`, fresh `expected_state_change_seq`, and either bounded text or allowlisted keys.
@@ -185,6 +211,8 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 `wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000.
 
 `add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends pointers to the canonical assignment and `protocol-worker.md`, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active.
+
+`preflight` validates the canonical draft's grammar before immutability and returns the server-computed `instructions_sha256` of the exact validated bytes, bounded section counts, and any configured `authoring` skill routes. It never mutates the registry or any lane; an already-registered assignment returns its immutable state instead.
 
 Assignment state is exactly:
 

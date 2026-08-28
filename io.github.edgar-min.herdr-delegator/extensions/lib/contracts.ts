@@ -117,11 +117,27 @@ export type ModelProfile = {
   thinking: ConfigThinkingLevel;
 };
 
+export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "completion", "settlement", "reset"] as const;
+export const MAX_SKILL_ROUTE_RULES = 16;
+export const MAX_SKILLS_PER_ROUTE = 8;
+export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+export type SkillRouteBoundary = (typeof SKILL_ROUTE_BOUNDARIES)[number];
+
+export type SkillRouteSurface = "orch" | "worker";
+
+export type SkillRoute = {
+  boundary: SkillRouteBoundary;
+  surface: SkillRouteSurface;
+  skills: string[];
+};
+
 export type DelegatorConfig = {
   version: 1;
   orchestrator: ModelProfile;
   worker_profiles: Record<string, ModelProfile>;
   storage?: { root: string };
+  skill_routing?: { rules: SkillRoute[] };
 };
 
 export type ConfigSource = {

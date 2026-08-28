@@ -221,6 +221,26 @@ export class DelegationStore {
     }
   }
 
+  /**
+   * Pre-immutability grammar validation of the canonical assignment file. It
+   * parses the exact bytes at the canonical coordinate, returns their SHA-256
+   * for a subsequent `add`, and never mutates the registry or any lane.
+   */
+  async preflight(assignmentId: string, responsibility: string): Promise<AssignmentFile> {
+    if (!ASSIGNMENT_RE.test(assignmentId) || !RESPONSIBILITY_RE.test(responsibility)) throw new McpContractError("invalid_assignment", "Assignment coordinates are invalid.", "validate", "Use canonical assignment and responsibility IDs.");
+    const artifactPath = path.join(this.runPath, "a2a", "assignments", `${assignmentId}.md`);
+    try {
+      if (await realpath(artifactPath) !== artifactPath) throw new Error("non-canonical artifact");
+      const file = await lstat(artifactPath);
+      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ARTIFACT_BYTES) throw new Error("unsafe artifact");
+      const bytes = await readFile(artifactPath);
+      return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: sha256(bytes) };
+    } catch (error: unknown) {
+      if (error instanceof McpContractError) throw error;
+      throw new McpContractError("assignment_artifact_missing", "Canonical assignment Markdown is missing or unsafe.", "validate", "Create the ORCH-owned bounded assignment file before preflight.");
+    }
+  }
+
 
   private async reservedWorkerOrdinals(registry: DelegationRegistry): Promise<Set<number>> {
     const reserved = new Set<number>();

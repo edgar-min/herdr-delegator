@@ -2,8 +2,8 @@
 
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
-- Package/plugin: `herdr-delegator` 1.0.0
-- Skill: `herdr-delegation` 1.0.0
+- Package/plugin: `herdr-delegator` 1.1.0
+- Skill: `herdr-delegation` 1.1.0
 - Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`
 - Official runtime: OMP only
 - License: Apache-2.0
@@ -87,6 +87,12 @@ Project values override user values. A run-local configuration may override prof
       "role": "@slow",
       "thinking": "inherit"
     }
+  },
+  "skill_routing": {
+    "rules": [
+      { "boundary": "authoring", "surface": "orch", "skills": ["readchk", "shower"] },
+      { "boundary": "completion", "surface": "worker", "skills": ["sip"] }
+    ]
   }
 }
 ```
@@ -94,6 +100,10 @@ Project values override user values. A run-local configuration may override prof
 Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
 
 If the live session does not match the configured orchestrator role, mutations fail closed with `orchestrator_model_mismatch`; the error names the expected identity and the remedies. Run `/herdr-align` in the session to switch it (session-only) to the configured role and refresh bridge attestation in one step.
+
+### Advisory skill routing
+
+Optional `skill_routing.rules` (at most 16) route installed skills to protocol boundaries. `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`; `surface` is `orch` or `worker`; each rule names 1–8 skills. The plugin ships no skill names — rules live in user, project, or run configuration, so any skill pack plugs in without touching the plugin. Matching routes are delivered deterministically as `skill_routes` in tool results (`init`, `preflight`, terminal assignment results) and inside the worker dispatch prompt. Routes are advisory only: they raise discovery reliability, never gate settlement or lifecycle, and never prove a skill ran.
 
 ## Start
 
@@ -153,6 +163,7 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 
 ### `herdr_assignment`
 
+- `preflight`: assignment/responsibility IDs; validates the canonical draft's grammar before immutability, returns its server-computed SHA-256 and `authoring` skill routes, and never mutates state.
 - `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation and wait.
 - `wait`: assignment ID and optional wait.
 - `respond`: assignment ID, fresh blocked sequence, and bounded text or allowlisted keys.

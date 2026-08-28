@@ -169,6 +169,12 @@ export const ompRuntimeFactsSchema = z.object({
 }).strict();
 export type OmpRuntimeFacts = z.infer<typeof ompRuntimeFactsSchema>;
 
+export type SkillRouteAdvisory = {
+  boundary: "plan" | "authoring" | "dispatch" | "completion" | "settlement" | "reset";
+  surface: "orch" | "worker";
+  skills: string[];
+};
+
 export type McpResult<T = unknown> = {
   ok: boolean;
   tool: ToolName;
@@ -179,6 +185,7 @@ export type McpResult<T = unknown> = {
   registry_revision?: number;
   worker?: Partial<WorkerLaneRecord>;
   assignment?: { assignment_id: string; state: AssignmentState; settlement?: AssignmentSettlementObservation };
+  skill_routes?: SkillRouteAdvisory[];
   data?: T;
   error?: { code: string; phase: ErrorPhase; message: string; recovery: string; ambiguous_effect: boolean };
 };
@@ -207,7 +214,7 @@ export const herdrTrackInputShape = {
 };
 export const herdrAssignmentInputShape = {
   ...run,
-  action: z.enum(["add", "wait", "respond"]),
+  action: z.enum(["add", "preflight", "wait", "respond"]),
   assignment_id: z.string().min(3).max(32),
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
@@ -234,6 +241,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), wait }).strict(),
+  z.object({ ...run, action: z.literal("preflight"), assignment_id: assignmentId, responsibility_key: coordinate }).strict(),
   z.object({ ...run, action: z.literal("wait"), assignment_id: assignmentId, wait }).strict(),
   z.object({ ...run, action: z.literal("respond"), assignment_id: assignmentId, expected_state_change_seq: z.number().int().nonnegative(), response: z.discriminatedUnion("kind", [z.object({ kind: z.literal("text"), text: z.string().min(1).max(MAX_RESPONSE_TEXT) }).strict(), z.object({ kind: z.literal("keys"), keys: z.array(z.enum(["enter", "esc", "up", "down", "left", "right", "tab", "shift+tab", "y", "n"])).min(1).max(32) }).strict()]) }).strict(),
 ]);

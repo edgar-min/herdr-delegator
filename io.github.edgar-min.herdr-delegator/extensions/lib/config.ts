@@ -6,8 +6,8 @@ import { copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } 
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
+import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -63,17 +63,51 @@ function parseProfilePatch(value: unknown, coordinate: string): Partial<ModelPro
   };
 }
 
+function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRoute[] } {
+  if (!isObject(value)) {
+    throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
+  }
+  assertExactKeys(value, ["rules"], coordinate);
+  if (!Array.isArray(value.rules) || value.rules.length > MAX_SKILL_ROUTE_RULES) {
+    throw new ContractError("invalid_config", `${coordinate}.rules: expected at most ${MAX_SKILL_ROUTE_RULES} rules.`, "config");
+  }
+  const rules = value.rules.map((rule, index) => {
+    const ruleCoordinate = `${coordinate}.rules[${index}]`;
+    if (!isObject(rule)) {
+      throw new ContractError("invalid_config", `${ruleCoordinate}: expected an object.`, "config");
+    }
+    assertExactKeys(rule, ["boundary", "surface", "skills"], ruleCoordinate);
+    if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
+      throw new ContractError("invalid_config", `${ruleCoordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
+    }
+    if (rule.surface !== "orch" && rule.surface !== "worker") {
+      throw new ContractError("invalid_config", `${ruleCoordinate}.surface: expected orch or worker.`, "config");
+    }
+    if (
+      !Array.isArray(rule.skills) ||
+      rule.skills.length < 1 ||
+      rule.skills.length > MAX_SKILLS_PER_ROUTE ||
+      rule.skills.some((skill) => typeof skill !== "string" || !SKILL_NAME_RE.test(skill))
+    ) {
+      throw new ContractError("invalid_config", `${ruleCoordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
+    }
+    return { boundary: rule.boundary, surface: rule.surface, skills: [...(rule.skills as string[])] } as SkillRoute;
+  });
+  return { rules };
+}
+
 type ConfigPatch = {
   orchestrator?: Partial<ModelProfile>;
   worker_profiles?: Record<string, Partial<ModelProfile>>;
   storage?: { root: string };
+  skill_routing?: { rules: SkillRoute[] };
 };
 
 function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected a JSON object.`, "config");
   }
-  assertExactKeys(value, ["version", "orchestrator", "worker_profiles", "storage"], coordinate);
+  assertExactKeys(value, ["version", "orchestrator", "worker_profiles", "storage", "skill_routing"], coordinate);
   if (value.version !== 1) {
     throw new ContractError("invalid_config", `${coordinate}.version: expected 1.`, "config");
   }
@@ -102,6 +136,9 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
       throw new ContractError("invalid_config", `${coordinate}.storage.root: expected an absolute path.`, "config");
     }
     patch.storage = { root: path.normalize(value.storage.root) };
+  }
+  if (value.skill_routing !== undefined) {
+    patch.skill_routing = parseSkillRouting(value.skill_routing, `${coordinate}.skill_routing`);
   }
   return patch;
 }
@@ -147,6 +184,7 @@ function mergeConfigPatch(config: DelegatorConfig, patch: ConfigPatch): void {
     config.worker_profiles[name] = { ...base, ...profile };
   }
   if (patch.storage) config.storage = patch.storage;
+  if (patch.skill_routing) config.skill_routing = patch.skill_routing;
 }
 
 export async function loadDelegatorConfig(runPath: string | undefined, cwd: string): Promise<{
@@ -192,6 +230,22 @@ export async function loadDelegatorConfig(runPath: string | undefined, cwd: stri
     }
   }
   return { config, sources };
+}
+
+/**
+ * Deterministic advisory skill-route selection for one delivery point. Routes
+ * come only from strict configuration layers; the result is bounded advisory
+ * text material, never authority over scope, settlement, or lifecycle.
+ */
+export async function resolveSkillRoutes(
+  runPath: string | undefined,
+  cwd: string,
+  boundaries: readonly SkillRouteBoundary[],
+  surface: SkillRouteSurface,
+): Promise<SkillRoute[]> {
+  const { config } = await loadDelegatorConfig(runPath, cwd);
+  const rules = config.skill_routing?.rules ?? [];
+  return rules.filter((rule) => rule.surface === surface && boundaries.includes(rule.boundary));
 }
 
 export function modelIdentity(model: ExtensionContext["model"]): { provider: string; model: string } {

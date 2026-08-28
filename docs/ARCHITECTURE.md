@@ -183,6 +183,7 @@ There is no fixed number of lanes and no complex scoring policy.
 
 ### `herdr_assignment`
 
+- `preflight {assignment_id, responsibility_key}` — grammar validation and server-computed hash before immutability; no mutation
 - `add {assignment_id, responsibility_key, instructions_sha256, separation?, wait?}`
 - `wait {assignment_id, wait?}`
 - `respond {assignment_id, expected_state_change_seq, response}`
@@ -195,6 +196,10 @@ There is no fixed number of lanes and no complex scoring policy.
 - `close {worker_id, expected_session_id, expected_state_change_seq}`
 
 Every action also includes `track_id` and `run_id`. Strict discriminated schemas reject extra or action-inappropriate fields.
+
+### Advisory skill routes
+
+Configuration may declare `skill_routing.rules` (boundary × surface × skill names). The MCP layer deterministically surfaces matching rules as `skill_routes` in `init`, `preflight`, and terminal assignment results, and appends worker-surface `dispatch`/`completion` routes to the dispatch prompt pointer. Route lookup never blocks control flow and routes carry no authority: they are bounded advisory text for skill discovery, not invocation proof or settlement input. The shipped plugin names no skill pack; names live only in user/project/run configuration.
 
 ## State and transitions
 

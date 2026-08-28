@@ -20,5 +20,15 @@
       "role": "@slow",
       "thinking": "inherit"
     }
+  },
+  "skill_routing": {
+    "rules": [
+      { "boundary": "plan", "surface": "orch", "skills": ["inquire"] },
+      { "boundary": "authoring", "surface": "orch", "skills": ["readchk", "shower"] },
+      { "boundary": "dispatch", "surface": "worker", "skills": ["readchk"] },
+      { "boundary": "completion", "surface": "worker", "skills": ["sip"] },
+      { "boundary": "settlement", "surface": "orch", "skills": ["gap", "factchk"] },
+      { "boundary": "reset", "surface": "orch", "skills": ["re0-memo"] }
+    ]
   }
 }

@@ -24,3 +24,11 @@ Terminal output is an observation, not a report or decision. Never place secrets
 - **ORCH:** read `protocol-orch.md` before planning, routing, dispatch, settlement judgment, recovery, reset, or handoff.
 - **Responsibility worker:** read `protocol-worker.md` before acting on an assignment or writing any report or peer channel.
 - Tool-owned manifests, indexes, registries, and locks are never edited, moved, copied, unlocked, or treated as writable role documents.
+
+## Optional skill discovery and routing
+
+At planning, assignment-authoring, dispatch, pre-completion, verification, reset, and handoff boundaries, scan the runtime's already available skill catalog for a directly applicable skill from any installed skill pack. Read and invoke only a skill whose own description matches the present work. Missing skills are a no-op: never install, update, emulate, or block on them during a run.
+
+Configured advisory skill routes may appear as `skill_routes` in tool results and inside the worker dispatch prompt. A route raises discovery reliability only; it never proves a skill ran and is never contract, settlement, lifecycle, or session authority.
+
+An optional skill remains subordinate to this protocol. It may improve reasoning or an owned artifact, but it never changes scope, authority, write ownership, immutable or tool-owned files, completion grammar, lifecycle state, settlement, or recovery. Preserve user-invoked-only semantics declared by the skill.

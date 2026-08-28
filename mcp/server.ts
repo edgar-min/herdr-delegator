@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   });
 
   server.registerTool("herdr_track", { description: "Initialize, inspect, start the orchestrator for, or safely close a deterministic Herdr track.", inputSchema: herdrTrackInputShape }, async (input) => response(await tools.track(herdrTrackSchema.parse(input))));
-  server.registerTool("herdr_assignment", { description: "Add, wait for, or respond to a canonical assignment on a persistent responsibility lane.", inputSchema: herdrAssignmentInputShape }, async (input) => response(await tools.assignment(herdrAssignmentSchema.parse(input))));
+  server.registerTool("herdr_assignment", { description: "Preflight, add, wait for, or respond to a canonical assignment on a persistent responsibility lane.", inputSchema: herdrAssignmentInputShape }, async (input) => response(await tools.assignment(herdrAssignmentSchema.parse(input))));
   server.registerTool("herdr_worker", { description: "List, inspect, resume, or safely close registry-owned responsibility workers.", inputSchema: herdrWorkerInputShape }, async (input) => response(await tools.worker(herdrWorkerSchema.parse(input))));
 
   const transport = new StdioServerTransport();

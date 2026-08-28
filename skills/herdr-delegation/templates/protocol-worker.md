@@ -15,6 +15,8 @@ For each assignment, self-resolve in this order:
 
 Proceed when evidence is clear and within assigned write ownership. Obey exact dependencies, completion conditions, user boundaries, and prohibitions. Workers share the project `cwd`; touch only owned files and honor declared quiet windows so concurrent edits remain disjoint.
 
+The dispatch prompt may include advisory skill routes for the `dispatch` and `completion` boundaries. Apply each installed applicable routed skill — `dispatch` routes when starting the assignment, `completion` routes before appending the completion block — strictly within assigned write ownership. A missing skill is a no-op; a route never changes scope, ownership, completion conditions, or the report grammar.
+
 ## File and channel authority
 
 - Append durable evidence, results, decision requests, and completion only to your own `a2a/w<N>-report.md`.

@@ -6,6 +6,8 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
+import { resolveSkillRoutes } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, resolveBlock, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
@@ -46,6 +48,32 @@ const GIT_AUDIT_TIMEOUT_MS = 2_000;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Advisory route lookup for one delivery point. The advisory channel must
+ * never block control flow, so a failed lookup degrades to an empty route
+ * set; the underlying configuration error still fails closed on every
+ * mutating action that loads configuration as authority.
+ */
+async function advisorySkillRoutes(
+  runPath: string,
+  cwd: string,
+  boundaries: readonly SkillRouteBoundary[],
+  surface: SkillRouteSurface,
+): Promise<SkillRoute[]> {
+  try {
+    return await resolveSkillRoutes(runPath, cwd, boundaries, surface);
+  } catch {
+    return [];
+  }
+}
+
+
+function skillRoutePointer(routes: SkillRoute[]): string {
+  if (!routes.length) return "";
+  const grouped = routes.map((route) => `${route.boundary}: ${route.skills.join(", ")}`).join("; ");
+  return ` Advisory skill routes — ${grouped}. Apply each installed applicable skill at its boundary; routes are advisory and never change scope, ownership, dependencies, user boundaries, or completion grammar.`;
 }
 
 async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Promise<TokenUsageObservation | undefined> {
@@ -450,7 +478,10 @@ export class CompositeTools {
       if (input.action === "init") {
         await loadFacts(this.adapter);
         const result = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd, reset_of: input.reset_of });
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: result };
+        const initialized = await DelegationStore.resolve(input.track_id, input.run_id);
+        const boundaries: SkillRouteBoundary[] = input.reset_of ? ["plan", "authoring", "reset"] : ["plan", "authoring"];
+        const routes = await advisorySkillRoutes(initialized.runPath, initialized.cwd, boundaries, "orch");
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, ...(routes.length ? { skill_routes: routes } : {}), data: result };
       }
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
       if (input.action === "inspect") {
@@ -486,6 +517,16 @@ export class CompositeTools {
     const run = runRef(input);
     try {
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
+      if (input.action === "preflight") {
+        const registry = await store.read();
+        const existing = registry.assignments[input.assignment_id];
+        const routes = await advisorySkillRoutes(store.runPath, store.cwd, ["authoring"], "orch");
+        if (existing) {
+          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...(routes.length ? { skill_routes: routes } : {}), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256 } };
+        }
+        const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...(routes.length ? { skill_routes: routes } : {}), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length } };
+      }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
         try {
@@ -537,7 +578,8 @@ export class CompositeTools {
           next.lanes[lane.worker_id].state = "working";
         });
         const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
-        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle.`;
+        const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker");
+        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle.${skillRoutePointer(workerRoutes)}`;
         const warnings: string[] = [];
         try {
           const prompted = await this.adapter.prompt(agentName, pointer, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
@@ -570,14 +612,18 @@ export class CompositeTools {
         if (terminal) warnings.push(terminal);
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+        const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...(settlementRoutes.length ? { skill_routes: settlementRoutes } : {}), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
       }
 
       let registry = await store.read();
       const assignment = registry.assignments[input.assignment_id];
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
       if (assignment.state === "queued") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
-      if (assignment.state === "completed" || assignment.state === "failed") return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment) } };
+      if (assignment.state === "completed" || assignment.state === "failed") {
+        const settlementRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch");
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...(settlementRoutes.length ? { skill_routes: settlementRoutes } : {}), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment) } };
+      }
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");
       const inspected = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, ...(input.action === "wait" ? { timeout_ms: timeout(input) } : {}) });
@@ -619,7 +665,8 @@ export class CompositeTools {
       if (terminal) tailWarnings.push(terminal);
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+      const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...(settlementRoutes.length ? { skill_routes: settlementRoutes } : {}), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
