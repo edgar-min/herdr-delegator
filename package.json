@@ -32,6 +32,7 @@
     "*.schema.json",
     "*.example.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "docs/**"
   ],
