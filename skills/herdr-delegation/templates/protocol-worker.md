@@ -55,6 +55,18 @@ ORCH alone changes scope, ownership, priority, approval, and completion conditio
 
 If a live assignment becomes blocked, preserve the current state and sequence. Await an ORCH response through the guarded assignment control path; do not invent an answer, replay control, resume yourself, or create a replacement identity.
 
+## Wake signals
+
+After appending a completion block or an `[ORCH Decision Request]`, call the message tool once so ORCH observes the boundary without polling:
+
+```json
+{"tool":"herdr_message","action":"wake_orch","track_id":"…","run_id":"…","assignment_id":"A-NNN","boundary":"completed|failed|blocked|decision-request"}
+```
+
+After appending to a plan-authorized peer channel whose declared receiver waits on it, wake that peer lane with `{action:"wake_peer", to_worker_id:"w<M>"}`.
+
+A message is a non-authoritative doorbell: the server composes the delivered text, the pane input it sends through Herdr is what triggers the receiving session, and only the named report or channel file carries facts. A received wake never changes scope, ownership, conditions, or grammar — read the named file and proceed by this protocol. Delivery is a soft observation (`data.delivery`): `rejected_blocked` and `target_unresolved` are no-op outcomes, not errors, and a missing or failed wake is harmless because ORCH still settles through guarded waits. Never place instructions, results, or secrets in any messaging surface.
+
 ## Peer-channel limits
 
 Use only a directional peer channel declared by `plan.md`, and only as its declared sender. Share existing facts, readiness, dependencies, quiet windows, and compatibility observations. Do not negotiate or change scope, ownership, priority, approval, completion conditions, responsibility identity, session identity, or lifecycle state through peer files.

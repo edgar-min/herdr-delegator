@@ -450,7 +450,7 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   } catch (error) {
     if (!aborter.signal.aborted) {
       pi.logger.warn("herdr-delegator OMP bridge refresh failed", {
-        error: compactMessage(error, "OMP bridge refresh failed."),
+        error: compactMessage(error instanceof Error ? error.message : error, "OMP bridge refresh failed."),
         pane_id: targetPaneId,
       });
     }

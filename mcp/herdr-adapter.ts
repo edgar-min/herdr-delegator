@@ -2,7 +2,7 @@ import { access, realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { MAX_EFFECTIVE_WAIT_MS, McpContractError, OBSERVATION_SOURCE, type AssignmentState } from "./contracts";
 
-export type HerdrCommandResult = { data: unknown; stdout: string; warning?: string };
+export type HerdrCommandResult = { data: unknown; stdout: string; warning?: string; timedOut?: boolean };
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const REQUIRED_CAPABILITIES = ["agent.prompt", "agent.wait", "agent.start", "pane.wait_for_output", "pane.report_metadata"] as const;
 // Ordered most specific first: `agent get` reports the lifecycle state under one of these.
@@ -39,6 +39,16 @@ function isStatusWaitFailure(error: unknown): boolean {
   return /waiting for agent status|agent_wait_timeout|status_wait_timeout/i.test(`${error.code} ${error.message}`);
 }
 
+/**
+ * True only for a non-ambiguous read-path failure that proves the wait window
+ * elapsed without the requested state: the Herdr CLI's own `timeout` error or
+ * this adapter's read-side abort. Mutation timeouts stay ambiguous elsewhere.
+ */
+function isWaitWindowTimeout(error: unknown): boolean {
+  if (!(error instanceof McpContractError) || error.ambiguousEffect) return false;
+  return error.code === "timeout" || error.code === "wait_timeout" || isStatusWaitFailure(error);
+}
+
 export class HerdrAdapter {
   private constructor(readonly binary: string) {}
 
@@ -69,7 +79,12 @@ export class HerdrAdapter {
       if (stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES) throw new McpContractError("herdr_output_too_large", "Herdr returned output beyond the bounded adapter limit.", mutating ? "prompt" : "wait", "Inspect Herdr directly; do not retry a mutation.", mutating, !mutating);
       if (exitCode !== 0) {
         let code = "herdr_command_failed";
-        try { const parsed = JSON.parse(stdout) as Record<string, unknown>; if (typeof parsed.code === "string") code = parsed.code; } catch { /* normalized below */ }
+        try {
+          const parsed = JSON.parse(stdout) as Record<string, unknown>;
+          const nested = parsed.error;
+          const found = typeof parsed.code === "string" ? parsed.code : (nested && typeof nested === "object" && typeof (nested as Record<string, unknown>).code === "string" ? (nested as Record<string, unknown>).code as string : undefined);
+          if (found) code = found;
+        } catch { /* normalized below */ }
         throw new McpContractError(code, bounded(stderr || stdout || `Herdr exited ${exitCode}.`), mutating ? "prompt" : "wait", mutating ? "Inspect the exact target and registry journal before any replay." : "Retry the read-only observation.", false, !mutating);
       }
       let data: unknown;
@@ -118,15 +133,33 @@ export class HerdrAdapter {
     }
   }
   /**
+   * Fire-and-forget non-authoritative doorbell. Submits one prompt without a
+   * settled-state wait; delivery failures are mapped by the caller into soft
+   * observations, never contract errors.
+   */
+  notify(target: string, text: string, timeoutMs: number): Promise<HerdrCommandResult> {
+    return this.execute(["agent", "prompt", target, text], timeoutMs, true);
+  }
+  /**
    * Waits for one of `until`. An already-satisfied state is proved by a fresh read
-   * before subscribing, so a current state never times out.
+   * before subscribing, so a current state never times out. A wait window that
+   * elapses is a no-effect observation, never an error: the agent is freshly read
+   * and returned with `timedOut` so callers surface it as a normal result.
    */
   async wait(target: string, until: string[], timeoutMs: number): Promise<HerdrCommandResult> {
     const waitMs = Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS);
     const current = await this.getAgent(target, Math.min(waitMs, STATUS_READ_TIMEOUT_MS));
     const status = agentStatusOf(current.data);
     if (status !== undefined && until.includes(status)) return current;
-    return this.execute(["agent", "wait", target, ...until.flatMap((state) => ["--until", state]), "--timeout", String(waitMs)], waitMs + 1_000, false);
+    try {
+      return await this.execute(["agent", "wait", target, ...until.flatMap((state) => ["--until", state]), "--timeout", String(waitMs)], waitMs + 1_000, false);
+    } catch (error) {
+      if (!isWaitWindowTimeout(error)) throw error;
+      const observed = await this.getAgent(target, STATUS_READ_TIMEOUT_MS);
+      const observedStatus = agentStatusOf(observed.data);
+      if (observedStatus !== undefined && until.includes(observedStatus)) return observed;
+      return { data: observed.data, stdout: observed.stdout, timedOut: true, warning: `Wait window elapsed without reaching ${until.join("/")}; the agent was freshly observed as ${bounded(observedStatus ?? "unknown")}.` };
+    }
   }
   startAgent(name: string, paneId: string, args: readonly string[], timeoutMs: number): Promise<HerdrCommandResult> {
     return this.execute(["agent", "start", name, "--kind", "omp", "--pane", paneId, "--", ...args], timeoutMs, true);

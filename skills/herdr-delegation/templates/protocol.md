@@ -16,6 +16,7 @@ This deterministic run is the durable channel between the OMP orchestrator (**OR
 | Documents | contracts, plans, decisions, evidence, reports, and handoff state | live control or ownership proof |
 | MCP | canonical coordinates, hashes, guarded control, and lifecycle actions | durable contracts, results, or judgment |
 | Herdr metadata/UI | responsibility, assignment, state, session attestation, and live observations | contract, settlement, judgment, or session authority by itself |
+| `herdr_message` doorbells | one bounded server-composed signal naming a report, channel, or run after a boundary | authority of any kind — the named file alone carries facts |
 
 Terminal output is an observation, not a report or decision. Never place secrets in any document, control, observation, or audit channel.
 

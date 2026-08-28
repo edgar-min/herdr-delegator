@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { appendFile, lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -13,8 +13,46 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type HerdrAssignmentInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type DelegationRegistry, type ErrorPhase, type HerdrAssignmentInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 
+
+// ---------------------------------------------------------------------------
+// Messaging support. Delivery is deliberately soft: a message call only
+// hard-errors on invalid input. A dropped message is a silent failure, so every
+// attempt and outcome is appended to the sender run's a2a/messages.jsonl and the
+// result always reports a delivery observation instead of a retryable error.
+// ---------------------------------------------------------------------------
+
+type OrchWakeTarget = { pane_id: string; official_session_id: string; updated_at: string };
+
+function orchTargetPath(runPath: string): string { return path.join(runPath, "a2a", "orch-target.json"); }
+
+/** Best-effort advisory routing record; never blocks the guarded action that triggered it. */
+async function recordOrchTarget(runPath: string, facts: OmpRuntimeFacts): Promise<void> {
+  const target: OrchWakeTarget = { pane_id: facts.pane_id, official_session_id: facts.session_id, updated_at: nowIso() };
+  try { await writeFile(orchTargetPath(runPath), `${JSON.stringify(target, null, 2)}\n`, { mode: 0o600 }); } catch { /* advisory only */ }
+}
+
+async function readOrchTarget(runPath: string): Promise<OrchWakeTarget | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(orchTargetPath(runPath), "utf8")) as Partial<OrchWakeTarget>;
+    if (typeof parsed.pane_id === "string" && BOUNDED_TOKEN_RE.test(parsed.pane_id) && typeof parsed.official_session_id === "string") {
+      return { pane_id: parsed.pane_id, official_session_id: parsed.official_session_id, updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : "" };
+    }
+  } catch { /* unresolved */ }
+  return undefined;
+}
+
+async function appendMessageLog(runPath: string, entry: Record<string, unknown>): Promise<void> {
+  try { await appendFile(path.join(runPath, "a2a", "messages.jsonl"), `${JSON.stringify(entry)}\n`, { mode: 0o600 }); } catch { /* observability is best-effort */ }
+}
+
+function singleLine(value: string): string { return value.replace(/[\r\n\t\u0000-\u001f\u007f]+/g, " ").trim(); }
+
+/** Deterministic worker agent name; mirrors extensions/lib/worker.ts. */
+function workerAgentName(runPath: string, workerId: string): string {
+  return `herdr-${workerId}-${sha256(`${runPath}\0${workerId}`).slice(0, 12)}`;
+}
 function field(value: unknown, names: readonly string[]): unknown {
   if (!value || typeof value !== "object") return undefined;
   if (Array.isArray(value)) { for (const child of value) { const found = field(child, names); if (found !== undefined) return found; } return undefined; }
@@ -483,9 +521,10 @@ export class CompositeTools {
     const run = runRef(input);
     try {
       if (input.action === "init") {
-        await loadFacts(this.adapter);
+        const initFacts = await loadFacts(this.adapter);
         const result = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd, reset_of: input.reset_of });
         const initialized = await DelegationStore.resolve(input.track_id, input.run_id);
+        await recordOrchTarget(initialized.runPath, initFacts.facts);
         const boundaries: SkillRouteBoundary[] = input.reset_of ? ["plan", "authoring", "reset"] : ["plan", "authoring"];
         const routes = await advisorySkillRoutes(initialized.runPath, initialized.cwd, boundaries, "orch");
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, ...skillRouteFields(routes), data: result };
@@ -545,6 +584,7 @@ export class CompositeTools {
           throw new McpContractError("invalid_run_layout", "protocol-worker.md is missing or not a canonical regular file.", "validate", "Re-initialize and reconcile the exact run before dispatching an assignment.");
         }
         const runtime = await loadFacts(this.adapter);
+        await recordOrchTarget(store.runPath, runtime.facts);
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
@@ -586,7 +626,7 @@ export class CompositeTools {
         });
         const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
         const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker");
-        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle.${skillRoutePointer(workerRoutes)}`;
+        const pointer = `Assignment ${input.assignment_id}; responsibility ${input.responsibility_key}; instructions ${selected.artifact.path} sha256=${input.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${input.assignment_id}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}`;
         const warnings: string[] = [];
         try {
           const prompted = await this.adapter.prompt(agentName, pointer, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
@@ -636,13 +676,16 @@ export class CompositeTools {
       const inspected = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id, ...(input.action === "wait" ? { timeout_ms: timeout(input) } : {}) });
       registry = await updateLaneFromWorker(store, lane.worker_id, inspected);
       const tailWarnings: string[] = [];
+      let waitTimedOut = false;
       if (input.action === "wait") {
         const agentName = stringField(inspected.worker, ["agent_name"]);
         if (!agentName) throw new McpContractError("worker_identity_conflict", "Assignment lane has no canonical agent name.", "wait", "Reconcile lifecycle identity before waiting.");
         const waited = await this.adapter.wait(agentName, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input));
+        waitTimedOut = waited.timedOut === true;
         if (waited.warning) tailWarnings.push(waited.warning);
       } else {
-        await loadFacts(this.adapter);
+        const respondFacts = await loadFacts(this.adapter);
+        await recordOrchTarget(store.runPath, respondFacts.facts);
         const currentLane = registry.lanes[lane.worker_id];
         if (currentLane.state !== "blocked") throw new McpContractError("agent_blocked", "Worker is not freshly proved blocked.", "respond", "Inspect and respond only at the latest blocked sequence.", false, true);
         if (currentLane.state_change_seq !== input.expected_state_change_seq) throw new McpContractError("stale_state_change_seq", "Blocked response sequence is stale.", "respond", "Inspect and use the exact latest sequence.", false, true);
@@ -673,7 +716,7 @@ export class CompositeTools {
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: input.action === "respond" ? "confirmed" : "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
@@ -731,5 +774,68 @@ export class CompositeTools {
       registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { next.lanes[input.worker_id].state = "closed"; });
       return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: result };
     } catch (error) { return resultError("herdr_worker", input.action, run, error); }
+  }
+
+  /**
+   * Non-authoritative doorbells. Only invalid input hard-errors: delivery is a
+   * soft observation (`data.delivery`) because a messaging channel that fails
+   * loudly-but-retryably invites loops, while one that fails silently stalls the
+   * whole flow. Every attempt is appended to the sender run's a2a/messages.jsonl.
+   */
+  async message(input: HerdrMessageInput): Promise<McpResult> {
+    const run = runRef(input);
+    try {
+      const store = await DelegationStore.resolve(input.track_id, input.run_id);
+      const registry = await store.read();
+      const warnings: string[] = [];
+      // Sender identity is advisory routing/logging context, never a gate: with a
+      // degraded bridge the message still flows, honestly marked unverified.
+      let senderSession: string | undefined;
+      try { senderSession = (await loadFacts(this.adapter)).facts.session_id; }
+      catch (error) { warnings.push(`Sender attestation unavailable: ${error instanceof Error ? error.message : String(error)}`); }
+      const senderLane = senderSession ? Object.values(registry.lanes).find((lane) => lane.official_session_id === senderSession)?.worker_id : undefined;
+      const sender = senderLane ?? (senderSession ? "orch" : "unverified");
+
+      let target: string | undefined;
+      let text = "";
+      let unresolvedReason: string | undefined;
+      if (input.action === "wake_orch") {
+        const orch = await readOrchTarget(store.runPath);
+        if (!orch) unresolvedReason = "No recorded ORCH wake target; any attested orch action (init, add, respond) records one.";
+        else if (senderSession && orch.official_session_id === senderSession) unresolvedReason = "Caller is the recorded ORCH; wake_orch is for workers.";
+        else target = orch.pane_id;
+        const laneId = registry.assignments[input.assignment_id]?.worker_id ?? senderLane;
+        text = `wake: ${input.assignment_id} ${input.boundary} (run ${input.track_id}/${input.run_id}); read ${laneId ? `a2a/${laneId}-report.md` : "the lane report"} — non-authoritative signal, verify via herdr_assignment.`;
+      } else if (input.action === "wake_peer") {
+        if (!senderLane) unresolvedReason = "Peer wake requires a verified sender lane: the channel is named by its declared sender.";
+        else if (senderLane === input.to_worker_id) unresolvedReason = "A lane cannot wake itself.";
+        else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
+        else {
+          target = workerAgentName(store.runPath, input.to_worker_id);
+          text = `wake: peer channel a2a/${senderLane}-to-${input.to_worker_id}.md updated (run ${input.track_id}/${input.run_id}) — read the channel file; wake text carries no authority.`;
+        }
+      } else {
+        try {
+          const targetStore = await DelegationStore.resolve(input.to_track_id, input.to_run_id);
+          const orch = await readOrchTarget(targetStore.runPath);
+          if (!orch) unresolvedReason = `Run ${input.to_track_id}/${input.to_run_id} has no recorded ORCH wake target yet.`;
+          else target = orch.pane_id;
+        } catch (error) { unresolvedReason = `Target run unresolved: ${error instanceof Error ? error.message : String(error)}`; }
+        text = `orch note (${input.kind}) from ${input.track_id}/${input.run_id}: ${singleLine(input.note)} — non-authoritative; verify against that run's documents.`;
+      }
+
+      let delivery: MessageDelivery;
+      if (!target) { delivery = "target_unresolved"; if (unresolvedReason) warnings.push(unresolvedReason); }
+      else {
+        try { await this.adapter.notify(target, text, 15_000); delivery = "delivered"; }
+        catch (error) {
+          const detail = `${error instanceof McpContractError ? error.code : ""} ${error instanceof Error ? error.message : String(error)}`;
+          delivery = /agent_blocked/i.test(detail) ? "rejected_blocked" : /not.?found|missing/i.test(detail) ? "target_unresolved" : "failed";
+          warnings.push(`Delivery ${delivery}: ${singleLine(detail).slice(0, 300)}`);
+        }
+      }
+      await appendMessageLog(store.runPath, { at: nowIso(), action: input.action, sender, delivery, target: target ?? null, text, ...(warnings.length ? { warnings } : {}) });
+      return { ok: true, tool: "herdr_message", action: input.action, run, effect: delivery === "delivered" ? "confirmed" : "none", retryable: delivery !== "delivered", data: { delivery, sender, target: target ?? null, ...(warnings.length ? { warnings } : {}) } };
+    } catch (error) { return resultError("herdr_message", input.action, run, error); }
   }
 }

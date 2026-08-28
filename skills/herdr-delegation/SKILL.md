@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "1.1.1"
+  version: "1.2.0"
 ---
 
 # Herdr delegation
@@ -184,13 +184,14 @@ status: completed
 
 or exactly one `status: failed` line in that block. MCP stores the full report hash and completion time in `a2a/delegation.json`; there is no separate contract or receipt file.
 
-## 6. Use the three MCP tools
+## 6. Use the four MCP tools
 
 The public MCP surface is exactly:
 
 - `herdr_track`
 - `herdr_assignment`
 - `herdr_worker`
+- `herdr_message`
 
 ### `herdr_track`
 
@@ -208,7 +209,7 @@ Track close is all-or-nothing. It rejects active or blocked lanes and fresh-insp
 - `wait`: run coordinates, `assignment_id`, optional `wait`.
 - `respond`: run coordinates, `assignment_id`, fresh `expected_state_change_seq`, and either bounded text or allowlisted keys.
 
-`wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000.
+`wait` accepts optional `until` values from `idle`, `done`, `blocked` and `timeout_ms` from 1,000 through 300,000. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error; compose longer logical waits by repeating bounded calls, and prefer settling on worker wake signals over long polling loops.
 
 `add` selects or creates the responsibility lane, verifies the configured worker profile and session gates, records prompt intent, sends pointers to the canonical assignment and `protocol-worker.md`, waits, verifies persisted identity, and attempts settlement. An exact-responsibility assignment queues instead of spawning when its lane is active.
 
@@ -220,7 +221,7 @@ Assignment state is exactly:
 queued | prompting | working | blocked | completed | failed | ambiguous
 ```
 
-A wait timeout is a no-effect observation. A potentially effected prompt, response, or resume converges on `ambiguous` and must be inspected before any recovery.
+A wait timeout is a no-effect observation surfaced as a `timed_out` result. A potentially effected prompt, response, or resume converges on `ambiguous` and must be inspected before any recovery.
 
 ### `herdr_worker`
 
@@ -230,6 +231,14 @@ A wait timeout is a no-effect observation. A potentially effected prompt, respon
 - `close`: run coordinates, `worker_id`, exact `expected_session_id`, fresh `expected_state_change_seq`.
 
 Use worker operations for lane observation and lifecycle only. Assignment delivery and blocked responses belong to `herdr_assignment`.
+
+### `herdr_message`
+
+- `wake_orch`: run coordinates, `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` — worker doorbell to the run's recorded ORCH wake target.
+- `wake_peer`: run coordinates, `to_worker_id` — doorbell to a registered peer lane after a plan-authorized channel append.
+- `notify_run`: run coordinates, `to_track_id`, `to_run_id`, `kind` from `fact`/`bottleneck`/`request`/`handoff`, one-line `note` ≤500 chars — orch-to-orch note for any cross-run need, not only handoff.
+
+The server composes every delivered text, resolves targets from run records, and transports each message as Herdr pane input — the pane input is what triggers the receiving session. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`); only invalid input errors, and every attempt is appended to the sending run's `a2a/messages.jsonl`. A stalled flow is a silent failure — check that log. Messages carry no authority: settle only through guarded actions and documents.
 
 ## 7. Completion is not closure
 
@@ -246,6 +255,7 @@ Focus restoration is guarded: restore only displacement onto registry-owned coor
 - **Documents:** contract, decisions, ownership, durable results, completion, evidence, and handoff.
 - **MCP prompt/control:** canonical coordinates and hashes, wait requests, fresh blocked responses, and lifecycle actions.
 - **Herdr metadata:** display-only responsibility, assignment, assignment state, session/model attestation, and live status.
+- **`herdr_message` doorbells:** one bounded server-composed signal after a boundary — workers wake ORCH after a completion block or decision request, plan-authorized peers wake each other after channel appends, and orchestrators exchange bounded cross-run notes. Never authority: the named file alone carries facts.
 
 Metadata is not contract, settlement, or session authority. Terminal output is not a report.
 
@@ -256,6 +266,8 @@ Workers self-resolve from their assignment, `plan.md`, canonical project documen
 ORCH independently reproduces material worker claims and runs integration verification once at the integration boundary. Record acceptance or recovery in `[ORCH Response]` and `evidence.md` when used.
 
 For a handoff, create a sibling run, preserve active or unsafe source lanes, revalidate inherited evidence, complete `templates/handoff.md`, and start the target with `herdr_track {action:"start_orchestrator"}`. The built-in orchestrator role is `@default`; configuring a planning-grade role such as `@plan` with elevated thinking is recommended.
+
+The target's start prompt names the source ORCH wake target: the target wakes the source after handoff revalidation, a terminal boundary, or a decision request, and the source may wake the target via its registry `agent_name`. Both directions are the same bounded non-authoritative doorbell — run documents stay the only authority.
 
 `/reload-plugins` refreshes the skill and MCP server. Validate a changed extension module in a new OMP session.
 

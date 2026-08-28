@@ -69,7 +69,7 @@ The final four sections contain one or more bounded Markdown bullets. The artifa
 
 ## Public MCP contract
 
-The public surface contains exactly three composite tools. Every action receives `track_id` and `run_id`.
+The public surface contains exactly four composite tools. Every action receives `track_id` and `run_id`.
 
 ### `herdr_track`
 
@@ -89,7 +89,7 @@ The public surface contains exactly three composite tools. Every action receives
 | `wait` | `assignment_id`; optional `wait` | waits on the active assignment without mutation on timeout |
 | `respond` | `assignment_id`, fresh `expected_state_change_seq`, bounded `response` | answers only a freshly proved blocked assignment |
 
-`wait.until` values are `idle`, `done`, and `blocked` — request all three that apply; an OMP worker commonly reports `done` at a turn boundary, not only `idle`. `timeout_ms` is 1,000–300,000; the server clamps one call's effective wait, so compose longer logical waits by repeating bounded `wait` calls. Waiting discipline: monitor with repeated `herdr_assignment wait` (or event observation), never fixed sleep loops — a sleep both overshoots finished work and undershoots slow work. A text response is bounded. A key response uses only the MCP allowlist. Assignment state is exactly `queued | prompting | working | blocked | completed | failed | ambiguous`.
+`wait.until` values are `idle`, `done`, and `blocked` — request all three that apply; an OMP worker commonly reports `done` at a turn boundary, not only `idle`. `timeout_ms` is 1,000–300,000; the server clamps one call's effective wait, so compose longer logical waits by repeating bounded `wait` calls. Waiting discipline: settle on wake messages plus bounded `wait` verification, never fixed sleep loops — a sleep both overshoots finished work and undershoots slow work. A text response is bounded. A key response uses only the MCP allowlist. Assignment state is exactly `queued | prompting | working | blocked | completed | failed | ambiguous`.
 
 ### `herdr_worker`
 
@@ -101,6 +101,16 @@ The public surface contains exactly three composite tools. Every action receives
 | `close` | `worker_id`, exact `expected_session_id`, fresh `expected_state_change_seq` | safely closes a settled responsibility lane |
 
 Callers never supply raw Herdr targets, arbitrary paths, argv, terminal commands, or generic close operations.
+
+### `herdr_message`
+
+| Action | Required action-specific fields | Effect |
+|---|---|---|
+| `wake_orch` | `assignment_id`, `boundary` from `completed`/`failed`/`blocked`/`decision-request` | worker-sent doorbell to this run's recorded ORCH wake target |
+| `wake_peer` | `to_worker_id` | doorbell to a registered peer lane after a plan-authorized channel append |
+| `notify_run` | `to_track_id`, `to_run_id`, `kind`, one-line `note` ≤500 chars | bounded orch-to-orch note delivered to another run's ORCH |
+
+The server composes every delivered text and resolves targets from run records; callers never supply prompt text, panes, or agent names. Delivery is a soft observation (`data.delivery`: `delivered`, `rejected_blocked`, `target_unresolved`, `failed`) — only invalid input is an error — and every attempt is appended to the sending run's `a2a/messages.jsonl`.
 
 ### Advisory skill routes
 
@@ -123,11 +133,15 @@ ORCH judges settlement only from an exact final report block headed `[Assignment
 
 Assignment completion never closes the tab or official OMP session. The worker remains available for another assignment with the same responsibility.
 
+Workers send one `herdr_message {action:"wake_orch"}` after a completion block or a decision request. A message is a non-authoritative doorbell delivered as Herdr pane input: on receipt, verify through `herdr_assignment wait` or `herdr_worker inspect` and judge settlement only from the report. Prefer event-driven waiting — dispatch, continue other work, and settle on wake — over long polling loops.
+
+ORCH↔ORCH communication uses `herdr_message {action:"notify_run", to_track_id, to_run_id, kind, note}` — not only for handoff: a fact discovered in this track, a bottleneck observed in another, or a bounded request all qualify. `kind` is `fact | bottleneck | request | handoff` and `note` is one bounded line. The receiving ORCH treats the note as a pointer, verifies against that run's documents, and records anything durable in its own run. Delivery is a soft observation: a stalled channel is a silent failure, so every attempt lands in the sending run's `a2a/messages.jsonl` — check it when flow stops. A message never replaces `start_orchestrator`, inspection, or report judgment.
+
 ## Blocked, timeout, and ambiguous operations
 
 Before a response, ORCH fresh-inspects the worker and pins the exact blocked `state_change_seq`. Use text only for free-form input and allowlisted keys only for an inspected dialog.
 
-A wait timeout has no effect and may be repeated. A prompt, response, resume, or close timeout may have changed external state and is never replayed blindly.
+A `wait` whose window elapses returns a normal `timed_out: true` observation with the fresh lane state — it has no effect, is not an error, and may be repeated. A prompt, response, resume, or close timeout may have changed external state and is never replayed blindly.
 
 Recovery order:
 

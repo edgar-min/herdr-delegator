@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.1.1 and the bundled `herdr-delegation` skill 1.1.1.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 1.2.0 and the bundled `herdr-delegation` skill 1.2.0.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,9 +11,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `1.1.1`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.1.1` under frontmatter metadata.
-- **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`.
+- **ID-002**: The package and plugin version MUST be `1.2.0`.
+- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `1.2.0` under frontmatter metadata.
+- **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, and `herdr_message`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
 - **ID-007**: The license MUST be Apache-2.0 with copyright 2026 Edgar Min.
@@ -111,11 +111,11 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.1 Common result and input rules
 
-- **TOOL-001**: The public surface MUST contain exactly the three tools named in ID-004; raw Herdr management MUST NOT be public.
+- **TOOL-001**: The public surface MUST contain exactly the four tools named in ID-004; raw Herdr management MUST NOT be public.
 - **TOOL-002**: Every input MUST be a strict action-discriminated object and reject extra or action-inappropriate fields.
 - **TOOL-003**: Every action MUST include `track_id` and `run_id`.
 - **TOOL-004**: Where a `wait` object is accepted, `timeout_ms` MUST be an integer from 1,000 through 300,000 and default to 120,000; `until` values MUST be drawn from `idle`, `done`, and `blocked`.
-- **TOOL-005**: Results MUST include `ok`, `tool`, `action`, `run`, `effect`, and `retryable`, plus bounded registry, worker, assignment, data, or error fields as applicable.
+- **TOOL-005**: Results MUST include `ok`, `tool`, `action`, `run`, `effect`, and `retryable`, plus bounded registry, worker, assignment, `timed_out`, data, or error fields as applicable.
 - **TOOL-006**: Effect MUST be `none`, `confirmed`, or `ambiguous`.
 - **TOOL-007**: Structured errors MUST include code, phase, bounded message, recovery guidance, and `ambiguous_effect`.
 - **TOOL-008**: An ambiguous effect MUST never be advertised as blindly retryable.
@@ -137,7 +137,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ASN-015**: `add` MUST require `assignment_id`, `responsibility_key`, and `instructions_sha256`; it MAY accept `separation` and `wait`.
 - **ASN-016**: `add` MUST verify the immutable artifact before routing, select exact responsibility reuse or valid separation, ensure session/model identity, record prompt intent, send only a canonical pointer, wait to a natural boundary, and verify persisted identity after prompt.
 - **ASN-017**: A duplicate identical assignment MUST return a no-effect observation; a queued assignment MUST remain queued without lifecycle wait.
-- **ASN-018**: `wait` MUST require only `assignment_id` plus optional `wait`; a timeout MUST have no mutation effect.
+- **ASN-018**: `wait` MUST require only `assignment_id` plus optional `wait`; a timeout MUST have no mutation effect. An elapsed wait window MUST surface as a successful no-effect observation carrying `timed_out: true` and the freshly observed lane state, never as an error result.
 - **ASN-019**: `respond` MUST require `assignment_id`, a fresh nonnegative `expected_state_change_seq`, and one strict response.
 - **ASN-020**: A text response MUST contain 1–8,000 characters. A key response MUST contain 1–32 values drawn only from `enter`, `esc`, `up`, `down`, `left`, `right`, `tab`, `shift+tab`, `y`, and `n`.
 - **ASN-021**: `respond` MUST fresh-inspect the bound lane, require state `blocked`, and reject a stale sequence before sending input.
@@ -156,6 +156,16 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **WRK-006**: `close` MUST require `worker_id`, exact `expected_session_id`, and fresh nonnegative `expected_state_change_seq`.
 - **WRK-007**: Worker close MUST require a settled lane, exact registry/session ownership, and safe pane topology.
 - **WRK-008**: Assignment delivery and blocked response MUST be available only through `herdr_assignment`, not worker lifecycle actions.
+
+### 5.5 `herdr_message`
+
+- **MSG-001**: `wake_orch` MUST require `assignment_id` and a `boundary` from `completed`, `failed`, `blocked`, `decision-request`; `wake_peer` MUST require `to_worker_id`; `notify_run` MUST require `to_track_id`, `to_run_id`, a `kind` from `fact`, `bottleneck`, `request`, `handoff`, and a 1–500 character `note` normalized to one line.
+- **MSG-002**: The server MUST compose every delivered text and resolve every target from run records; callers MUST NOT supply prompt text, panes, agent names, or argv.
+- **MSG-003**: Delivery MUST be transported as Herdr agent-prompt pane input — the pane input is what triggers the receiving session — and MUST NOT use any other signaling channel.
+- **MSG-004**: A message call MUST hard-error only on invalid input; delivery outcome MUST surface as a successful observation with `delivery` drawn from `delivered`, `rejected_blocked`, `target_unresolved`, `failed`, so a broken channel is visible without inviting retry loops or halting flow.
+- **MSG-005**: Every send attempt and outcome MUST be appended best-effort to the sending run's `a2a/messages.jsonl`; log failure MUST NOT block the message.
+- **MSG-006**: Sender identity is advisory routing context: an unverifiable bridge MUST degrade the sender to `unverified` with a warning instead of refusing delivery, except `wake_peer`, whose channel name requires a verified sender lane.
+- **MSG-007**: Attested `init`, `add`, and `respond` calls MUST record the verified caller pane and session as the run's advisory ORCH wake target without blocking the guarded action when recording fails.
 
 ## 6. Documents, control, and observation
 
@@ -201,7 +211,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 8. Ambiguous effects, recovery, and closure
 
-- **LIFE-001**: A wait timeout MUST be treated as a no-effect observation; a mutating timeout MAY have taken effect.
+- **LIFE-001**: A wait timeout MUST be treated as a no-effect observation returned as a successful `timed_out` result; a mutating timeout MAY have taken effect.
 - **LIFE-002**: Prompt, response, resume, target start, or close uncertainty MUST be inspected before retry.
 - **LIFE-003**: Recovery MUST verify routing, operation fingerprint, state sequence, report, official session, workspace/tab/pane ownership, and topology as applicable.
 - **LIFE-004**: Recovery MAY continue from a proved effect or retry from proved absence; unresolved ambiguity MUST preserve every coordinate and prohibit replay.
@@ -211,6 +221,14 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **LIFE-008**: A reset copies planning context, not truth; inherited evidence MUST be revalidated.
 - **LIFE-009**: Handoff MUST preserve responsibility routing, assignment ledger, official sessions/models, reset lineage, active source lanes, blocked/ambiguous operations, focus warnings, and review status.
 - **LIFE-010**: The target ORCH MUST use the configured role and its own exact official persisted session; it MUST NOT resume source ORCH context.
+
+### 8.1 Messages
+
+- **WAKE-001**: A message is one bounded server-composed doorbell naming only a boundary fact and a report, channel, or run; it MUST NOT carry contract, settlement, judgment, instruction, or identity authority.
+- **WAKE-002**: Workers SHOULD send exactly one `wake_orch` after a completion block or a decision request; the dispatch prompt MUST direct them to it.
+- **WAKE-003**: A peer wake MUST be sent only over a plan-authorized directional channel and only by its declared sender; a receiver MUST act on the named file, never on message text.
+- **WAKE-004**: On message receipt, settlement and state MUST still be established only through guarded tool actions; a missing, failed, or rejected message MUST NOT block settlement or recovery.
+- **WAKE-005**: Orchestrator-to-orchestrator `notify_run` covers any cross-run communication need — discovered facts, observed bottlenecks, bounded requests, handoff boundaries — and the receiving ORCH MUST record durable content in its own run documents.
 
 ## 9. Routing and user boundaries
 
@@ -235,9 +253,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.1.1, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 1.2.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server using bare command `sh`, sole arg `${PLUGIN_ROOT}/bin/herdr-delegator-mcp`, and `${PLUGIN_ROOT}` as `cwd`; `.mcp.json` MUST NOT exist.
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.1.1, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 1.2.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
 - **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
 - **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
@@ -289,7 +307,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.1.1.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 1.2.0.
 - [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, and `herdr_worker`; the namespaced OMP extension is bridge-only.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.

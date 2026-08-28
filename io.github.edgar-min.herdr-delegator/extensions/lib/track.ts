@@ -1097,7 +1097,7 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.`;
+      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. After handoff revalidation, a terminal boundary, or a decision request in orchestrator-report.md, send one bounded herdr_message {action:"notify_run"} to the source run named in handoff.md.`;
       const prompted = await runHerdr(
         binary,
         [

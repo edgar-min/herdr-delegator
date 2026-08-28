@@ -2,9 +2,9 @@
 
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
-- Package/plugin: `herdr-delegator` 1.1.1
-- Skill: `herdr-delegation` 1.1.1
-- Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`
+- Package/plugin: `herdr-delegator` 1.2.0
+- Skill: `herdr-delegation` 1.2.0
+- Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`
 - Official runtime: OMP only
 - License: Apache-2.0
 
@@ -168,7 +168,7 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 - `wait`: assignment ID and optional wait.
 - `respond`: assignment ID, fresh blocked sequence, and bounded text or allowlisted keys.
 
-`wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
+`wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
 
 Assignment state is exactly:
 
@@ -183,6 +183,14 @@ queued | prompting | working | blocked | completed | failed | ambiguous
 - `resume`: worker ID and exact expected official session ID.
 - `close`: worker ID, expected session ID, and fresh state sequence.
 
+### `herdr_message`
+
+- `wake_orch`: assignment ID and boundary; worker doorbell to the run's recorded ORCH wake target.
+- `wake_peer`: peer lane ID; doorbell after a plan-authorized channel append.
+- `notify_run`: target run coordinates, kind, and a one-line note ≤500 chars; orch-to-orch note for any cross-run need.
+
+The server composes every delivered text, resolves targets from run records, and transports messages as Herdr pane input. Delivery is a soft observation (`delivered`, `rejected_blocked`, `target_unresolved`, `failed`) — only invalid input errors — and every attempt is logged to the sending run's `a2a/messages.jsonl`.
+
 All calls include `track_id` and `run_id`. The server does not accept arbitrary run paths, Herdr targets, session paths, argv, commands, or generic close operations.
 
 ## Safety
@@ -194,7 +202,7 @@ Launch pinning has two gates:
 1. bridge facts and Herdr bootstrap metadata exact-match session, pane, provider/model, thinking, nonce, and freshness before prompt;
 2. official JSONL exact-matches session, provider/model, thinking, and fallback after the first prompt boundary and before resume.
 
-Resume rejects missing, unsafe, mismatched, or credibly duplicated sessions. A wait timeout has no effect. A mutating timeout may have had an effect and must be inspected before retry.
+Resume rejects missing, unsafe, mismatched, or credibly duplicated sessions. A wait timeout has no effect and returns a `timed_out` observation. A mutating timeout may have had an effect and must be inspected before retry.
 
 Focus restoration never overrides unrelated user focus. Safe close requires the registry root pane plus only verified Herdr Sidebar panes. Assignment completion is never a close signal.
 
@@ -203,6 +211,7 @@ Focus restoration never overrides unrelated user focus. Safe close requires the 
 - Documents: contract, ownership, decisions, durable results, completion, evidence, and handoff.
 - MCP prompt/control: canonical coordinates and hashes, waits, blocked responses, resume, and close.
 - Herdr metadata: display-only responsibility, assignment, assignment state, session/model attestation, and live status.
+- `herdr_message` doorbells: one bounded server-composed signal after a boundary; never authority — workers wake ORCH after completion or a decision request, plan-authorized peers wake each other after channel appends, and orchestrators exchange bounded cross-run notes.
 
 Metadata and terminal output are not contract or settlement authority.
 

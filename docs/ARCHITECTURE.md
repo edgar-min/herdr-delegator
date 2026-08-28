@@ -93,6 +93,7 @@ Public calls terminate at the three MCP composite tools. Internal lifecycle func
 | Documents | goal, ownership, dependencies, user boundaries, decisions, durable results, completion, verification, handoff | live terminal control |
 | MCP prompt/control | canonical IDs and hashes, waits, fresh blocked responses, resume/close gates | ad hoc duplicated contracts or raw Herdr commands |
 | Herdr metadata/UI | responsibility, assignment, assignment state, live status, bootstrap observation | contract, settlement, judgment, or session authority by itself |
+| Wake prompts | one bounded doorbell naming a report or channel path after a boundary | authority of any kind — the named file alone carries facts |
 
 Terminal output is a bounded observation, not a durable result.
 
@@ -223,7 +224,7 @@ stateDiagram-v2
   working --> ambiguous: active resume effect uncertain
 ```
 
-A wait timeout does not mutate state. Potentially effected prompt, response, or active-assignment resume ambiguity converges on `ambiguous`. Internal operation details do not become additional public assignment states.
+A wait timeout does not mutate state and surfaces as a successful `timed_out` observation with the fresh lane state, never an error. Potentially effected prompt, response, or active-assignment resume ambiguity converges on `ambiguous`. Internal operation details do not become additional public assignment states.
 
 At terminal settlement the lane becomes idle, records the last assignment, and promotes the FIFO head. Lane close is a separate lifecycle transition.
 

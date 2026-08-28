@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export const TOOL_NAMES = ["herdr_track", "herdr_assignment", "herdr_worker"] as const;
+export const TOOL_NAMES = ["herdr_track", "herdr_assignment", "herdr_worker", "herdr_message"] as const;
 export const COORDINATE_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export const RESPONSIBILITY_RE = COORDINATE_RE;
 export const ASSIGNMENT_RE = /^A-(?!0+$)[0-9]{3,}$/;
@@ -20,6 +20,9 @@ export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 export const MAX_RESPONSE_TEXT = 8_000;
 export const DELEGATION_VERSION = 1 as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
+export const MAX_MESSAGE_NOTE = 500;
+export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
+export const MESSAGE_KINDS = ["fact", "bottleneck", "request", "handoff"] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
@@ -28,6 +31,12 @@ export type AssignmentState = "queued" | "prompting" | "working" | "blocked" | "
 export type LaneState = "starting" | "idle" | "working" | "blocked" | "resume-needed" | "closing" | "closed" | "failed";
 export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto";
 export type RunRef = { track_id: string; run_id: string };
+export type MessageBoundary = (typeof MESSAGE_BOUNDARIES)[number];
+export type MessageKind = (typeof MESSAGE_KINDS)[number];
+// Delivery is an observation, never a contract failure: a message tool call only
+// hard-errors on invalid input, so a broken channel stays visible instead of
+// silently killing the flow behind retryable errors.
+export type MessageDelivery = "delivered" | "rejected_blocked" | "target_unresolved" | "failed";
 
 export type Separation = {
   kind: "direction" | "ownership" | "dependency";
@@ -182,6 +191,7 @@ export type McpResult<T = unknown> = {
   run: RunRef;
   effect: Effect;
   retryable: boolean;
+  timed_out?: boolean;
   registry_revision?: number;
   worker?: Partial<WorkerLaneRecord>;
   assignment?: { assignment_id: string; state: AssignmentState; settlement?: AssignmentSettlementObservation };
@@ -233,6 +243,17 @@ export const herdrWorkerInputShape = {
   expected_session_id: z.string().min(1).max(256).optional(),
   expected_state_change_seq: z.number().int().nonnegative().optional(),
 };
+export const herdrMessageInputShape = {
+  ...run,
+  action: z.enum(["wake_orch", "wake_peer", "notify_run"]),
+  assignment_id: z.string().min(3).max(32).optional(),
+  boundary: z.enum(MESSAGE_BOUNDARIES).optional(),
+  to_worker_id: workerId.optional(),
+  to_track_id: coordinate.optional(),
+  to_run_id: coordinate.optional(),
+  kind: z.enum(MESSAGE_KINDS).optional(),
+  note: z.string().min(1).max(MAX_MESSAGE_NOTE).optional(),
+};
 
 export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("init"), cwd: z.string().min(1), reset_of: z.object(run).strict().optional() }).strict(),
@@ -252,10 +273,16 @@ export const herdrWorkerSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("resume"), worker_id: workerId, expected_session_id: z.string().min(1).max(256) }).strict(),
   z.object({ ...run, action: z.literal("close"), worker_id: workerId, expected_session_id: z.string().min(1).max(256), expected_state_change_seq: z.number().int().nonnegative() }).strict(),
 ]);
+export const herdrMessageSchema = z.discriminatedUnion("action", [
+  z.object({ ...run, action: z.literal("wake_orch"), assignment_id: assignmentId, boundary: z.enum(MESSAGE_BOUNDARIES) }).strict(),
+  z.object({ ...run, action: z.literal("wake_peer"), to_worker_id: workerId }).strict(),
+  z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate, kind: z.enum(MESSAGE_KINDS), note: z.string().min(1).max(MAX_MESSAGE_NOTE) }).strict(),
+]);
 
 export type HerdrTrackInput = z.infer<typeof herdrTrackSchema>;
 export type HerdrAssignmentInput = z.infer<typeof herdrAssignmentSchema>;
 export type HerdrWorkerInput = z.infer<typeof herdrWorkerSchema>;
+export type HerdrMessageInput = z.infer<typeof herdrMessageSchema>;
 
 export class McpContractError extends Error {
   constructor(public readonly code: string, message: string, public readonly phase: ErrorPhase, public readonly recovery: string, public readonly ambiguousEffect = false, public readonly retryable = false) { super(message); }
