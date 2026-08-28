@@ -11,7 +11,7 @@ export const ROLE_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-const TRACK_OPERATIONS = ["init_run", "start_orch", "inspect_orch"] as const;
+const TRACK_OPERATIONS = ["init_run", "start_orch", "inspect_orch", "retire_orch_session"] as const;
 
 export const SHA256_RE = /^[a-f0-9]{64}$/;
 

@@ -1252,4 +1252,71 @@ async function labelOwnedPane(paneId: string, label: string, signal?: AbortSigna
   }
 }
 
-export { initializeRun, inspectOrchestrator, labelOwnedPane, startOrchestrator, trackFailureResult, trackResultSummary };
+/**
+ * Retires the run's recorded target-ORCH session so the next start is a clean
+ * one (decision 9's escalation: generation+1 with the context destroyed). It is
+ * the only path that drops a recorded official session reference, so it is
+ * deliberately narrow:
+ *  - it refuses while the old agent is live. No public operation may close the
+ *    retained run workspace or kill a running session, and replacing a living
+ *    ORCH with a substitute is exactly what the protocol forbids; the human
+ *    stops that session in its own pane, or the caller resumes it instead.
+ *  - it keeps the workspace, anchor tab, pane, agent name, instruction path and
+ *    launch profile. A rebirth reuses the same supervision surface; only the
+ *    session identity is destroyed.
+ *  - it leaves `prompt_sha256` in place and returns the record to `unprompted`,
+ *    so the unchanged mandate is delivered again and a changed one still trips
+ *    the no-replay gate in startOrchestrator.
+ */
+async function retireOrchestratorSession(params: TrackParams, signal?: AbortSignal): Promise<TrackResult> {
+  const timeoutMs = normalizeTimeout(params.timeout_ms);
+  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id);
+  const runPath = coordinate.runPath;
+  const runKey = sha256(runPath);
+  const { registryPath } = registryPaths(runPath);
+  const { binary } = await requireHerdrEnvironment();
+  const retired = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
+    const run = registry.run;
+    const target = run?.target_orchestrator;
+    if (!run || !target) {
+      throw new ContractError("orch_missing", "This run has no recorded target ORCH to retire.", "orch_reconcile", { recovery: "Open or start the run's ORCH first; there is nothing to revive." });
+    }
+    await assertRunWorkspaceLive(binary, registry, timeoutMs, signal, runPath, coordinate.manifest.cwd);
+    const live = await getLiveAgent(binary, target.agent_name, Math.min(timeoutMs, 15_000), signal);
+    if (live.ok) {
+      throw new ContractError(
+        "orch_still_live",
+        "The recorded target ORCH agent is still live, so its session must not be destroyed.",
+        "orch_reconcile",
+        { recovery: "Resume it instead, or have the human end that session in its own pane and retry; this tool never kills a running ORCH." },
+      );
+    }
+    if (!isMissingHerdrObject(live)) throw commandError(live, "orch_reconcile", "Inspect the target ORCH; do not retire a session whose liveness is unknown.");
+    const previous = { session_path: target.session_path, session_id: target.session_id, prompt_state: target.prompt_state };
+    const bootstrapTarget = target as BootstrapTargetRecord;
+    delete target.session_path;
+    delete target.session_id;
+    delete target.state_change_seq;
+    delete target.verified_at;
+    delete bootstrapTarget.bootstrap_attestation;
+    delete bootstrapTarget.bootstrap_attested_at;
+    delete bootstrapTarget.bootstrap_verified_at;
+    target.prompt_state = "unprompted";
+    target.state = "planned";
+    target.updated_at = nowIso();
+    run.updated_at = target.updated_at;
+    await writeRegistryAtomic(targetRegistryPath, registry);
+    return previous;
+  });
+  return {
+    ok: true,
+    operation: "retire_orch_session",
+    run_key: runKey,
+    state: "planned",
+    retryable: false,
+    registry_path: registryPath,
+    observation: { retired_session_id: retired.session_id ?? null, retired_session_path: retired.session_path ?? null, retired_prompt_state: retired.prompt_state },
+  };
+}
+
+export { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator, trackFailureResult, trackResultSummary };

@@ -190,6 +190,33 @@ It also updates the tool-owned storage index. The born ORCH authors `plan.md` an
 
 `herdr_track init` plus `start_orchestrator` remains for exactly two cases: a sibling reset (`reset_of: {track_id, run_id}`, which copies the source plan under the fixed `close-settled-preserve-active` and `revalidate-before-import` policies and requires `plan.md` before start) and a handoff target (section 10). Both write `orchestrator-instructions.md` as an ordinary file instead of passing a mandate, and both are refused on a run that carries a creator record.
 
+### Revive a run whose ORCH is gone
+
+A birth record outlives the session it names, so a run whose ORCH pane died is recoverable rather than lost. `herdr_track {action:"revive"}` has two modes; the difference between them is whether the run keeps its context.
+
+```json
+{"action":"revive","track_id":"example-track","run_id":"implementation","mode":"resume"}
+```
+
+**`resume` (the default) keeps the context.** It reconnects the recorded birth session — the `official_session_id` and path in the latest birth record — so no generation appears and command identity does not move. Any attested caller may issue it, because the ORCH is precisely what is missing, and that grants the caller nothing: if the session that comes back reports a different `official_session_id`, the revival fails with `revival_session_changed` and records no birth. A caller whose own session belongs to a *retired* generation is rejected with `stale_orch_generation` in either mode — the same check that kills zombies at guarded ops.
+
+A budget-parked run is revivable, which is the point of parking rather than dying: the budget marker is re-applied to the pane (the spawn relabels it) and the revival is appended to the budget ledger. Revival is not a way to reset spend — every generation's session stays in the metered aggregate, so a reborn ORCH inherits the run's bill even though it inherits no context.
+
+**`rebirth` destroys the context.** It starts generation+1 in the same pane with nothing inherited, gated on four checks:
+
+| Gate | Refusal |
+|---|---|
+| An approval file at `<run>/rebirth-approval.json` — `{"version":1,"approve_generation":N,"acknowledge_context_loss":true,"reason":"..."}` — naming exactly the next generation | `rebirth_not_approved` |
+| Run documents sufficient to reconstruct command: a non-empty `orchestrator-instructions.md` (the mandate) and `plan.md`, both hashed into the result | `rebirth_documents_insufficient` |
+| No assignment in the `ambiguous` state — a reborn ORCH could only guess at an unresolved effect | `revival_blocked_ambiguous` |
+| The old ORCH agent is not live. Nothing here kills a running session or closes the retained workspace | `orch_still_live` |
+
+Naming the generation makes a leftover file replay-proof: it authorizes one rebirth and no later one. The new birth records `origin: "rebirth"` and the approval's SHA-256.
+
+Be precise about what that proves. The server checks the approval file's *contents*; it cannot check who wrote them, because you and the user share the same filesystem identity. What the machine guarantees is that a rebirth cannot happen quietly: it leaves the approval artifact, a generation record carrying its hash, and a ledger entry, so a user can always read what was claimed on their behalf and repudiate it. Writing that file yourself is not an approval — it is a forgery with your name on it. Ask.
+
+The mandate is not a document you can rewrite on the way through: it is fingerprinted at the first prompt, so a rebirth whose `orchestrator-instructions.md` no longer matches that fingerprint fails with `instruction_changed`. `plan.md` is yours by design, which is exactly why keeping it current is what makes a rebirth survivable — the reborn generation reads those two documents and nothing else.
+
 ## 4. Plan responsibilities and assignments
 
 `plan.md` is the ORCH's own document, written after birth in conversation with the user — never by the bootstrapper, and never a transcription of the mandate. It is the only place HOW belongs.
@@ -279,6 +306,7 @@ The public MCP surface is exactly:
 - `inspect`: `track_id`, `run_id` — adds `data.budget` (record, fresh metering, ledger and clamp paths).
 - `start_orchestrator`: `track_id`, `run_id` — legacy spawn, refused on an open-managed run.
 - `budget_extend`: `track_id`, `run_id`, `justification` (`done`, `remaining`, `why_more`), optional `requested_tokens` and `wait` — section 7.
+- `revive`: `track_id`, `run_id`, optional `mode` (`resume` default, or `rebirth`) — section 3.
 - `close`: `track_id`, `run_id`, fresh `expected_registry_revision`.
 
 Track close is all-or-nothing. It rejects active or blocked lanes and fresh-inspects every close candidate before guarded closure.

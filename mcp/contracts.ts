@@ -209,14 +209,23 @@ export type ResponsibilityRecord = {
 // Birth-based ORCH identity (identity/comms redesign, decision 1): ORCH is
 // born, never appointed. The latest birth record is the sole command identity
 // for a run; stale-generation (zombie) sessions are rejected at guarded ops.
-export const ORCH_BIRTH_ORIGINS = ["claim", "spawn"] as const;
+// A birth's origin also records how the generation came to exist: `spawn` from an
+// atomic open or a legacy start, `claim` from a legacy run's first guarded
+// command, and `rebirth` from decision 9's approved clean restart. The chain is
+// therefore self-describing — a generation carrying `rebirth` names both the
+// context destruction and the human approval that allowed it.
+export const ORCH_BIRTH_ORIGINS = ["claim", "spawn", "rebirth"] as const;
 export type OrchBirthOrigin = (typeof ORCH_BIRTH_ORIGINS)[number];
+export const REVIVAL_MODES = ["resume", "rebirth"] as const;
+export type RevivalMode = (typeof REVIVAL_MODES)[number];
 export type OrchBirthRecord = {
   generation: number;
   official_session_id: string;
   official_session_path?: string;
   pane_id: string;
   origin: OrchBirthOrigin;
+  /** SHA-256 of the human-owned approval file that authorized a rebirth. */
+  approval_sha256?: string;
   born_at: string;
 };
 
@@ -410,12 +419,13 @@ const justification = z.object({
 
 export const herdrTrackInputShape = {
   ...run,
-  action: z.enum(["open", "init", "inspect", "start_orchestrator", "budget_extend", "close"]),
+  action: z.enum(["open", "init", "inspect", "start_orchestrator", "budget_extend", "revive", "close"]),
   cwd: z.string().min(1).optional(),
   mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
   justification: justification.optional(),
   requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(),
+  mode: z.enum(REVIVAL_MODES).optional().describe("revive (default resume): resume reconnects the recorded birth session and keeps its context, bumping no generation. rebirth destroys that context and starts generation+1; it needs the human-owned rebirth-approval.json naming that generation, run documents sufficient to reconstruct command, and an ORCH that is not live."),
   wait,
   expected_registry_revision: z.number().int().nonnegative().optional(),
 };
@@ -466,6 +476,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("inspect") }).strict(),
   z.object({ ...run, action: z.literal("start_orchestrator") }).strict(),
   z.object({ ...run, action: z.literal("budget_extend"), justification, requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(), wait }).strict(),
+  z.object({ ...run, action: z.literal("revive"), mode: z.enum(REVIVAL_MODES).optional(), wait }).strict(),
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [

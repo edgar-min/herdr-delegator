@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { initializeRun, inspectOrchestrator, labelOwnedPane, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
+import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -13,8 +13,9 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore } from "./registry";
-import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
+import { assertNoAmbiguousWork, assertRevivalDocuments, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
 
 // ---------------------------------------------------------------------------
@@ -810,6 +811,7 @@ export class CompositeTools {
         const birth = await this.recordSpawnBirth(store, result.orchestrator);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
+      if (input.action === "revive") return await this.reviveTrack(input, run, store, runtime);
       await assertOrchCommand(store, runtime.facts);
       await this.judgeBudget(store, run, "close");
       const registry = await store.read();
@@ -929,8 +931,8 @@ export class CompositeTools {
     };
   }
 
-  /** Records the spawned target ORCH as the run's newest birth generation (idempotent per identity). */
-  private async recordSpawnBirth(store: DelegationStore, orchestrator: unknown): Promise<OrchBirthRecord | undefined> {
+  /** Records the spawned target ORCH as a birth generation (idempotent per identity). */
+  private async recordSpawnBirth(store: DelegationStore, orchestrator: unknown, origin: OrchBirthOrigin = "spawn", approvalSha256?: string): Promise<OrchBirthRecord | undefined> {
     const paneId = stringField(orchestrator, ["pane_id"]);
     const sessionId = stringField(orchestrator, ["session_id"]);
     const sessionPath = stringField(orchestrator, ["session_path"]);
@@ -940,10 +942,112 @@ export class CompositeTools {
       const births = next.orch_births ?? [];
       const latest = births[births.length - 1];
       if (latest && latest.official_session_id === sessionId && latest.pane_id === paneId) { recorded = latest; return; }
-      recorded = { generation: births.length + 1, official_session_id: sessionId, ...(sessionPath && sessionPath.length <= 4096 ? { official_session_path: sessionPath } : {}), pane_id: paneId, origin: "spawn", born_at: nowIso() };
+      recorded = { generation: births.length + 1, official_session_id: sessionId, ...(sessionPath && sessionPath.length <= 4096 ? { official_session_path: sessionPath } : {}), pane_id: paneId, origin, ...(approvalSha256 ? { approval_sha256: approvalSha256 } : {}), born_at: nowIso() };
       next.orch_births = [...births, recorded];
     });
     return recorded;
+  }
+
+  /**
+   * Revival (decision 9). The commanding ORCH may be exactly what is missing, so
+   * this is the one guarded-shaped op that does not require the caller to be the
+   * birth session — but it still cannot transfer command:
+   *  - `resume` reconnects the recorded birth session by its official path. The
+   *    extension refuses if the session that comes back is a different one, and
+   *    the birth record is rewritten only when identity is unchanged, so no
+   *    generation appears and no caller gains command by reviving.
+   *  - `rebirth` does create generation+1, so it is gated on the human's approval
+   *    file, on run documents sufficient to reconstruct command, on no ambiguous
+   *    work, and on the old ORCH not being live.
+   * A zombie — any session from a retired generation — is rejected either way:
+   * revival is not a way back for a generation that was already replaced.
+   */
+  private async reviveTrack(
+    input: Extract<HerdrTrackInput, { action: "revive" }>,
+    run: RunRef,
+    store: DelegationStore,
+    runtime: { facts: OmpRuntimeFacts; ctx: ExtensionContext; thinking: ThinkingLevel },
+  ): Promise<McpResult> {
+    const mode = input.mode ?? "resume";
+    const before = await store.read();
+    const born = latestBirth(before);
+    if (!born) {
+      throw new McpContractError("orch_birth_missing", "This run has no ORCH birth record, so there is nothing to revive.", "resume", "Open the track (or start its ORCH on a legacy run); revival restores a birth that already happened.");
+    }
+    const priorGeneration = (before.orch_births ?? []).some((birth) => birth.generation !== born.generation && birth.official_session_id === runtime.facts.session_id);
+    if (priorGeneration) {
+      throw new McpContractError("stale_orch_generation", `Caller session belongs to a retired ORCH generation; generation ${born.generation} is this run's ORCH.`, "attest", "A replaced generation does not revive itself. Converse with the current ORCH pane, or ask the human to approve a rebirth if that generation is gone for good.");
+    }
+
+    let approval: { sha256: string; reason?: string } | undefined;
+    let documents: { path: string; bytes: number; sha256: string }[] | undefined;
+    let retired: unknown;
+    if (mode === "rebirth") {
+      assertNoAmbiguousWork(before);
+      documents = await assertRevivalDocuments(store.runPath);
+      approval = await readRebirthApproval(store.runPath, born.generation + 1);
+      const retirement = await retireOrchestratorSession({ operation: "retire_orch_session", track_id: run.track_id, run_id: run.run_id });
+      retired = retirement.observation;
+    }
+
+    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, runtime.ctx, runtime.thinking, false);
+    const observedSession = stringField(started.orchestrator, ["session_id"]);
+    if (mode === "resume" && observedSession && observedSession !== born.official_session_id) {
+      // Fail closed: a resume that came back as a different session is a context
+      // loss nobody approved, so it is never recorded as a birth.
+      throw new McpContractError(
+        "revival_session_changed",
+        `Resume reconnected session ${observedSession}, not the recorded birth session ${born.official_session_id}.`,
+        "resume",
+        "Nothing was recorded. Inspect the track before retrying: if the recorded session is truly gone, a clean rebirth is the approved path, not a silent replacement.",
+        true,
+      );
+    }
+    const birth = await this.recordSpawnBirth(store, started.orchestrator, mode === "rebirth" ? "rebirth" : "spawn", approval?.sha256);
+    const after = await store.read();
+    // A parked run is revivable — that is the point of parking rather than dying
+    // — but the spawn just relabelled the pane to its plain name, so the budget
+    // marker has to be re-applied and the ledger has to carry the revival.
+    const budgetRecord = after.budget;
+    const warnings: string[] = [];
+    if (birth && budgetRecord) {
+      const marker = await labelOwnedPane(birth.pane_id, orchPaneLabel(run, budgetRecord));
+      if (marker) warnings.push(marker);
+      await appendLedger(store.runPath, `revived (${mode})`, [
+        `generation ${birth.generation} (${birth.origin}) in pane ${birth.pane_id}`,
+        `budget state at revival: ${budgetRecord.state}${budgetRecord.park_reason ? ` (${budgetRecord.park_reason})` : ""}`,
+        ...(approval ? [`human approval ${approval.sha256}${approval.reason ? `: ${approval.reason}` : ""}`] : []),
+      ]).catch(() => undefined);
+    }
+    const observation = isObject(started.observation) ? started.observation : {};
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning]) {
+      if (typeof candidate === "string") warnings.push(candidate);
+    }
+    return {
+      ok: true,
+      tool: "herdr_track",
+      action: "revive",
+      run,
+      effect: "confirmed",
+      retryable: false,
+      registry_revision: after.revision,
+      data: {
+        mode,
+        orch_birth: birth,
+        generation_before: born.generation,
+        context_kept: mode === "resume",
+        orch_pane: typeof observation.pane_label === "string" ? observation.pane_label : `ORCH ${run.track_id}/${run.run_id}`,
+        ...(retired ? { retired_session: retired } : {}),
+        ...(documents ? { documents } : {}),
+        ...(approval ? { approval: { path: rebirthApprovalPath(store.runPath), sha256: approval.sha256, ...(approval.reason ? { reason: approval.reason } : {}) } } : {}),
+        ...(budgetRecord ? { budget: { state: budgetRecord.state, ...(budgetRecord.park_reason ? { park_reason: budgetRecord.park_reason } : {}) } } : {}),
+        orchestrator: started.orchestrator,
+        next_step: mode === "resume"
+          ? `Generation ${born.generation} is back in pane ${birth?.pane_id ?? "its anchor pane"} with its context. Converse there; nothing about command identity changed.`
+          : `Generation ${birth?.generation ?? born.generation + 1} is born in pane ${birth?.pane_id ?? "its anchor pane"} with no inherited context. It reads the mandate and plan.md; the retired session is named in data.retired_session and is not coming back.`,
+        ...(warnings.length ? { warnings } : {}),
+      },
+    };
   }
 
   /**
