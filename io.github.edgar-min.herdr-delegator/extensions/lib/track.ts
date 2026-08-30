@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "
 import path from "node:path";
 import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readPinnedRoles, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import { acceptProtocolDocument } from "./templates";
 import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
@@ -979,11 +979,18 @@ async function startOrchestrator(
   // failing, so the spawn would be pre-aligned to a default-grade model under a
   // planning-grade name. This warns and never blocks — the spawn is still
   // legitimate, just possibly cheaper than the operator believes.
-  const fallbackWarning = silentFallbackRoleWarning(
+  const pinned = await readPinnedRoles(runPath);
+  const spawnFallbackWarning = silentFallbackRoleWarning(
     resolved.launch.requested_role,
     { provider: resolved.launch.expected_provider, model: resolved.launch.expected_model },
     ctx,
+    pinned,
   );
+  // Per-role degrade notes (MOD-007) share the fallback warning's surface: both
+  // name a resolution that may be cheaper than the operator believes.
+  const fallbackWarning = [...resolved.warnings, spawnFallbackWarning]
+    .filter((value): value is string => typeof value === "string")
+    .join(" | ") || undefined;
   const { binary, paneId } = await requireHerdrEnvironment();
   const caller = await observeOrchestrator(binary, paneId, resolved.caller, timeoutMs, signal);
   const focusBefore = await captureFocus(binary, signal);
