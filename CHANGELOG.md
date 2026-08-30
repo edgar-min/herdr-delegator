@@ -13,6 +13,58 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [Unreleased]
+
+Attest lifecycle repairs. A born session can attest from birth, a stale mounted build
+names itself, a run whose ORCH is gone can be closed with human approval, and the
+supervision surface stops lying about blocked or empty panes.
+
+### Fixed
+
+- Born-pane attestation: the bridge no longer aborts its whole publication when the
+  reported session path does not yet identify the live session (a spawned headless
+  session's state until its first user input). The optional `reported_session_path`
+  field is omitted and the mismatched value logged; tokens and the fact publish from
+  birth, so a born ORCH's or worker's first guarded mutation passes attest with no
+  human step. (frictions 4ff52b2d863b8532, d7e9a5e774b89a4f)
+- Publication identity under subagents: the bridge heartbeat keeps the pane-owned
+  session as its publication identity instead of adopting whatever session context the
+  last `before_agent_start` carried; a declined context is adopted only when the pinned
+  identity provably stops publishing (evidence-driven fallback, one-tick self-heal on a
+  real session swap). Long turns with subagents no longer starve pane tokens past the
+  TTL. (friction 15ca828baf1b9d96)
+- First-prompt delivery no longer counts a `blocked` pane as delivered: birth still
+  succeeds, but the open result carries a blocked-on-permission warning with the pane
+  id, and `prompt_state` stays honest. (friction 66a5184e15deff47)
+- Legacy `init` runs label their empty anchor pane as a non-ORCH placeholder so a bare
+  shell under an `ORCH <track>/<run>` tab no longer reads as a dead orchestrator.
+  (friction 1ffc55fca1b7bd9e)
+
+### Added
+
+- Human-approved force close: `herdr_track close` stays ORCH-only while the recorded
+  ORCH is live, and additionally accepts a non-ORCH attested caller when the target
+  run carries a strict human-owned `close-approval.json` (exact run and latest
+  generation), a fresh Herdr observation proves the recorded ORCH gone (with the
+  caller's own pane required in the census), and the registry revision matches.
+  Closure attribution lands in the run's ledger and message log. No agent may write
+  the approval file. (friction 5a95bb71e1a73d73)
+- Stale-build self-naming: guarded-op failures carry `data.build` (mounted version,
+  process start, newest source mtime, and a proven `source_newer_than_process` flag),
+  and `registry_version_unsupported` names both the registry's and the mounted build's
+  schema versions. The rebind itself remains OMP-core (`/reload-plugins`); that gap is
+  tracked upstream. (frictions f53892758a860acf, 7b95cffa6d3cb7e5)
+
+### Changed
+
+- `protocol-worker.md` names the general ring rule — ring ORCH once after any report
+  block that changes boundary state (completed, failed, blocked, decision-request) —
+  and carries the shared-worktree conventions (stage by hunk, own write window only,
+  serialize overlapping windows through channel documents). New digest appended to the
+  template allowlist. (frictions b209cc47454ae65f, f7ed8df03ca92882)
+- SPEC ARC-003 and ARCHITECTURE registration counts corrected to the five actual tool
+  registrations, consistent with ACC-002.
+
 ## [3.0.0] - 2026-08-30
 
 Boundary judgment delivery and creator role-table pinning. Curated judgment criteria —
