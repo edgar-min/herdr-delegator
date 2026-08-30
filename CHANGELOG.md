@@ -77,6 +77,14 @@ spend; a run whose ORCH pane died is recoverable.
   digest this project has shipped for them, so a byte-identical document passes silently,
   a previously shipped version passes with a named `template_drift_warning` instead of
   bricking an existing run, and anything else fails closed quoting its digest.
+- Creator role-table pinning: `herdr_track open` records the creator session's observed
+  role table (each role's provider/model and bound thinking, with provenance) as
+  `pinned_roles` in `a2a/delegation.json` (schema v3; v1/v2 reads stay valid), and
+  ORCH/worker spawn resolution plus the silent-fallback judgment prefer that table over
+  the live session's roles. A born session's polluted `@default` no longer decides
+  worker models; a role absent from the table degrades to live resolution with a named
+  warning. Tradeoff by design: OMP model-config changes mid-run are not reflected in
+  that run. (friction 681839bff914479c)
 
 ### Changed
 
