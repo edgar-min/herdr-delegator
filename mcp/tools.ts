@@ -13,7 +13,7 @@ import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
-import { DelegationStore } from "./registry";
+import { DelegationStore, mountedBuild } from "./registry";
 import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, OBSERVATION_SOURCE, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readRebirthApproval, rebirthApprovalPath } from "./revival";
@@ -560,7 +560,13 @@ function frictionHintFor(tool: ToolName, code: string, retryable: boolean): stri
 function resultError(tool: ToolName, action: string, run: RunRef, error: unknown): McpResult {
   const failure = (code: string, phase: ErrorPhase, message: string, recovery: string, ambiguous: boolean, retryable: boolean): McpResult => {
     const hint = frictionHintFor(tool, code, retryable);
-    return { ok: false, tool, action, run, effect: ambiguous ? "ambiguous" : "none", retryable, ...(hint ? { friction_hint: hint } : {}), error: { code, phase, message, recovery, ambiguous_effect: ambiguous } };
+    // Every failure names the code that produced it. The installed plugin is a
+    // symlink to a working tree, so a live session can be holding a server whose
+    // module graph predates the tree it is reading; without this stamp such a
+    // server fails opaquely and the operator debugs the wrong build
+    // (friction f53892758a860acf). `source_newer_than_process` is the decisive
+    // field: true means this process never loaded the current source.
+    return { ok: false, tool, action, run, effect: ambiguous ? "ambiguous" : "none", retryable, ...(hint ? { friction_hint: hint } : {}), error: { code, phase, message, recovery, ambiguous_effect: ambiguous }, data: { build: mountedBuild() } };
   };
   if (error instanceof McpContractError) return failure(error.code, error.phase, error.message, error.recovery, error.ambiguousEffect, error.retryable);
   if (error instanceof LegacyContractError) return failure(error.code, normalizeLegacyPhase(error.phase), error.message, error.recovery, error.ambiguousEffect, error.retryable);

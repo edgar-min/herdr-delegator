@@ -1,25 +1,17 @@
 #!/usr/bin/env bun
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { HerdrAdapter } from "./herdr-adapter";
+import { mountedBuild } from "./registry";
 import { herdrAssignmentInputShape, herdrAssignmentSchema, herdrFrictionInputShape, herdrFrictionSchema, herdrMessageInputShape, herdrMessageSchema, herdrTrackInputShape, herdrTrackSchema, herdrWorkerInputShape, herdrWorkerSchema, type McpResult } from "./contracts";
 import { CompositeTools } from "./tools";
 
-async function packageVersion(): Promise<string> {
-  const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../package.json");
-  const parsed = JSON.parse(await readFile(packagePath, "utf8")) as { version?: unknown };
-  if (typeof parsed.version !== "string" || !parsed.version) throw new Error("package.json has no valid version");
-  return parsed.version;
-}
-
+// Server identity and every failing result name the same mounted build.
 async function main(): Promise<void> {
   const adapter = await HerdrAdapter.create(process.env.HERDR_CONFIGURED_BIN_PATH);
   const tools = new CompositeTools(adapter);
-  const server = new McpServer({ name: "herdr-delegator", version: await packageVersion() });
+  const server = new McpServer({ name: "herdr-delegator", version: mountedBuild().version });
   const response = (value: McpResult): CallToolResult => ({
     content: [{ type: "text", text: JSON.stringify(value) }],
     structuredContent: { ...value },

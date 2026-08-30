@@ -1,5 +1,7 @@
 import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
@@ -15,6 +17,57 @@ const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
 };
 const LIST_SECTIONS = ["Completion conditions", "Write ownership", "Dependencies", "User boundaries"] as const;
 const MAX_ARTIFACT_BYTES = 64 * 1024;
+
+/**
+ * The mounted build's own identity, for results that must name the code that
+ * produced them. The installed plugin is a symlink to a working tree, so a
+ * repo edit stales every live session's already-mounted server while the
+ * rebind (`/reload-plugins`) stays a human step in OMP core — and a stale
+ * server used to fail opaquely (friction f53892758a860acf).
+ *
+ * `version` and `started_at` are captured at module load, so they describe the
+ * mounted code rather than the tree as it looks now; `source_newest_mtime` is
+ * read per call from the directories this server actually loads code from.
+ * `source_newer_than_process` is therefore proof, not a guess: source that
+ * postdates the process is source this process never loaded.
+ */
+export type MountedBuild = {
+  version: string;
+  started_at: string;
+  source_newest_mtime?: string;
+  source_newer_than_process?: boolean;
+};
+
+const SOURCE_ROOTS = ["mcp", path.join("io.github.edgar-min.herdr-delegator", "extensions", "lib")] as const;
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const mountedVersion = ((): string => {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+    return isRecord(parsed) && typeof parsed.version === "string" && parsed.version ? parsed.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+const mountedStartedAtMs = Date.now();
+
+export function mountedBuild(): MountedBuild {
+  const build: MountedBuild = { version: mountedVersion, started_at: new Date(mountedStartedAtMs).toISOString() };
+  let newest = 0;
+  for (const root of SOURCE_ROOTS) {
+    const directory = path.join(packageRoot, root);
+    let entries: string[];
+    try { entries = readdirSync(directory); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.endsWith(".ts")) continue;
+      try { newest = Math.max(newest, statSync(path.join(directory, entry)).mtimeMs); } catch { /* skip unreadable entry */ }
+    }
+  }
+  if (newest > 0) {
+    build.source_newest_mtime = new Date(newest).toISOString();
+    build.source_newer_than_process = newest > mountedStartedAtMs;
+  }
+  return build;
+}
 
 const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
 const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
@@ -225,11 +278,11 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
   if (isRecord(value) && typeof value.version === "number" && !(SUPPORTED_DELEGATION_VERSIONS as readonly number[]).includes(value.version)) {
     throw new McpContractError(
       "registry_version_unsupported",
-      `delegation.json declares schema version ${value.version}; this server supports ${SUPPORTED_DELEGATION_VERSIONS.join(", ")}.`,
+      `delegation.json declares schema version ${value.version}; this mounted herdr-delegator build (v${mountedVersion}, started ${new Date(mountedStartedAtMs).toISOString()}) supports schema ${SUPPORTED_DELEGATION_VERSIONS.join(", ")}.`,
       "storage",
       value.version > DELEGATION_VERSION
-        ? "This server is older than the registry it is reading: respawn it with /reload-plugins (or start a new OMP session) and retry the identical call. The registry is healthy — never hand-edit a tool-owned file to make a call succeed."
-        : "Preserve the registry and migrate it deliberately; a version this server no longer supports is never reinterpreted in place.",
+        ? `This mounted build (v${mountedVersion}, schema ${DELEGATION_VERSION}) is older than the registry it is reading (schema ${value.version}): respawn it with /reload-plugins (or start a new OMP session) and retry the identical call. The registry is healthy — never hand-edit a tool-owned file to make a call succeed.`
+        : `Preserve the registry and migrate it deliberately: this mounted build (v${mountedVersion}) supports schema ${SUPPORTED_DELEGATION_VERSIONS.join(", ")} and never reinterprets schema ${value.version} in place.`,
       false,
       value.version > DELEGATION_VERSION,
     );
