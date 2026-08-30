@@ -1,5 +1,18 @@
 #!/bin/sh
 
+# The plugin-reload spawn context can carry a stripped PATH (friction
+# 9072a9da598edd89: 'sh' itself was unfindable; the same stripped PATH later
+# hid the herdr binary in ~/.local/bin from the MCP server's PATH walk).
+# Prepend the standard user tool directories so both this script's bun lookup
+# and the server's own `Bun.which("herdr")` resolve regardless of how the
+# host spawned us. Prepending keeps any real PATH entries authoritative last.
+if [ -n "${HOME:-}" ]; then
+  PATH="${HOME}/.local/bin:${HOME}/.bun/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+else
+  PATH="/usr/local/bin:${PATH:-/usr/bin:/bin}"
+fi
+export PATH
+
 if bun_path=$(command -v bun 2>/dev/null) && [ -n "$bun_path" ] && [ -x "$bun_path" ]; then
   :
 elif [ -n "${BUN_INSTALL:-}" ] && [ -x "${BUN_INSTALL}/bin/bun" ]; then
