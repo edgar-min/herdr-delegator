@@ -5,8 +5,8 @@ import { copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } 
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
+import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillMetadata, SkillRoute, SkillRouteBoundary, SkillRouteSurface, SkillRoutingConfig, TargetOrchestratorRecord, ThinkingLevel, ToolParams, WorkerMoment } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, ORCH_MOMENTS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_MOMENTS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -326,6 +326,8 @@ function mergeConfigPatch(config: DelegatorConfig, patch: ConfigPatch, layerPath
         role: profile.role,
         thinking: profile.thinking ?? "inherit",
         ...(profile.guidance === undefined ? {} : { guidance: profile.guidance }),
+        ...(profile.intent === undefined ? {} : { intent: profile.intent }),
+        ...(profile.directive === undefined ? {} : { directive: profile.directive }),
       };
       continue;
     }
