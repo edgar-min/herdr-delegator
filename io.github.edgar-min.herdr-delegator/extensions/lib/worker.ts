@@ -25,6 +25,13 @@ function storeWorkerBootstrap(
   const bootstrapRecord = record as BootstrapWorkerRecord;
   record.agent_session_path = verification.reported_path;
   record.verified_session_id = verification.session_id;
+  // The child's OWN reported identity, recorded as an observation rather than
+  // checked against a caller prediction (plan rev 3 deviation 1): the spawn
+  // passed a role alias and the child resolved it from its persisted settings,
+  // so this is the first point at which the model is knowable at all.
+  record.expected_provider = verification.provider;
+  record.expected_model = verification.model;
+  record.effective_thinking = verification.thinking;
   bootstrapRecord.bootstrap_attestation = verification.attestation;
   bootstrapRecord.bootstrap_attested_at = verification.attested_at;
   bootstrapRecord.bootstrap_verified_at = nowIso();
@@ -36,6 +43,9 @@ function storedWorkerBootstrap(record: RegistryRecord): BootstrapSessionVerifica
   if (
     !record.agent_session_path ||
     !record.verified_session_id ||
+    !record.expected_provider ||
+    !record.expected_model ||
+    !record.effective_thinking ||
     !bootstrapRecord.bootstrap_attestation ||
     !bootstrapRecord.bootstrap_attested_at ||
     !bootstrapRecord.bootstrap_verified_at
@@ -74,7 +84,6 @@ async function verifyWorkerBootstrap(
       tabId: record.tab_id,
       paneId: record.root_pane_id,
     },
-    record,
     record.agent_session_path,
     record.verified_session_id,
     timeoutMs,
@@ -172,9 +181,9 @@ export async function ensureWorker(
           selected_profile: resolved.launch.selected_profile,
           selection_source: resolved.launch.selection_source,
           requested_role: resolved.launch.requested_role,
-          expected_provider: resolved.launch.expected_provider,
-          expected_model: resolved.launch.expected_model,
-          effective_thinking: resolved.launch.effective_thinking,
+          // expected_provider / expected_model / effective_thinking are
+          // deliberately absent: they are observations written once the child
+          // reports its own identity (storeWorkerBootstrap), not predictions.
           created_at: timestamp,
           updated_at: timestamp,
         };

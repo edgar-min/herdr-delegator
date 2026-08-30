@@ -24,7 +24,8 @@ export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 // tool-owned file (friction 8c1e0ea5). Reading accepts every version in
 // SUPPORTED_DELEGATION_VERSIONS; writing always emits the current one. Version 2
 // is version 1 plus the optional `budget` record and a birth's optional
-// `approval_sha256`; version 3 adds the optional `pinned_roles` record. Each
+// `approval_sha256`; version 3 adds the optional `pinned_roles` record, which is
+// no longer written but is still read (221abf10d2280b47). Each
 // upgrade only adds optional fields, so no existing field changes meaning.
 export const DELEGATION_VERSION = 3 as const;
 export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3] as const;
@@ -258,15 +259,12 @@ export type OrchCreatorRecord = {
   opened_at: string;
 };
 
-// Role-table pinning (friction 681839bff914479c). `herdr_track open` records the
-// creator session's entire observed role table (bridge facts `roles`) so that
-// spawn resolution inside born sessions — where OMP collapses every role to the
-// session override, polluting `@default` — reads the creator's configuration
-// instead of the born session's live modelRoles. The table is an input to
-// resolution, never a relaxation of MOD-001/MOD-002 verification: spawns still
-// pin explicit `--model`/`--thinking` and bootstrap verification is unchanged.
-// A role absent from the table (or a pre-v3 registry without one) degrades
-// per-role to live resolution with a warning; never fail-closed.
+// LEGACY, READ-ONLY (friction 221abf10d2280b47). `open` no longer records a
+// creator role table: spawns pass the role ALIAS and each child resolves it from
+// its own persisted settings, so a caller's observed role values are neither
+// needed nor trustworthy as a configuration record. Registries written before
+// that change still carry the field and MUST keep validating, so the shape stays
+// here as a reader contract only. Nothing writes it.
 export type PinnedRoleModel = {
   provider: string;
   model: string;

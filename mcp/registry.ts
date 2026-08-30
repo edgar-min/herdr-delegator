@@ -69,6 +69,10 @@ export function mountedBuild(): MountedBuild {
   return build;
 }
 
+// `expected_provider` / `expected_model` / `effective_thinking` on a lane are
+// OBSERVATIONS of what the child session reported, not predictions
+// (221abf10d2280b47); `onlyKeys` tolerates their absence on a lane that has not
+// reported yet, and their presence on records written before the change.
 const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
 const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
 const BIRTH_KEYS = ["generation", "official_session_id", "official_session_path", "pane_id", "origin", "approval_sha256", "born_at"] as const;
@@ -96,6 +100,8 @@ function validOrchCreator(value: unknown): value is OrchCreatorRecord {
     typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
     typeof value.opened_at === "string" && value.opened_at.length <= 64;
 }
+// Reader-only: nothing writes `pinned_roles` any more (221abf10d2280b47), but
+// registries written before that change carry it and must keep validating.
 const PINNED_ROLES_KEYS = ["roles", "observed_session_id", "observed_at", "source"] as const;
 const PINNED_ROLE_MODEL_KEYS = ["provider", "model", "thinking"] as const;
 

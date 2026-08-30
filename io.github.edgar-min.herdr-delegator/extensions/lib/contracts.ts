@@ -173,14 +173,21 @@ export type ConfigSource = {
   sha256: string;
 };
 
+/**
+ * What a spawn actually launches with. No concrete model is resolved here any
+ * more (friction 221abf10d2280b47): the spawn passes the ROLE ALIAS and the
+ * child expands it against its own persisted settings, because a runtime model
+ * override is process-local and a caller's override must not decide a child's
+ * model. `effective_thinking` is `inherit` when the delegator profile holds no
+ * explicit opinion, which means the spawn omits `--thinking` and the role's own
+ * `:level` suffix governs in the child.
+ */
 export type ResolvedLaunchProfile = {
   config_sources: ConfigSource[];
   selected_profile: string;
   selection_source: "explicit";
   requested_role: string;
-  expected_provider: string;
-  expected_model: string;
-  effective_thinking: ThinkingLevel;
+  effective_thinking: ConfigThinkingLevel;
 };
 
 export type RunManifest = {
@@ -224,9 +231,14 @@ export type TargetOrchestratorRecord = {
   prompt_state: "unprompted" | "prompting" | "prompted";
   config_sources: ConfigSource[];
   requested_role: string;
-  expected_provider: string;
-  expected_model: string;
-  effective_thinking: ThinkingLevel;
+  // Post-spawn OBSERVATION, never a prediction (plan rev 3 deviation 1). Absent
+  // until the child reports its own identity through bootstrap attestation: the
+  // delegator no longer computes an expected model, so there is nothing to
+  // record before the child answers. Records written by earlier versions carry
+  // concrete values and stay valid.
+  expected_provider?: string;
+  expected_model?: string;
+  effective_thinking?: ThinkingLevel;
   resolved_model_is_fallback?: boolean;
   verified_at?: string;
   created_at: string;
@@ -276,9 +288,10 @@ export type OrchestratorRecord = {
   tab_id?: string;
   pane_id: string;
   requested_role: string;
-  expected_provider: string;
-  expected_model: string;
-  effective_thinking: ThinkingLevel;
+  // Post-spawn observation; see TargetOrchestratorRecord.
+  expected_provider?: string;
+  expected_model?: string;
+  effective_thinking?: ThinkingLevel;
   config_sources: ConfigSource[];
   observed_at: string;
 };
@@ -323,9 +336,10 @@ export type RegistryRecord = {
   selected_profile: string;
   selection_source: ResolvedLaunchProfile["selection_source"];
   requested_role: string;
-  expected_provider: string;
-  expected_model: string;
-  effective_thinking: ThinkingLevel;
+  // Post-spawn observation; see TargetOrchestratorRecord.
+  expected_provider?: string;
+  expected_model?: string;
+  effective_thinking?: ThinkingLevel;
   resolved_model_is_fallback?: boolean;
   verified_session_id?: string;
   verified_at?: string;

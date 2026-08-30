@@ -1,9 +1,9 @@
 // Track lifecycle responsibilities for the Herdr delegator extension.
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
+import type { ConfigThinkingLevel, FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readPinnedRoles, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import { acceptProtocolDocument } from "./templates";
 import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
@@ -428,6 +428,11 @@ function storeTargetBootstrap(
   const bootstrapTarget = target as BootstrapTargetRecord;
   target.session_path = verification.reported_path;
   target.session_id = verification.session_id;
+  // The born ORCH's OWN reported identity, recorded as an observation rather
+  // than checked against a caller prediction (plan rev 3 deviation 1).
+  target.expected_provider = verification.provider;
+  target.expected_model = verification.model;
+  target.effective_thinking = verification.thinking;
   bootstrapTarget.bootstrap_attestation = verification.attestation;
   bootstrapTarget.bootstrap_attested_at = verification.attested_at;
   bootstrapTarget.bootstrap_verified_at = nowIso();
@@ -441,6 +446,9 @@ function storedTargetBootstrap(
   if (
     !target.session_path ||
     !target.session_id ||
+    !target.expected_provider ||
+    !target.expected_model ||
+    !target.effective_thinking ||
     !bootstrapTarget.bootstrap_attestation ||
     !bootstrapTarget.bootstrap_attested_at ||
     !bootstrapTarget.bootstrap_verified_at
@@ -473,7 +481,6 @@ async function verifyTargetBootstrapSession(
       tabId: target.tab_id,
       paneId: target.pane_id,
     },
-    target,
     target.session_path,
     target.session_id,
     timeoutMs,
@@ -533,21 +540,19 @@ function publicResetRun(run: RunRecord): Record<string, unknown> {
 
 function assertTargetLaunchProfile(
   record: TargetOrchestratorRecord,
-  launch: Pick<
-    TargetOrchestratorRecord,
-    "config_sources" | "requested_role" | "expected_provider" | "expected_model" | "effective_thinking"
-  >,
+  launch: Pick<TargetOrchestratorRecord, "config_sources" | "requested_role">,
 ): void {
+  // Which ROLE and which config the target was launched under must not change
+  // under a live ORCH. Its concrete model is no longer compared: that value is
+  // an observation of what the born session resolved for itself, not a
+  // prediction this process may hold it to (plan rev 3 deviation 1).
   if (
     record.requested_role !== launch.requested_role ||
-    record.expected_provider !== launch.expected_provider ||
-    record.expected_model !== launch.expected_model ||
-    record.effective_thinking !== launch.effective_thinking ||
     JSON.stringify(record.config_sources) !== JSON.stringify(launch.config_sources)
   ) {
     throw new ContractError(
       "model_profile_mismatch",
-      "The target ORCH launch profile differs from the registry-recorded orchestrator role resolution.",
+      "The target ORCH launch profile differs from the registry-recorded orchestrator role.",
       "model_verify",
       { recovery: "Preserve the target session; initialize a sibling run instead of switching its launch profile in place." },
     );
@@ -688,10 +693,8 @@ async function startTargetOrchestratorAgent(
   binary: string,
   run: RunRecord,
   target: TargetOrchestratorRecord,
-  launch: Pick<
-    TargetOrchestratorRecord,
-    "config_sources" | "requested_role" | "expected_provider" | "expected_model" | "effective_thinking"
-  >,
+  launch: Pick<TargetOrchestratorRecord, "config_sources" | "requested_role">,
+  declaredThinking: ConfigThinkingLevel,
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<unknown> {
@@ -711,10 +714,16 @@ async function startTargetOrchestratorAgent(
     String(timeoutMs),
     "--",
     ...(resumePath ? [`--resume=${resumePath}`] : []),
-    "--model",
-    `${launch.expected_provider}/${launch.expected_model}`,
-    "--thinking",
-    launch.effective_thinking,
+    // No resolved model is transported. `@default` omits `--model` so the born
+    // session resolves the user's configured default itself; any other role
+    // passes its alias UNRESOLVED so the born session expands it from its own
+    // persisted layers. A runtime model override is process-local, so this
+    // caller's override cannot decide the ORCH's model
+    // (friction 221abf10d2280b47).
+    ...(launch.requested_role === "@default" ? [] : ["--model", launch.requested_role]),
+    // `inherit` means the delegator holds no opinion: omit the flag so the
+    // role's own `:level` suffix governs in the born session.
+    ...(declaredThinking === "inherit" ? [] : ["--thinking", declaredThinking]),
   ];
   const started = await runHerdr(binary, args, timeoutMs + 1_000, signal);
   if (!started.ok) {
@@ -776,20 +785,16 @@ function blockedOnPermissionObservation(
 async function assertTargetConfiguredRole(
   run: RunRecord,
   target: TargetOrchestratorRecord,
-  ctx: OmpModelContext,
 ): Promise<void> {
   const { config, sources } = await loadDelegatorConfig(run.run_path, run.cwd);
-  const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  // Passing the persisted level as the live one keeps `inherit` with no
-  // role-bound level the tautology it has always been here — this check owns
-  // configuration drift, not session drift — while a role that does bind a
-  // level is now compared against it.
-  const configuredThinking = effectiveThinking(config.orchestrator, ctx, target.effective_thinking);
+  // Configuration drift only: which ROLE this run's ORCH is configured as, and
+  // which config files said so. The concrete model is deliberately not compared
+  // — the born session resolved its own role from its own persisted settings,
+  // so this caller's role view is not an authority over it and, inside a
+  // spawned session, is exactly the polluted view rev 3 stops consulting
+  // (friction 221abf10d2280b47, plan rev 3 deviation 1).
   if (
     config.orchestrator.role !== target.requested_role ||
-    resolved.provider !== target.expected_provider ||
-    resolved.model !== target.expected_model ||
-    configuredThinking !== target.effective_thinking ||
     JSON.stringify(sources) !== JSON.stringify(target.config_sources)
   ) {
     throw new ContractError(
@@ -870,7 +875,7 @@ async function inspectOrchestrator(
   if (!target) {
     throw new ContractError("orch_not_started", "The target run has no registry-recorded ORCH lifecycle.", "inspect");
   }
-  await assertTargetConfiguredRole(run, target, ctx);
+  await assertTargetConfiguredRole(run, target);
   const live = await getLiveAgent(binary, target.agent_name, timeoutMs, signal);
   const reportPath = path.join(runPath, "orchestrator-report.md");
   if (!live.ok) {
@@ -986,24 +991,14 @@ async function startOrchestrator(
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
   const { registryPath } = registryPaths(runPath);
-  const resolved = await resolveOrchestratorProfile(runPath, cwd, ctx, currentThinking);
-  // Silent-fallback preflight (decision 6), and now its only home: an
-  // unconfigured-but-recognized OMP role inherits the default chain instead of
-  // failing, so the spawn would be pre-aligned to a default-grade model under a
-  // planning-grade name. This warns and never blocks — the spawn is still
-  // legitimate, just possibly cheaper than the operator believes.
-  const pinned = await readPinnedRoles(runPath);
-  const spawnFallbackWarning = silentFallbackRoleWarning(
-    resolved.launch.requested_role,
-    { provider: resolved.launch.expected_provider, model: resolved.launch.expected_model },
-    ctx,
-    pinned,
-  );
-  // Per-role degrade notes (MOD-007) share the fallback warning's surface: both
-  // name a resolution that may be cheaper than the operator believes.
-  const fallbackWarning = [...resolved.warnings, spawnFallbackWarning]
-    .filter((value): value is string => typeof value === "string")
-    .join(" | ") || undefined;
+  const resolved = await resolveOrchestratorProfile(runPath, cwd);
+  // The silent-fallback preflight is gone with the resolution it depended on:
+  // judging "this role resolves to the same model as @default" required
+  // resolving roles in the CALLER, which is exactly the polluted view rev 3
+  // stops consulting. The born session resolves its own role, so the caller can
+  // no longer compute that comparison and must not guess it
+  // (friction 221abf10d2280b47).
+  const fallbackWarning = resolved.warnings.length ? resolved.warnings.join(" | ") : undefined;
   const { binary, paneId } = await requireHerdrEnvironment();
   const caller = await observeOrchestrator(binary, paneId, resolved.caller, timeoutMs, signal);
   const focusBefore = await captureFocus(binary, signal);
@@ -1121,6 +1116,7 @@ async function startOrchestrator(
           liveRun,
           current,
           resolved.launch,
+          resolved.declaredThinking,
           timeoutMs,
           signal,
         );

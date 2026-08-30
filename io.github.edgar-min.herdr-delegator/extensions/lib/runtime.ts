@@ -14,10 +14,7 @@ import type { FocusRestoration, Operation, OrchestratorRecord, Registry, Registr
 import { ContractError, FOCUS_TIMEOUT_MS, LOCK_STALE_MS, LOCK_WAIT_MAX_MS, MAX_SESSION_BYTES, OPERATIONS, PROFILE_RE, PUBLIC_WORKER_STATES, REGISTRY_OWNER, REGISTRY_STATES, REGISTRY_VERSION, ROLE_RE, RUN_GENERATION, SHA256_RE, WORKER_RE, compactMessage, isObject, nowIso, sha256, sleep } from "./contracts";
 import { isConfigSource, isFile, isResetLineage, isTargetOrchestratorRecord, isThinkingLevel } from "./config";
 
-type BootstrapExpectedProfile = Pick<
-  RegistryRecord,
-  "expected_provider" | "expected_model" | "effective_thinking"
->;
+
 
 type BootstrapOwnership = {
   workspaceId: string;
@@ -662,7 +659,6 @@ function parseBootstrapSnapshot(
   agentData: unknown,
   paneData: unknown,
   ownership: BootstrapOwnership,
-  expected: BootstrapExpectedProfile,
 ): { observation: unknown; verification: BootstrapSessionVerification } {
   const agentWorkspaceId = firstString(agentData, ["workspace_id"]);
   const agentTabId = firstString(agentData, ["tab_id"]);
@@ -720,10 +716,12 @@ function parseBootstrapSnapshot(
     !Number.isSafeInteger(attestedAtMs) ||
     attestedAtMs > now + 5_000 ||
     now - attestedAtMs > BOOTSTRAP_METADATA_TTL_MS ||
-    !sessionIdMatchesReportedPath(sessionId, reportedPath) ||
-    provider !== expected.expected_provider ||
-    model !== expected.expected_model ||
-    thinking !== expected.effective_thinking
+    // Structural identity only. The child's reported provider/model/thinking is
+    // recorded as an OBSERVATION, never compared against a caller prediction:
+    // the spawn passes a role alias and the child resolves it from its own
+    // persisted settings, so the caller has nothing to predict with
+    // (friction 221abf10d2280b47, plan rev 3 deviation 1).
+    !sessionIdMatchesReportedPath(sessionId, reportedPath)
   ) {
     throw bootstrapIdentityError();
   }
@@ -745,7 +743,6 @@ export async function convergeBootstrapSessionIdentity(
   binary: string,
   agentName: string,
   ownership: BootstrapOwnership,
-  expected: BootstrapExpectedProfile,
   expectedPath: string | undefined,
   expectedSessionId: string | undefined,
   timeoutMs: number,
@@ -772,7 +769,7 @@ export async function convergeBootstrapSessionIdentity(
         signal,
       );
       if (!firstPane.ok) throw bootstrapIdentityError();
-      const first = parseBootstrapSnapshot(firstAgent.data, firstPane.data, ownership, expected);
+      const first = parseBootstrapSnapshot(firstAgent.data, firstPane.data, ownership);
 
       const secondAgent = await getLiveAgent(binary, agentName, remainingMs, signal);
       if (!secondAgent.ok) throw bootstrapIdentityError();
@@ -783,7 +780,7 @@ export async function convergeBootstrapSessionIdentity(
         signal,
       );
       if (!secondPane.ok) throw bootstrapIdentityError();
-      const second = parseBootstrapSnapshot(secondAgent.data, secondPane.data, ownership, expected);
+      const second = parseBootstrapSnapshot(secondAgent.data, secondPane.data, ownership);
       if (
         first.verification.reported_path !== second.verification.reported_path ||
         first.verification.session_id !== second.verification.session_id ||
@@ -909,18 +906,8 @@ export async function readSessionVerification(
         { recovery: "Preserve the worker and inspect its official OMP session initialization; do not prompt it." },
       );
     }
-    if (
-      modelIdentityValue.provider !== record.expected_provider ||
-      modelIdentityValue.model !== record.expected_model ||
-      thinking !== record.effective_thinking
-    ) {
-      throw new ContractError(
-        "model_profile_mismatch",
-        "The official OMP session model or thinking level differs from the persisted launch profile.",
-        "session_verify",
-        { recovery: "Preserve the worker without prompting; reconcile the configured role or start an explicitly approved new run." },
-      );
-    }
+    // The session's reported model is RETURNED, not judged: it is the
+    // observation that gets persisted (friction 221abf10d2280b47).
     return {
       session_id: sessionId,
       provider: modelIdentityValue.provider,
@@ -1050,17 +1037,20 @@ export async function verifyWorkerSession(
   return verification;
 }
 
+/**
+ * Profile drift gate. Which profile and which ROLE a record was launched under
+ * must not silently change under a live worker. The concrete model is no longer
+ * compared: it is an observation of what the child resolved for itself, not a
+ * prediction this process is entitled to hold it to (plan rev 3 deviation 1).
+ */
 export function assertLaunchProfile(record: RegistryRecord, launch: ResolvedLaunchProfile): void {
   if (
     record.selected_profile !== launch.selected_profile ||
-    record.requested_role !== launch.requested_role ||
-    record.expected_provider !== launch.expected_provider ||
-    record.expected_model !== launch.expected_model ||
-    record.effective_thinking !== launch.effective_thinking
+    record.requested_role !== launch.requested_role
   ) {
     throw new ContractError(
       "model_profile_mismatch",
-      "The persisted worker launch profile no longer matches current layered configuration and role resolution.",
+      "The persisted worker launch profile no longer matches current layered configuration.",
       "model_verify",
       { recovery: "Do not resume or prompt this worker; preserve it and use an explicitly approved new run or profile." },
     );
@@ -1935,10 +1925,15 @@ export async function startWorkerAgent(
   args.push(
     "--",
     ...(resumePath ? [`--resume=${resumePath}`] : []),
-    "--model",
-    `${launch.expected_provider}/${launch.expected_model}`,
-    "--thinking",
-    launch.effective_thinking,
+    // No resolved model is transported. `@default` omits `--model` so the child
+    // resolves the user's configured default itself; every other role passes its
+    // alias UNRESOLVED so the child expands it from its own persisted layers. A
+    // runtime model override is process-local, so a caller's override can no
+    // longer decide a child's model (friction 221abf10d2280b47).
+    ...(launch.requested_role === "@default" ? [] : ["--model", launch.requested_role]),
+    // `inherit` means the delegator holds no opinion: omit the flag and let the
+    // role's own `:level` suffix govern in the child.
+    ...(launch.effective_thinking === "inherit" ? [] : ["--thinking", launch.effective_thinking]),
   );
   const started = await runHerdr(binary, args, timeoutMs + 1_000, signal);
   if (!started.ok) {

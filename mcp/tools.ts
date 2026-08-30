@@ -14,7 +14,7 @@ import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerRe
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, OBSERVATION_SOURCE, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
@@ -1050,17 +1050,6 @@ export class CompositeTools {
         throw new McpContractError("track_open_in_progress", "Another session claimed this open while the mandate was being fixed.", "attest", "Let the opening session finish; a second opener would race the same birth.");
       }
       next.orch_creator = { session_id: runtime.facts.session_id, pane_id: runtime.facts.pane_id, mandate_sha256: mandateHash, opened_at: nowIso() };
-      // Pin the creator's entire observed role table alongside the creator
-      // stamp (RUN-001d, friction 681839bff914479c): later spawns in this run
-      // resolve roles from this table instead of a born session's live role
-      // view, which collapses every role onto the session override. First
-      // observation wins — an identical-mandate retry never re-pins.
-      next.pinned_roles ??= {
-        roles: structuredClone(runtime.facts.roles),
-        observed_session_id: runtime.facts.session_id,
-        observed_at: nowIso(),
-        source: OBSERVATION_SOURCE,
-      };
       // The seed is a calibration estimate, and the clock starts at the open that
       // will spawn the ORCH — not at the first guarded op, so an idle-but-live run
       // still ages against its declared wall clock.

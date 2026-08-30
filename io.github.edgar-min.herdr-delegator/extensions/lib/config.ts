@@ -340,95 +340,6 @@ export function modelIdentity(model: OmpModelIdentity | undefined): { provider: 
 }
 
 /**
- * The creator session's role table, pinned into the run's delegation registry
- * by `herdr_track open` (friction 681839bff914479c). Spawn resolution prefers
- * it over the live session's role view because a spawned (born) session
- * observes every role collapsed onto its own model override — resolving live
- * there silently launches everything on the caller's model. Reading here is
- * deliberately lenient where registry mutation is fail-closed (MOD-007): a
- * missing file, an older schema, or an unrecognizable table degrades to live
- * resolution with a per-role warning, never a refusal — the MCP side already
- * fail-closes on a malformed registry before it can be mutated.
- */
-export type PinnedRoleTable = {
-  roles: Record<string, { provider: string; model: string; thinking?: ThinkingLevel }>;
-  observed_session_id: string;
-  observed_at: string;
-  source: string;
-};
-
-function isPinnedRoleTable(value: unknown): value is PinnedRoleTable {
-  return isObject(value) &&
-    isObject(value.roles) &&
-    Object.entries(value.roles).every(([role, entry]) =>
-      ROLE_RE.test(role) &&
-      isObject(entry) &&
-      typeof entry.provider === "string" && entry.provider.length >= 1 &&
-      typeof entry.model === "string" && entry.model.length >= 1 &&
-      (entry.thinking === undefined || isThinkingLevel(entry.thinking))) &&
-    typeof value.observed_session_id === "string" &&
-    typeof value.observed_at === "string" &&
-    typeof value.source === "string";
-}
-
-export async function readPinnedRoles(runPath: string): Promise<PinnedRoleTable | undefined> {
-  try {
-    const raw = await readFile(path.join(runPath, "a2a", "delegation.json"), "utf8");
-    const registry: unknown = JSON.parse(raw);
-    if (!isObject(registry) || registry.owner !== "herdr-delegator") return undefined;
-    return isPinnedRoleTable(registry.pinned_roles) ? registry.pinned_roles : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Per-role degrade note (MOD-007): the role fell back to the live role view,
- * either because the run predates pinning or because the creator session never
- * observed the role. Live resolution inside a spawned session reflects the
- * session's own model override, so the note names what the operator actually
- * gets; it never blocks.
- */
-export function pinnedRoleDegradeWarning(pinned: PinnedRoleTable | undefined, role: string): string {
-  const cause = pinned
-    ? `is not in this run's pinned role table (observed from session ${pinned.observed_session_id} at open)`
-    : "resolved without a pinned role table (this run's registry predates role pinning)";
-  return `${role} ${cause}; it resolved through this session's live role view, which inside a spawned session reflects the session's own model override rather than configured OMP roles. Open a fresh track to pin the current role configuration.`;
-}
-
-/**
- * The thinking level the OMP role itself is bound to, when the bridge observed
- * one. A role configured as `provider/model:medium` carries `medium`; a role
- * with no `:level` suffix carries nothing.
- */
-export function roleBoundThinking(ctx: OmpModelContext, role: string): ThinkingLevel | undefined {
-  const level = ctx.models.roleThinking?.(role);
-  return isThinkingLevel(level) ? level : undefined;
-}
-
-/**
- * The level a profile actually launches with, in descending authority: an
- * explicit delegator configuration, then the level the role carries in the
- * run's pinned role table, then the level the live OMP role binds, then the
- * live session level. `inherit` names the absence of a delegator opinion, not
- * an instruction to ignore the role — a role pinned to `:medium` is a decision
- * the user already made. When the pinned table carries the role, the live
- * role-bound level is deliberately not consulted: inside a spawned session it
- * reflects the session override, the exact pollution the pin exists to bypass.
- */
-export function effectiveThinking(
-  profile: ModelProfile,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
-  pinned?: PinnedRoleTable,
-): ThinkingLevel {
-  if (profile.thinking !== "inherit") return profile.thinking;
-  const entry = pinned?.roles[profile.role];
-  if (entry) return entry.thinking ?? currentThinking;
-  return roleBoundThinking(ctx, profile.role) ?? currentThinking;
-}
-
-/**
  * Fail-closed ORCH identity gate, owned in one place. `resolveLaunchProfile`
  * runs it during `ensure_worker`, and `herdr_assignment add` runs it before it
  * allocates any registry record — a mismatch used to surface only after `select`
@@ -442,12 +353,16 @@ export function assertOrchestratorAligned(
 ): void {
   const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
   const live = modelIdentity(ctx.models.current());
-  const thinking = effectiveThinking(config.orchestrator, ctx, currentThinking);
-  if (resolved.provider === live.provider && resolved.model === live.model && thinking === currentThinking) return;
+  // `inherit` states no delegator opinion, so there is nothing for the session
+  // to disagree with: the ORCH keeps whatever level its own role or session
+  // settled on. Only a configured level is held to.
+  const declared = config.orchestrator.thinking;
+  const thinkingAligned = declared === "inherit" || declared === currentThinking;
+  if (resolved.provider === live.provider && resolved.model === live.model && thinkingAligned) return;
   throw orchestratorMismatchError(
     "The live ORCH identity",
     config.orchestrator.role,
-    { ...resolved, thinking },
+    { ...resolved, thinking: declared === "inherit" ? currentThinking : declared },
     { ...live, thinking: currentThinking },
   );
 }
@@ -461,16 +376,6 @@ export async function resolveLaunchProfile(
 ): Promise<{ launch: ResolvedLaunchProfile; orchestrator: Omit<OrchestratorRecord, "pane_id" | "observed_at">; warnings: string[] }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
   assertOrchestratorAligned(config, ctx, currentThinking);
-  const pinned = await readPinnedRoles(runPath);
-  const warnings: string[] = [];
-  const resolveRole = (role: string): { provider: string; model: string } => {
-    const entry = pinned?.roles[role];
-    if (entry) return { provider: entry.provider, model: entry.model };
-    warnings.push(pinnedRoleDegradeWarning(pinned, role));
-    return modelIdentity(ctx.models.resolve(role));
-  };
-  const resolvedOrchestrator = resolveRole(config.orchestrator.role);
-  const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking, pinned);
   if (typeof params.profile !== "string" || !PROFILE_RE.test(params.profile)) {
     throw new ContractError(
       "invalid_profile",
@@ -487,64 +392,32 @@ export async function resolveLaunchProfile(
       "config",
     );
   }
-  const workerModel = resolveRole(profile.role);
-  const fallbackWarning = silentFallbackRoleWarning(profile.role, workerModel, ctx, pinned);
-  if (fallbackWarning) warnings.push(fallbackWarning);
-  const launch: ResolvedLaunchProfile = {
-    config_sources: sources,
-    selected_profile: selectedProfile,
-    selection_source: "explicit",
-    requested_role: profile.role,
-    expected_provider: workerModel.provider,
-    expected_model: workerModel.model,
-    effective_thinking: effectiveThinking(profile, ctx, currentThinking, pinned),
-  };
+  // No model is resolved for the child. The spawn passes the role alias and the
+  // child expands it from its own persisted settings, so this caller's role
+  // view — which inside a spawned session reflects its own launch override —
+  // never decides a child's model (friction 221abf10d2280b47).
+  const caller = modelIdentity(ctx.models.current());
   return {
-    launch,
+    launch: {
+      config_sources: sources,
+      selected_profile: selectedProfile,
+      selection_source: "explicit",
+      requested_role: profile.role,
+      effective_thinking: profile.thinking,
+    },
     orchestrator: {
       requested_role: config.orchestrator.role,
-      expected_provider: resolvedOrchestrator.provider,
-      expected_model: resolvedOrchestrator.model,
-      effective_thinking: orchestratorThinking,
+      // The caller's own observed identity. Unlike the child's, this is a fact
+      // already in hand rather than a prediction.
+      expected_provider: caller.provider,
+      expected_model: caller.model,
+      effective_thinking: currentThinking,
       config_sources: sources,
     },
-    warnings,
+    warnings: [],
   };
 }
 
-/**
- * OMP resolves an unconfigured-but-recognized role by inheriting the default
- * chain instead of failing, so on a machine without a `modelRoles` entry the
- * "aligned" model is silently the default one (dogfooded on another user's
- * environment). The extension API exposes no settings read, so the exact signal
- * is identity with `@default`: a fallback always matches it, and the only false
- * positive — a role deliberately mapped to the default model — makes the warning
- * a harmless note. This never blocks (decision 6): it names what the operator is
- * actually getting. When the run carries a pinned role table, the judgment runs
- * against the pinned `@default` instead of the live one — inside a spawned
- * session every live role collapses onto the session override, which made this
- * warning fire falsely for every explicitly configured role
- * (friction 681839bff914479c). A pinned role with no pinned `@default` to judge
- * against yields no warning rather than a guessed one.
- */
-export function silentFallbackRoleWarning(
-  role: string,
-  expected: { provider: string; model: string },
-  ctx: OmpModelContext,
-  pinned?: PinnedRoleTable,
-): string | undefined {
-  if (role === "@default") return undefined;
-  const pinnedEntry = pinned?.roles[role];
-  let fallback: { provider: string; model: string } | undefined;
-  if (pinnedEntry) {
-    fallback = pinned?.roles["@default"];
-  } else {
-    const live = ctx.models.resolve("@default");
-    fallback = live ? { provider: live.provider, model: live.id } : undefined;
-  }
-  if (!fallback || fallback.provider !== expected.provider || fallback.model !== expected.model) return undefined;
-  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then open a fresh track so its ORCH is born on the intended model; this run's ORCH keeps the model it was spawned with.`;
-}
 /**
  * Resolves the configured orchestrator role for a spawn. There is no caller
  * alignment to assert: every ORCH is born pre-aligned by the spawn itself
@@ -554,8 +427,6 @@ export function silentFallbackRoleWarning(
 export async function resolveOrchestratorProfile(
   runPath: string,
   cwd: string,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
 ): Promise<{
   launch: Omit<TargetOrchestratorRecordWithBootstrapFacts,
     "workspace_id" | "tab_id" | "pane_id" | "agent_name" | "session_path" | "session_id" |
@@ -563,28 +434,20 @@ export async function resolveOrchestratorProfile(
     "resolved_model_is_fallback" | "verified_at" | "created_at" | "updated_at"
   >;
   caller: Omit<OrchestratorRecord, "pane_id" | "observed_at">;
+  /** The delegator's explicit level opinion, or `inherit` when it holds none. */
+  declaredThinking: ConfigThinkingLevel;
   warnings: string[];
 }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
-  const pinned = await readPinnedRoles(runPath);
-  const warnings: string[] = [];
-  const entry = pinned?.roles[config.orchestrator.role];
-  let resolved: { provider: string; model: string };
-  if (entry) {
-    resolved = { provider: entry.provider, model: entry.model };
-  } else {
-    warnings.push(pinnedRoleDegradeWarning(pinned, config.orchestrator.role));
-    resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  }
-  const orchestratorThinking = effectiveThinking(config.orchestrator, ctx, currentThinking, pinned);
+  // No model resolution: the ORCH spawn passes the configured role alias and the
+  // born session expands it from its own persisted settings. `expected_*` and
+  // `effective_thinking` stay absent until that session reports them
+  // (friction 221abf10d2280b47).
   const profile = {
     config_sources: sources,
     requested_role: config.orchestrator.role,
-    expected_provider: resolved.provider,
-    expected_model: resolved.model,
-    effective_thinking: orchestratorThinking,
   };
-  return { launch: profile, caller: profile, warnings };
+  return { launch: profile, caller: profile, declaredThinking: config.orchestrator.thinking, warnings: [] };
 }
 
 export function isConfigSource(value: unknown): value is ConfigSource {
