@@ -106,6 +106,28 @@ export function interRunChannelPath(runPath: string, toTrackId: string, toRunId:
 }
 
 /**
+ * Birth succeeded but the born ORCH cannot act: OMP is holding it on a
+ * permission prompt. Blocked-on-permission is a normal state reported honestly
+ * rather than a failed birth (friction 66a5184e15deff47), so `open` reports it
+ * as an advisory the retiring caller can act on — one warning line naming the
+ * pane the human must click in, plus the structured field for a caller that
+ * routes on state instead of prose. Exported so the assembly is exercisable
+ * with a synthetic observation; `open` itself spawns a real pane.
+ */
+export function openPermissionAdvisory(
+  observation: Record<string, unknown>,
+): { warning: string; field: { state: "blocked"; pane_id: string } } | undefined {
+  const blocked = observation.blocked_on_permission;
+  if (!isObject(blocked) || blocked.state !== "blocked") return undefined;
+  const paneId = blocked.pane_id;
+  if (typeof paneId !== "string" || !paneId || paneId.length > 80 || !BOUNDED_TOKEN_RE.test(paneId)) return undefined;
+  return {
+    warning: `ORCH born but blocked on an OMP permission prompt in pane ${paneId}; it cannot act until a human approves in that pane. Birth succeeded — direct the user to that pane to click the approval.`,
+    field: { state: "blocked", pane_id: paneId },
+  };
+}
+
+/**
  * A doorbell may only point at a document that already exists: a bell with
  * nothing behind it is the silent failure this design exists to prevent, so a
  * missing or empty channel document is rejected as caller input, not reported as
@@ -941,7 +963,8 @@ export class CompositeTools {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
     }
     const observation = isObject(spawned.observation) ? spawned.observation : {};
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning].filter((value): value is string => typeof value === "string");
+    const permission = openPermissionAdvisory(observation);
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning].filter((value): value is string => typeof value === "string");
     // No skill routes here: plan and authoring boundaries belong to the ORCH,
     // and this result is read by the session that just retired.
     return {
@@ -962,6 +985,7 @@ export class CompositeTools {
         creator_retired: runtime.facts.session_id,
         next_step: `This track's ORCH is born in pane ${birth.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Tell the user to continue there: this session is retired for this track and every guarded call it makes now fails with creator_session_retired. Do not accumulate more context on this track here.`,
         ...(warnings.length ? { warnings } : {}),
+        ...(permission ? { orch_blocked_on_permission: permission.field } : {}),
       },
     };
   }
