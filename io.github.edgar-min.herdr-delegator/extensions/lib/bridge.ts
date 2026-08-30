@@ -417,10 +417,28 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
       throw new Error("OMP did not expose a bounded session/thinking identity.");
     }
     assertBoundedPath(cwd, "cwd");
+    // `reported_session_path` is an OPTIONAL corroborating field, so a value
+    // that does not identify this session may not cost the session its whole
+    // publication. A spawned pane's `getSessionFile()` does not name the live
+    // session id until the pane has been driven, so aborting here left a born
+    // pane with no bootstrap tokens and no fact for its entire pre-drive window:
+    // every guarded op failed attest with "Caller pane has no bootstrap metadata
+    // tokens" and only human input healed it (friction 4ff52b2d863b8532,
+    // d7e9a5e774b89a4f). Omitting the field keeps identity exactly as strict:
+    // `session_id` still comes from OMP, publication still requires a unique
+    // Herdr pane whose native `agent_session` identifies that id
+    // (`resolveBootstrapPane`), and the verifier cross-checks this field only
+    // when it is present (mcp/tools.ts loadFacts).
+    let publishedSessionPath: string | undefined;
     if (reportedSessionPath !== undefined) {
       assertBoundedPath(reportedSessionPath, "reported session path");
-      if (!sessionValueIdentifiesId(reportedSessionPath, sessionId)) {
-        throw new Error("The reported session path does not identify the active OMP session.");
+      if (sessionValueIdentifiesId(reportedSessionPath, sessionId)) {
+        publishedSessionPath = reportedSessionPath;
+      } else {
+        pi.logger.warn(
+          "herdr-delegator OMP bridge omitted a reported session path that does not identify the active session",
+          { session_id: sessionId, reported_session_path: reportedSessionPath },
+        );
       }
     }
 
@@ -452,7 +470,7 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     const fact: OmpFactBridgeV1 = {
       version: 1,
       session_id: sessionId,
-      ...(reportedSessionPath === undefined ? {} : { reported_session_path: reportedSessionPath }),
+      ...(publishedSessionPath === undefined ? {} : { reported_session_path: publishedSessionPath }),
       pane_id: targetPaneId,
       cwd,
       current: { ...current, thinking },
