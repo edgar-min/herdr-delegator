@@ -41,6 +41,12 @@ Terminal output and Herdr metadata are observations, not contracts, decisions,
 settlement, or identity authority. There are no separate assignment contract or receipt
 files.
 
+## Shared worktree
+
+In a shared project working directory, stage by hunk and commit only files inside
+your declared write window. Serialize overlapping edit windows through the run's
+channel documents before touching a shared file.
+
 ## Judgment and blocked work
 
 Self-resolve technical questions when the ordered sources above provide sufficient
@@ -73,10 +79,12 @@ routed completion skill. End the report with the tool-recognized completion bloc
 the dispatch contract. Its exact grammar, accepted status, and wake call shape belong
 to the mounted schema and returned error text, not duplicated prose.
 
-After appending the block, ring ORCH once. The report is the durable result; the ring is
-only a non-authoritative pointer and a failed delivery does not erase the report. Remain
-idle afterward. Completion leaves this responsibility lane and official session open
-for another assignment.
+After appending the block, ring ORCH once. This is one case of the general rule: ring
+ORCH exactly once after appending any report block that changes your boundary state —
+completed, failed, blocked, or decision-request. The report is the durable result; the
+ring is only a non-authoritative pointer and a failed delivery does not erase the
+report. Remain idle afterward. Completion leaves this responsibility lane and official
+session open for another assignment.
 
 ## Prohibitions
 
