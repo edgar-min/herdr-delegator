@@ -490,6 +490,47 @@ async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFact
   return { facts };
 }
 
+type OpenCreatorIdentity =
+  | { session_id: string; pane_id: string; verified: true }
+  | { pane_id: string; verified: false };
+
+async function runAlreadyInitialized(trackId: string, runId: string, cwd: string): Promise<boolean> {
+  const { config } = await loadDelegatorConfig(undefined, cwd);
+  const storageRoot = config.storage?.root;
+  if (!storageRoot) throw new McpContractError("storage_root_unconfigured", "storage.root is not configured.", "storage", "Configure storage.root before opening a track.");
+  try {
+    await realpath(path.join(storageRoot, trackId, runId));
+    return true;
+  } catch (error) {
+    if (isObject(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function loadOpenCreator(
+  adapter: HerdrAdapter,
+  allowDegraded: boolean,
+): Promise<{ identity: OpenCreatorIdentity; mismatch?: McpContractError }> {
+  try {
+    const { facts } = await loadFacts(adapter);
+    return { identity: { session_id: facts.session_id, pane_id: facts.pane_id, verified: true } };
+  } catch (error) {
+    if (!allowDegraded || !(error instanceof McpContractError) || error.code !== "omp_fact_bridge_mismatch") throw error;
+    const paneId = process.env.HERDR_PANE_ID;
+    if (!paneId || paneId.length > 80 || !BOUNDED_TOKEN_RE.test(paneId)) throw error;
+    return { identity: { pane_id: paneId, verified: false }, mismatch: error };
+  }
+}
+
+function sameOpenCreator(
+  existing: NonNullable<DelegationRegistry["orch_creator"]>,
+  attempted: OpenCreatorIdentity,
+): boolean {
+  if (existing.pane_id !== attempted.pane_id) return false;
+  if (existing.verified === false || attempted.verified === false) return true;
+  return existing.session_id === attempted.session_id;
+}
+
 function normalizeLegacyPhase(phase: string): ErrorPhase {
   if (phase.includes("model")) return "model-verify";
   if (phase.includes("bootstrap") || phase.includes("attest")) return "attest";
@@ -1007,21 +1048,23 @@ export class CompositeTools {
     // rejected without spending an attestation round trip.
     const document = renderMandate(run, input.mandate);
     const mandateHash = sha256(document);
-    const runtime = await loadFacts(this.adapter);
+    const freshCoordinate = !(await runAlreadyInitialized(input.track_id, input.run_id, input.cwd));
+    const creatorAttempt = await loadOpenCreator(this.adapter, freshCoordinate);
 
     const scaffolding = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd });
     const store = await DelegationStore.resolve(input.track_id, input.run_id);
     const opened = await store.read();
     const creator = opened.orch_creator;
+    if (creatorAttempt.mismatch && (creator || latestBirth(opened))) throw creatorAttempt.mismatch;
     if (creator && creator.mandate_sha256 !== mandateHash) {
       throw new McpContractError("mandate_conflict", "This run was already opened with a different mandate.", "validate", "Open a sibling run for a different mandate; a settled mandate is never rewritten behind a live ORCH.");
     }
     const born = latestBirth(opened);
     if (born) {
-      return { ok: true, tool: "herdr_track", action: "open", run, effect: "none", retryable: false, registry_revision: opened.revision, data: { already_open: true, orch_birth: born, orch_pane_id: born.pane_id, space: `herdr/${input.track_id}`, orch_pane: `ORCH ${input.track_id}/${input.run_id}`, mandate: { path: path.join(store.runPath, "orchestrator-instructions.md"), sha256: mandateHash }, next_step: `This track is already commanded by its ORCH pane ${born.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Direct the user there and do no further work on this track here.` } };
+      return { ok: true, tool: "herdr_track", action: "open", run, effect: "none", retryable: false, registry_revision: opened.revision, data: { already_open: true, creator, creator_verified: creator?.verified !== false, orch_birth: born, orch_pane_id: born.pane_id, space: `herdr/${input.track_id}`, orch_pane: `ORCH ${input.track_id}/${input.run_id}`, mandate: { path: path.join(store.runPath, "orchestrator-instructions.md"), sha256: mandateHash }, next_step: `This track is already commanded by its ORCH pane ${born.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Direct the user there and do no further work on this track here.` } };
     }
-    if (creator && creator.session_id !== runtime.facts.session_id) {
-      throw new McpContractError("track_open_in_progress", "Another session is opening this run and its ORCH is not born yet.", "attest", "Let the opening session finish or retry its identical open; a second opener would race the same birth.");
+    if (creator && !sameOpenCreator(creator, creatorAttempt.identity)) {
+      throw new McpContractError("track_open_in_progress", "Another caller is opening this run and its ORCH is not born yet.", "attest", "Let the opening caller finish or retry its identical open; a second opener would race the same birth.");
     }
 
     const instructionPath = path.join(store.runPath, "orchestrator-instructions.md");
@@ -1034,20 +1077,26 @@ export class CompositeTools {
     if (!existingMandate) await writeAtomic(instructionPath, document);
 
     const stamped = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-      if (next.orch_creator && next.orch_creator.session_id !== runtime.facts.session_id) {
-        throw new McpContractError("track_open_in_progress", "Another session claimed this open while the mandate was being fixed.", "attest", "Let the opening session finish; a second opener would race the same birth.");
+      if (creatorAttempt.mismatch && next.orch_creator) throw creatorAttempt.mismatch;
+      if (next.orch_creator && !sameOpenCreator(next.orch_creator, creatorAttempt.identity)) {
+        throw new McpContractError("track_open_in_progress", "Another caller claimed this open while the mandate was being fixed.", "attest", "Let the opening caller finish; a second opener would race the same birth.");
       }
-      next.orch_creator = { session_id: runtime.facts.session_id, pane_id: runtime.facts.pane_id, mandate_sha256: mandateHash, opened_at: nowIso() };
+      next.orch_creator = creatorAttempt.identity.verified
+        ? { session_id: creatorAttempt.identity.session_id, pane_id: creatorAttempt.identity.pane_id, mandate_sha256: mandateHash, opened_at: nowIso(), verified: true }
+        : { pane_id: creatorAttempt.identity.pane_id, mandate_sha256: mandateHash, opened_at: nowIso(), verified: false };
       // The seed is a calibration estimate, and the clock starts at the open that
       // will spawn the ORCH — not at the first guarded op, so an idle-but-live run
       // still ages against its declared wall clock.
       next.budget ??= seedBudget(input.mandate, nowIso());
     });
     const seeded = stamped.budget ?? seedBudget(input.mandate, nowIso());
+    const stampedCreator = stamped.orch_creator;
+    if (!stampedCreator) throw new McpContractError("creator_stamp_missing", "The open creator stamp did not persist.", "storage", "Preserve the initialized run and retry the identical open.");
     await appendLedger(store.runPath, "seed", [
       `seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} min (declared estimate, not a contract)`,
       `doorbell policy: ${seeded.doorbell_policy}`,
       `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
+      `creator verification: ${stampedCreator.verified === false ? "unverified (omp_fact_bridge_mismatch)" : "attested"}`,
       "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
     // Advisory delivery surface, never a gate: the document is rendered (or
@@ -1062,7 +1111,13 @@ export class CompositeTools {
     }
     const observation = isObject(spawned.observation) ? spawned.observation : {};
     const permission = openPermissionAdvisory(observation);
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning].filter((value): value is string => typeof value === "string");
+    const creatorWarning = stampedCreator.verified === false
+      ? "Opening creator is unverified because pane attestation failed with omp_fact_bridge_mismatch; existing-run operations remain fail-closed."
+      : undefined;
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning, creatorWarning].filter((value): value is string => typeof value === "string");
+    const retirementText = stampedCreator.verified === false
+      ? "the unverified opening pane is retired for this track and cannot issue guarded calls"
+      : "this session is retired for this track and every guarded call it makes now fails with creator_session_retired";
     // No skill routes here: plan and authoring boundaries belong to the ORCH,
     // and this result is read by the session that just retired.
     return {
@@ -1080,8 +1135,10 @@ export class CompositeTools {
         orch_pane_id: birth.pane_id,
         orch_birth: birth,
         mandate: { path: instructionPath, sha256: mandateHash, bytes: Buffer.byteLength(document) },
-        creator_retired: runtime.facts.session_id,
-        next_step: `This track's ORCH is born in pane ${birth.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Tell the user to continue there: this session is retired for this track and every guarded call it makes now fails with creator_session_retired. Do not accumulate more context on this track here.`,
+        creator: stampedCreator,
+        creator_verified: stampedCreator.verified !== false,
+        ...(stampedCreator.session_id ? { creator_retired: stampedCreator.session_id } : {}),
+        next_step: `This track's ORCH is born in pane ${birth.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Tell the user to continue there: ${retirementText}. Do not accumulate more context on this track here.`,
         ...(warnings.length ? { warnings } : {}),
         ...(permission ? { orch_blocked_on_permission: permission.field } : {}),
       },

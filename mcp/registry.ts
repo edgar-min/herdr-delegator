@@ -90,12 +90,16 @@ function validOrchBirth(value: unknown, index: number): value is OrchBirthRecord
     typeof value.born_at === "string" && value.born_at.length <= 64;
 }
 
-const CREATOR_KEYS = ["session_id", "pane_id", "mandate_sha256", "opened_at"] as const;
+const CREATOR_KEYS = ["session_id", "pane_id", "mandate_sha256", "opened_at", "verified"] as const;
 
 function validOrchCreator(value: unknown): value is OrchCreatorRecord {
-  return isRecord(value) &&
-    exactKeys(value, CREATOR_KEYS) &&
-    typeof value.session_id === "string" && value.session_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.session_id) &&
+  if (!isRecord(value) || !onlyKeys(value, CREATOR_KEYS)) return false;
+  const verifiedIdentity = (value.verified === undefined || value.verified === true) &&
+    typeof value.session_id === "string" &&
+    value.session_id.length <= 80 &&
+    BOUNDED_TOKEN_RE.test(value.session_id);
+  const unverifiedIdentity = value.verified === false && value.session_id === undefined;
+  return (verifiedIdentity || unverifiedIdentity) &&
     typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
     typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
     typeof value.opened_at === "string" && value.opened_at.length <= 64;

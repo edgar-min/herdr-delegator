@@ -248,16 +248,19 @@ export type OrchBirthRecord = {
 };
 
 // Death of the bootstrapper (decision 3). `herdr_track open` stamps the creator
-// session before it spawns anything, so the record doubles as the open-in-flight
-// marker: creator present with no birth means the atomic open did not finish and
-// only the creator may retry it — never a claim. Creator plus birth means the
-// creator is retired for this run.
-export type OrchCreatorRecord = {
-  session_id: string;
+// before it spawns anything, so the record doubles as the open-in-flight marker.
+// An attested creator is keyed by its official session; a degraded creator has
+// only the inherited pane coordinate and is explicitly unverified. Creator plus
+// birth means the opening caller is retired for this run.
+type OrchCreatorBase = {
   pane_id: string;
   mandate_sha256: string;
   opened_at: string;
 };
+export type OrchCreatorRecord = OrchCreatorBase & (
+  | { session_id: string; verified?: true }
+  | { session_id?: never; verified: false }
+);
 
 // LEGACY, READ-ONLY (friction 221abf10d2280b47). `open` no longer records a
 // creator role table: spawns pass the role ALIAS and each child resolves it from
