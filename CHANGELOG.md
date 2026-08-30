@@ -131,8 +131,8 @@ spend; a run whose ORCH pane died is recoverable.
   instead of `herdr_command_failed` with `retryable`.
 - The registry is validated before it is written, not only when the next reader loads it,
   so a malformed record is attributed to the call that produced it.
-- The registry schema is versioned: the current version is 2 with a supported set of
-  `{1, 2}`. Reads accept version 1, writes upgrade it in place, unknown-key rejection
+- The registry schema is versioned: the current version is 3 with a supported set of
+  `{1, 2, 3}`. Reads accept older versions, writes upgrade in place, unknown-key rejection
   stays exact within a version, and a version outside the set fails
   `registry_version_unsupported` naming the `/reload-plugins` respawn.
 - The in-session bridge heartbeat is idempotent and session-owned: it starts once, before
