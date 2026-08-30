@@ -134,6 +134,23 @@ export async function ensureWorker(
       owned.workspace_id = run.workspace_id;
       if (run.anchor_tab_id) owned.tab_ids.add(run.anchor_tab_id);
       if (run.anchor_pane_id) owned.pane_ids.add(run.anchor_pane_id);
+      // On a legacy run (init + caller-session ORCH) this ensure is what
+      // creates or adopts the run anchor, and nothing ever spawns into it, so
+      // the bare shell under an "ORCH ..." tab reads as a dead ORCH to the
+      // supervising human (friction 1ffc55fca1b7bd9e). A spawn-managed run has
+      // a target_orchestrator record before any worker ensure, so its absence
+      // marks the anchor as a placeholder. Display-only: the deterministic tab
+      // label is untouched, a later start_orchestrator relabels the pane at
+      // birth, and a failed rename is ignored like every cosmetic rename.
+      if (!registry.run?.target_orchestrator && run.anchor_pane_id) {
+        await labelPane(
+          binary,
+          run.anchor_pane_id,
+          `anchor ${coordinate.manifest.track_id}/${coordinate.manifest.run_id} — no ORCH born here; legacy run commanded from the caller session`,
+          timeoutMs,
+          signal,
+        );
+      }
 
       let current = registry.workers[workerKey];
       if (current && (current.run_path !== runPath || current.worker_id !== workerId)) {
