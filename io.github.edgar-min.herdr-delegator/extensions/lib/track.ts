@@ -760,6 +760,19 @@ function updateTargetFromObservation(target: TargetOrchestratorRecord, data: unk
   target.updated_at = nowIso();
 }
 
+/**
+ * Classifies the first-prompt delivery observation (D3, friction
+ * 66a5184e15deff47): a `blocked` pane is born and recoverable by one human
+ * approval click, but the prompt was never confirmed delivered, so the caller
+ * gets an explicit observation instead of silent success.
+ */
+function blockedOnPermissionObservation(
+  data: unknown,
+  paneId: string,
+): { state: "blocked"; pane_id: string } | undefined {
+  return normalizeState(data, "agent-ready") === "blocked" ? { state: "blocked", pane_id: paneId } : undefined;
+}
+
 async function assertTargetConfiguredRole(
   run: RunRecord,
   target: TargetOrchestratorRecord,
@@ -1001,6 +1014,7 @@ async function startOrchestrator(
   let verification!: Record<string, unknown>;
   let bootstrapVerification: BootstrapSessionVerification | undefined;
   let duplicatePrompt = false;
+  let blockedOnPermission: { state: "blocked"; pane_id: string } | undefined;
   try {
     ({ run, target } = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
       const liveRun = await ensureRunWorkspace(
@@ -1179,6 +1193,12 @@ async function startOrchestrator(
       // accepted and the agent left its pre-prompt state — "working", or a terminal
       // state when the turn settles faster than the poll. Settlement belongs to the
       // born ORCH. Friction 14870ac545c4730b.
+      //
+      // `blocked` stays in the until-list so a permission-gated pane returns fast
+      // instead of burning the timeout, but it is NOT delivery: the session is
+      // born and waiting on a human approval click, so the record stays
+      // `prompting` and the result carries an explicit blocked-on-permission
+      // observation instead of silent success. Friction 66a5184e15deff47 (D3).
       const deliveryTimeoutMs = Math.min(timeoutMs, 15_000);
       const prompted = await runHerdr(
         binary,
@@ -1210,6 +1230,7 @@ async function startOrchestrator(
           prompted.timedOut || /stalled|timeout/i.test(`${prompted.code} ${prompted.message}`),
         );
       }
+      blockedOnPermission = blockedOnPermissionObservation(prompted.data, target.pane_id);
       const verifiedBootstrap = bootstrapVerification;
       if (!verifiedBootstrap) {
         throw new ContractError(
@@ -1234,7 +1255,10 @@ async function startOrchestrator(
         );
         assertPersistedMatchesBootstrap(persisted, verifiedBootstrap);
         verification = { status: "persisted-verified", ...persisted };
-        current.prompt_state = "prompted";
+        // A blocked pane never confirmed delivery: the prompt was submitted but
+        // the agent is stalled on a permission dialog, so the record honestly
+        // stays `prompting` (downstream gates only distinguish `unprompted`).
+        current.prompt_state = blockedOnPermission ? "prompting" : "prompted";
         current.updated_at = nowIso();
         await writeRegistryAtomic(targetRegistryPath, registry);
         return current;
@@ -1262,6 +1286,7 @@ async function startOrchestrator(
       model_verification: verification,
       prompt_fingerprint: instructionFingerprint,
       reset_lineage: lineage,
+      ...(blockedOnPermission ? { blocked_on_permission: blockedOnPermission } : {}),
       pane_label: paneLabel,
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
       ...(fallbackWarning ? { role_fallback_warning: fallbackWarning } : {}),
@@ -1381,4 +1406,4 @@ async function retireOrchestratorSession(params: TrackParams, signal?: AbortSign
   };
 }
 
-export { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator, trackFailureResult, trackResultSummary };
+export { blockedOnPermissionObservation, initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator, trackFailureResult, trackResultSummary };
