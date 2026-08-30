@@ -432,13 +432,13 @@ async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFact
   if (paneCandidates.length !== 1) throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane observation is absent or ambiguous.", "attest", "Inspect the inherited Herdr pane identity.");
   const tokensValue = paneCandidates[0].tokens;
   if (tokensValue === null || typeof tokensValue !== "object" || Array.isArray(tokensValue)) {
-    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane has no bootstrap metadata tokens.", "attest", "Republish the bridge with /reload-plugins (or a new OMP session), then retry the identical call.", false, true);
+    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane has no bootstrap metadata tokens.", "attest", "Start the next OMP turn so its before_agent_start boundary republishes the bridge; if the mismatch persists, restart the OMP process in this pane, then retry the identical call.", false, true);
   }
   const tokens = tokensValue as Record<string, unknown>;
   const namespacedKeys = Object.keys(tokens).filter((key) => key.startsWith(BOOTSTRAP_TOKEN_PREFIX)).sort();
   const expectedKeys = Object.values(BOOTSTRAP_TOKENS).sort();
   if (namespacedKeys.length !== expectedKeys.length || namespacedKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane bootstrap token set is incomplete or contains unexpected namespaced keys.", "attest", "Republish the bridge with /reload-plugins (or a new OMP session), then retry the identical call.", false, true);
+    throw new McpContractError("omp_fact_bridge_mismatch", "Caller pane bootstrap token set is incomplete or contains unexpected namespaced keys.", "attest", "Start the next OMP turn so its before_agent_start boundary republishes the bridge; if the mismatch persists, restart the OMP process in this pane, then retry the identical call.", false, true);
   }
   const metadataSession = tokens[BOOTSTRAP_TOKENS.sessionId];
   const officialSessionId = typeof metadataSession === "string" ? metadataSession : undefined;

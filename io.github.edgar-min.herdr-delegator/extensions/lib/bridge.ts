@@ -36,6 +36,7 @@ const MAX_PATH_BYTES = 4_096;
 let lastBootstrapSequence = 0;
 let activeBridgeRefresh: AbortController | undefined;
 let activeBridgeLoop: AbortController | undefined;
+let activeBridgeOwner: symbol | undefined;
 // The context the pane's own session speaks through, plus the identity that
 // proved itself by publishing. A subagent session runs inside this same process
 // and OMP hands its context to the very lifecycle events this bridge listens
@@ -569,6 +570,19 @@ async function refreshWithinDeadline(pi: ExtensionAPI, ctx: ExtensionContext): P
   }
 }
 
+function claimBridgeOwnership(owner: symbol): void {
+  if (activeBridgeOwner === owner) return;
+  activeBridgeLoop?.abort();
+  activeBridgeRefresh?.abort();
+  activeBridgeLoop = undefined;
+  activeBridgeRefresh = undefined;
+  latestBridgeContext = undefined;
+  declinedBridgeContext = undefined;
+  paneBridgeSessionId = undefined;
+  panePublishFailures = 0;
+  activeBridgeOwner = owner;
+}
+
 function stopBridgeRefreshLoop(): void {
   activeBridgeLoop?.abort();
   activeBridgeLoop = undefined;
@@ -583,13 +597,14 @@ function stopBridgeRefreshLoop(): void {
  * the entry-gate outage in friction bb2aec9368fa7a59. The loop now starts once,
  * reads whichever context is current, and stops only at session shutdown.
  */
-function ensureBridgeRefreshLoop(pi: ExtensionAPI): void {
+function ensureBridgeRefreshLoop(pi: ExtensionAPI, owner: symbol): void {
+  if (activeBridgeOwner !== owner) claimBridgeOwnership(owner);
   if (activeBridgeLoop) return;
   const aborter = new AbortController();
   activeBridgeLoop = aborter;
   void (async () => {
     while (await loopDelay(BOOTSTRAP_REFRESH_INTERVAL_MS, aborter.signal)) {
-      if (activeBridgeLoop !== aborter) return;
+      if (activeBridgeOwner !== owner || activeBridgeLoop !== aborter) return;
       const ctx = selectBridgeContext(pi);
       if (ctx) await refreshWithinDeadline(pi, ctx);
     }
@@ -632,14 +647,19 @@ function selectBridgeContext(pi: ExtensionAPI, ctx?: ExtensionContext): Extensio
 }
 
 export function registerOmpBridge(pi: ExtensionAPI): void {
+  const owner = Symbol("herdr-delegator OMP bridge registration");
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
+    // Extension modules can be cached across OMP session hosts. Claim before
+    // selecting a context so a resumed host cannot inherit the prior host's
+    // pane attribution, loop, or late shutdown cleanup.
+    claimBridgeOwnership(owner);
     const publisher = selectBridgeContext(pi, ctx);
     // Heartbeat before the attempt, never after it: the attempt below can fail
     // or stall, and a session that publishes nothing has no in-session way
     // back. `/reload-plugins` reloads skills, commands, agents and MCP servers
     // but never re-runs an extension, so a silent bridge stays silent for the
     // life of the session (friction bb2aec9368fa7a59).
-    ensureBridgeRefreshLoop(pi);
+    ensureBridgeRefreshLoop(pi, owner);
     if (publisher) await refreshWithinDeadline(pi, publisher);
   };
   pi.on("session_start", refresh);
@@ -647,6 +667,9 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
   pi.on("before_agent_start", refresh);
 
   pi.on("session_shutdown", async () => {
+    // A prior host may shut down after a resumed host has claimed the cached
+    // module. It must not tear down the resumed host's publisher.
+    if (activeBridgeOwner !== owner) return;
     stopBridgeRefreshLoop();
     activeBridgeRefresh?.abort();
     activeBridgeRefresh = undefined;
@@ -654,5 +677,6 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
     declinedBridgeContext = undefined;
     paneBridgeSessionId = undefined;
     panePublishFailures = 0;
+    activeBridgeOwner = undefined;
   });
 }
