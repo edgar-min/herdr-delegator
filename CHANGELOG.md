@@ -13,11 +13,47 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
-## [Unreleased]
+## [3.1.0] - 2026-08-31
 
-Attest lifecycle repairs. A born session can attest from birth, a stale mounted build
-names itself, a run whose ORCH is gone can be closed with human approval, and the
-supervision surface stops lying about blocked or empty panes.
+Spawn-by-alias and attest lifecycle repairs. Spawned sessions now resolve their
+own model from the user's persisted configuration — the creator-side role-table
+pollution class is gone with the pinning machinery itself — and a born session
+can attest from birth, a stale mounted build names itself, a run whose ORCH is
+gone can be closed with human approval, and the supervision surface stops lying
+about blocked or empty panes.
+
+### Changed
+
+- Spawn-by-alias replaces open-time role pinning: ORCH and worker spawns pass
+  the configured role alias itself (`--model @role`), and the `default` profile
+  passes no `--model` at all, so the child session expands the role against
+  persisted OMP settings. Runtime model overrides are process-local, so an
+  overridden creator or ORCH can no longer bake its own launch model into
+  anything it spawns — the successor class of 681839bff914479c, where the
+  v3.0.0 pin observation itself recorded the creator's live override as if it
+  were the user's configured default. `pinned_roles` is no longer written or
+  consulted; registries carrying it stay readable (no schema bump). The
+  pre-spawn model-expectation gate is replaced by a post-spawn observation:
+  `expected_provider`/`expected_model` are optional and record what the child
+  actually reported. Structural identity attestation (MOD-001/MOD-002) is
+  unchanged. SPEC RUN-001d inverted, RUN-004 updated, MOD-007 replaced.
+  Tradeoff by design: a misconfigured role now fails in the spawned session
+  rather than before the spawn, and there is no silent-fallback warning.
+  (friction 221abf10d2280b47)
+- MCP server launch survives stripped spawn environments: `mcp.json` invokes
+  the launcher through `sh -c` with a guaranteed `PATH`, and the launcher
+  prepends `~/.local/bin`, `~/.bun/bin`, and `/usr/local/bin` so both its Bun
+  lookup and the server's `herdr` binary discovery resolve regardless of how
+  the host spawned it. `/reload-plugins` no longer dies with
+  `posix_spawn 'sh'` or strands the reloaded server unable to find Herdr.
+  (friction 9072a9da598edd89)
+- `protocol-worker.md` names the general ring rule — ring ORCH once after any report
+  block that changes boundary state (completed, failed, blocked, decision-request) —
+  and carries the shared-worktree conventions (stage by hunk, own write window only,
+  serialize overlapping windows through channel documents). New digest appended to the
+  template allowlist. (frictions b209cc47454ae65f, f7ed8df03ca92882)
+- SPEC ARC-003 and ARCHITECTURE registration counts corrected to the five actual tool
+  registrations, consistent with ACC-002.
 
 ### Fixed
 
@@ -54,16 +90,6 @@ supervision surface stops lying about blocked or empty panes.
   and `registry_version_unsupported` names both the registry's and the mounted build's
   schema versions. The rebind itself remains OMP-core (`/reload-plugins`); that gap is
   tracked upstream. (frictions f53892758a860acf, 7b95cffa6d3cb7e5)
-
-### Changed
-
-- `protocol-worker.md` names the general ring rule — ring ORCH once after any report
-  block that changes boundary state (completed, failed, blocked, decision-request) —
-  and carries the shared-worktree conventions (stage by hunk, own write window only,
-  serialize overlapping windows through channel documents). New digest appended to the
-  template allowlist. (frictions b209cc47454ae65f, f7ed8df03ca92882)
-- SPEC ARC-003 and ARCHITECTURE registration counts corrected to the five actual tool
-  registrations, consistent with ACC-002.
 
 ## [3.0.0] - 2026-08-30
 

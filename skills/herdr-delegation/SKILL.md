@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "3.0.0"
+  version: "3.1.0"
 ---
 
 # Herdr delegation
