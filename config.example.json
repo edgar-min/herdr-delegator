@@ -10,25 +10,59 @@
   "worker_profiles": {
     "default": {
       "role": "@default",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "meticulous language work: documents, prose, review passes"
     },
     "task": {
       "role": "@task",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "code implementation under a clear specification"
     },
     "slow": {
       "role": "@slow",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "long deliberate reasoning; also the profile budget auditors run on"
     }
   },
   "skill_routing": {
     "rules": [
-      { "boundary": "plan", "surface": "orch", "skills": ["inquire"] },
-      { "boundary": "authoring", "surface": "orch", "skills": ["readchk", "shower"] },
-      { "boundary": "dispatch", "surface": "worker", "skills": ["readchk"] },
-      { "boundary": "completion", "surface": "worker", "skills": ["sip"] },
-      { "boundary": "settlement", "surface": "orch", "skills": ["gap", "factchk"] },
-      { "boundary": "reset", "surface": "orch", "skills": ["re0-memo"] }
+      {
+        "boundary": "plan",
+        "surface": "orch",
+        "skills": ["inquire"],
+        "trigger": "when the mandate leaves the plan's shape underdetermined"
+      },
+      {
+        "boundary": "authoring",
+        "surface": "orch",
+        "skills": ["readchk", "shower"],
+        "trigger": "when an assignment must execute without any chat history"
+      },
+      {
+        "boundary": "dispatch",
+        "surface": "worker",
+        "skills": ["readchk"],
+        "trigger": "when the assignment is long, bundled, or hard to undo"
+      },
+      {
+        "boundary": "completion",
+        "surface": "worker",
+        "skills": ["sip"],
+        "trigger": "when an artifact was created or changed",
+        "profiles": ["task", "default"]
+      },
+      {
+        "boundary": "settlement",
+        "surface": "orch",
+        "skills": ["gap", "factchk"],
+        "trigger": "when accepting evidence for a completion condition"
+      },
+      {
+        "boundary": "reset",
+        "surface": "orch",
+        "skills": ["re0-memo"],
+        "trigger": "when a sibling reset must inherit lessons, not code"
+      }
     ]
   }
 }

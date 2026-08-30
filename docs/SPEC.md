@@ -30,7 +30,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **CFG-002**: The user file MUST resolve to `${PI_CODING_AGENT_DIR}/herdr-delegator.json`, or `~/.omp/agent/herdr-delegator.json` when the environment variable is unset.
 - **CFG-003**: The project file MUST resolve to `<canonical-cwd>/.omp/herdr-delegator.json`.
 - **CFG-004**: The optional run file MUST resolve to `<canonical-run>/herdr-delegator.json`.
-- **CFG-005**: Later layers MUST override earlier leaves. A new worker profile MUST inherit unspecified leaves from the resolved `default` profile.
+- **CFG-005**: Later layers MUST override earlier leaves. A worker profile MUST inherit only from the same profile name already accumulated across earlier layers; cross-name inheritance MUST NOT exist. The layer that first defines a profile name MUST declare `role`, otherwise that layer MUST fail closed with `invalid_config` naming the profile and the layer file, so a misspelled profile name can never resolve to another profile's identity. A first definition without `thinking` MUST take `inherit`.
+- **CFG-005a**: A worker profile MAY carry `guidance`: bounded single-line prose stating when that profile is the right choice. It overrides by same-name layer exactly like `role` and `thinking`, and it is advisory selection criteria only — never a role, model, or authority. Blank, over-long, and control-character values MUST fail closed.
 - **CFG-006**: At least the user or project layer MUST set an absolute `storage.root`; no temporary or project-directory fallback is allowed.
 - **CFG-007**: A run layer MUST NOT relocate its own storage root.
 - **CFG-008**: Every consumed configuration layer MUST be recorded by canonical path, scope, and SHA-256.
@@ -52,20 +53,36 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 2.3 Advisory skill routing
 
-- **SRT-001**: Configuration MAY declare `skill_routing.rules` as at most 16 rules, each with exactly `boundary` from `plan | authoring | dispatch | completion | settlement | reset`, `surface` from `orch | worker`, and 1–8 skill names matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; malformed routing MUST fail closed with the rest of the layer.
+- **SRT-001**: Configuration MAY declare `skill_routing.rules` as at most 16 rules, each with `boundary` from `plan | authoring | dispatch | completion | settlement | reset`, `surface` from `orch | worker`, and 1–8 skill names matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; malformed routing MUST fail closed with the rest of the layer. A rule MAY carry `trigger`, bounded single-line prose naming when the route applies, and `profiles`, 1–8 worker profile names matching CFG-012.
+- **SRT-001a**: A rule carrying `profiles` MUST be delivered only where the delivery target's worker profile is named in the list; a rule without `profiles` MUST reach every profile. A named profile that no `worker_profiles` entry defines MUST NOT be an error and MUST simply never match, because rules and profiles may be authored in different layers. A delivery point that holds no profile — every orchestrator-surface point — MUST receive only unscoped rules, so a profile-scoped route can never reach a target whose profile is unknown.
 - **SRT-002**: A later configuration layer's `skill_routing` MUST replace the earlier layer's value as one leaf.
-- **SRT-003**: Matching routes MUST be delivered deterministically: `herdr_track init` results carry orch-surface `plan`/`authoring` routes (plus `reset` for a sibling reset), `herdr_assignment preflight` results carry orch-surface `authoring` routes, the worker dispatch prompt carries worker-surface `dispatch`/`completion` routes, and terminal assignment results carry orch-surface `settlement` routes.
+- **SRT-003**: Matching routes MUST be delivered deterministically: `herdr_track init` results carry orch-surface `plan`/`authoring` routes (plus `reset` for a sibling reset), `herdr_assignment preflight` results carry orch-surface `authoring` routes, the worker dispatch prompt carries worker-surface `dispatch`/`completion` routes filtered by the lane's assignment profile, terminal assignment results carry orch-surface `settlement` routes, and the run's guidance document (2.5) carries the orch-surface `plan`/`authoring` routes with their criteria.
 - **SRT-004**: Routes are advisory text only. They MUST NOT gate settlement, lifecycle, recovery, or any mutation; a delivered route MUST NOT be recorded or represented as proof that a skill ran.
 - **SRT-005**: Advisory route lookup MUST NOT block control flow; a failed lookup degrades to an empty route set while configuration-as-authority paths keep failing closed.
 - **SRT-006**: The shipped configuration MUST name no skills; skill names live only in user, project, or run configuration layers.
 - **SRT-007**: A result carrying non-empty `skill_routes` MUST also carry one bounded imperative `skill_routes_note` naming the skill resolution scheme (`skill://<name>` or the runtime's skill catalog); the note remains advisory text with no authority.
+
+### 2.4 Boundary judgment delivery
+
+- **JDG-001**: A field or boundary whose right value is a situational judgment MUST deliver the judgment criteria at that boundary. Published constants MUST remain stated contract facts and MUST NOT be phrased as recommendations, defaults to accept, or the value to use. The binding surfaces are schema `describe` text, the run guidance document, and the worker dispatch pointer.
+- **JDG-002**: A bound or fallback MUST be stated as what it is — a ceiling, a clamp, or a fallback — beside the criterion for choosing within it. A describe text MUST NOT invite omission of a field whose declared value is the judgment being asked for.
+- **JDG-003**: Judgment criteria are advisory material. They MUST NOT gate settlement, lifecycle, recovery, or any mutation, and their absence MUST NOT block an operation.
+
+### 2.5 Run guidance document
+
+- **GDE-001**: `herdr_track open` and both `revive` modes MUST render `<run>/guidance.md` from the resolved configuration before the ORCH spawn, so a born or revived ORCH reads the configuration current at that spawn.
+- **GDE-002**: The document MUST carry exactly two kinds of criteria: the orchestrator-surface `plan` and `authoring` routes — skill name, configured `trigger` when present, and the description read at render time from the installed skill's `SKILL.md` frontmatter — and a worker-profile table of configured name, configured role alias, and `guidance` text when present, with the shipped fact that `slow` is also the budget-auditor profile (BUD-009). It MUST NOT resolve or publish providers or concrete models.
+- **GDE-003**: A skill whose `SKILL.md` cannot be found or read MUST degrade to the skill name, its trigger, and a `skill://<name>` pointer the reading session can resolve itself; runtime-managed skills exist on no filesystem root and are reachable only that way. An absent route set or a profile without criteria MUST render an explicit "None configured" line rather than silence.
+- **GDE-004**: Rendering MUST be best-effort and MUST NOT block a spawn. A render failure MUST produce a document naming what could not be rendered, and a write failure MUST surface as a result warning only.
+- **GDE-005**: The ORCH's first prompt MUST name the document as a third, explicitly advisory document whenever the run holds one, and MUST keep its two-document form on a run that holds none. The document MUST NOT change scope, authority, ownership, immutable files, completion conditions, settlement, or recovery.
+- **GDE-006**: The document is a rendered artifact, not run state: it MUST add no `run.json` key, MUST NOT appear in the open result payload, and every run layout, manifest, and reconcile check MUST tolerate both its presence and its absence.
 
 ## 3. Deterministic storage and authority
 
 - **STO-001**: The canonical run path MUST be `<storage.root>/<track_id>/<run_id>` and MUST be derived rather than accepted from callers.
 - **STO-002**: Canonical directory identity MUST be verified; symlink and path conflicts MUST fail closed.
 - **STO-003**: `run.json` MUST conform to [`run.schema.json`](../run.schema.json), bind run coordinates to canonical `cwd` and `run_path`, and reject unknown fields.
-- **STO-004**: `herdr_track {action:"init"}` MUST create or exactly reconcile only the run manifest, the bundled protocol set (`protocol.md`, `protocol-orch.md`, and `protocol-worker.md`), `a2a/`, the storage index row, and reset artifacts when requested.
+- **STO-004**: `herdr_track {action:"init"}` MUST create or exactly reconcile only the run manifest, the bundled protocol set (`protocol.md`, `protocol-orch.md`, and `protocol-worker.md`), `a2a/`, the storage index row, and reset artifacts when requested. `guidance.md` MUST NOT be created by `init` and MUST be accepted as an optional run file when a previous `open` or `revive` rendered it.
 - **STO-005**: Initialization MUST NOT create placeholder plans, assignments, reports, evidence, registries, workspaces, tabs, panes, or OMP sessions.
 - **STO-006**: Existing `protocol.md`, `protocol-orch.md`, and `protocol-worker.md` MUST each match a digest this project has shipped for that document — byte-identical to the installed template, or a previously shipped version accepted with a named drift warning. Any other content MUST fail closed, and no template change MUST strand an existing run.
 - **STO-007**: `<storage.root>/index.json` MUST be strict version 1, atomic, lock-guarded, and consistent with the run manifest.
@@ -186,7 +203,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **BUD-004**: The budget MUST be judged at every guarded op. While parked, only a landing allowlist MUST run: assignment `wait`, worker `close`, track `close`, `budget_extend`, doorbells, and read-only actions. A queued head MUST NOT be dispatched, and `add` and worker `resume` MUST fail `budget_parked`.
 - **BUD-005**: Park reasons MUST be exactly `over-cap`, `audit-unavailable`, `clamp-unreadable`, `approval-required`, `denied`, recorded in the registry with a bounded detail, appended to the append-only ledger, and marked on the ORCH pane name.
 - **BUD-006**: A parked run MUST resume automatically at the next guarded op whose judgment is no longer over the ceiling.
-- **BUD-007**: The mandate MAY declare a seed (`tokens`, `minutes`, `doorbell_policy`) as an estimate, never a contract; an undeclared seed MUST fall back to documented defaults so no run spends unbounded without ever justifying itself.
+- **BUD-007**: The mandate MAY declare a seed (`tokens`, `minutes`, `doorbell_policy`) as an estimate calibrated to the mandate's scope, never a contract. An undeclared seed MUST fall back to documented defaults of 500,000 tokens and 30 minutes so no run spends unbounded without ever justifying itself. Those fallbacks are deliberately tight — roughly the generative throughput of an ORCH plus one lane over half an hour of focused work — so a nontrivial undeclared run is expected to park early and justify itself; per JDG-002 they MUST be published as fallbacks rather than as values to accept by omission.
 - **BUD-008**: `budget_extend` MUST require a bounded justification, MUST be limited to at most +50% of the granted cap per extension, MUST NOT arrive within the published minimum interval of the previous extension, and MUST grant nothing without a recorded verdict.
 - **BUD-009**: The server — never the ORCH — MUST spawn the auditor as a clean session on the `slow` worker profile, seed its document with the request and machine facts, and record the verdict server-side. The auditor MUST NOT be a responsibility lane, MUST NOT be addressable by the ORCH, and MUST be closed once settled, with unclosed auditors swept at later budget ops.
 - **BUD-010**: A verdict MUST be `grant`, `partial`, or `deny`. A grant MUST move both the token and wall-clock dimensions. A deny MUST park the run and MUST end the ladder at the user: a further extension MUST be refused until the human-owned clamp file changes.
@@ -310,6 +327,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ARC-006**: `mcp/registry.ts` MUST own immutable assignment parsing, responsibility routing, FIFO lane state, and minimal delegation registry.
 - **ARC-007**: `mcp/tools.ts` MUST own composite track, assignment, and worker transactions and consume internal lifecycle authority without exposing it as another public surface.
 - **ARC-008**: Existing configuration, runtime, worker, and track lifecycle modules MAY remain internal implementation dependencies; their old operations MUST NOT appear as public tools.
+- **ARC-009**: `io.github.edgar-min.herdr-delegator/extensions/lib/guidance.ts` MUST own guidance-document rendering and materialization, and MUST expose no throwing path to a spawn caller.
+- **ARC-010**: `scripts/check-templates.ts` MUST fail the repository check when an installed protocol template's digest is absent from its own shipped-digest allowlist, or when a list is unsorted or duplicated.
 
 ## 13. Observable acceptance scenarios
 
@@ -324,7 +343,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ACC-009 — Answer without a response action**: An `[ORCH Response]` append plus `wake_worker` reaches an idle worker and an input-waiting one alike; no response tool action exists to reject a stale sequence.
 - **ACC-010 — Budget cadence**: Crossing the cap parks the run with a named reason, ledger entry, and pane marker; `add` is refused while `wait` and `close` still land work; an extension's verdict is recorded server-side before the cap moves; a deny routes to the user and is not re-auditable until the clamp changes.
 - **ACC-010a — Revival**: A resume reconnects the recorded birth session with no new generation; a rebirth is refused without the user's approval file, sufficient documents, an ambiguity-free run, and a non-live ORCH.
-- **ACC-010b — Template compatibility**: A run materialized from a previously shipped protocol set still reconciles and still revives, with a named drift warning.
+- **ACC-010b — Template compatibility**: A run materialized from a previously shipped protocol set still reconciles and still revives, with a named drift warning; the repository check fails when an installed template's digest is missing from its allowlist.
+- **ACC-010c — Guidance delivery**: An `open` on a configuration carrying orchestrator-surface routes and profile criteria produces a `guidance.md` with those criteria and a first prompt naming three documents; an empty configuration renders explicit "None configured" sections; a forced render failure still opens the track and names the failure in the document; a run without the document passes layout validation unchanged.
 - **ACC-011 — Completion retention**: A verified completion block stores report hash, returns the lane to idle, records last completion, and leaves the worker tab/session open.
 - **ACC-012 — Exact resume**: Resume succeeds only for the registry-bound, persisted-verified, non-duplicated official session.
 - **ACC-013 — Sidebar-aware close**: A settled lane closes only with the registry root pane and verified Sidebar auxiliaries; mixed or unproved topology fails closed.
@@ -366,6 +386,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Persisted `prompted_at`, `elapsed_ms`, `token_usage`, `advisory_unowned_changes`, lifecycle activity fields, and compatibility parsing match registry and lifecycle source bounds.
 - [ ] Public `assignment.settlement`, worker `staleness`, and track `totals` fields match `mcp/contracts.ts` and `mcp/tools.ts`, including overflow-triggered saturation.
 - [ ] The ownership audit command, 2-second/128-KiB/64-path bounds, fail-open behavior, and no-attribution contract match source.
+- [ ] Same-name-only profile inheritance, the first-definition `role` requirement, and the bounded `guidance`/`trigger`/`profiles` fields match `extensions/lib/config.ts` and `config.schema.json`.
+- [ ] Guidance rendering, its degrade paths, the `skill://` pointer, and the profile-filtered dispatch delivery match `extensions/lib/guidance.ts`, `extensions/lib/config.ts`, and `mcp/tools.ts`.
+- [ ] Every schema `describe` text states its constants as facts and carries the judgment criterion for the field it documents (JDG-001).
 
 ### Live behavior to verify
 

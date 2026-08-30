@@ -137,6 +137,7 @@ The model never supplies this path directly.
   protocol.md
   protocol-orch.md
   protocol-worker.md
+  guidance.md
   plan.md
   evidence.md
   a2a/
@@ -149,7 +150,7 @@ The model never supplies this path directly.
     w<N>-report.md
 ```
 
-`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders.
+`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders. `guidance.md` is rendered by `open` and by both `revive` modes, never by `init`, and every layout and reconcile check tolerates its absence so runs created before it still load.
 
 `delegation.json` is the minimal responsibility/assignment routing authority. `herdr-workers.json` remains the lifecycle identity/session/workspace authority. Both and their locks are tool-owned, mode-0600 control-plane files.
 
@@ -228,7 +229,9 @@ Every action also includes `track_id` and `run_id`. Strict discriminated schemas
 
 ### Advisory skill routes
 
-Configuration may declare `skill_routing.rules` (boundary × surface × skill names). The MCP layer deterministically surfaces matching rules as `skill_routes` in `init`, `preflight`, and terminal assignment results, and appends worker-surface `dispatch`/`completion` routes to the dispatch prompt pointer. Route lookup never blocks control flow and routes carry no authority: they are bounded advisory text for skill discovery, not invocation proof or settlement input. The shipped plugin names no skill pack; names live only in user/project/run configuration.
+Configuration may declare `skill_routing.rules` (boundary × surface × skill names, with an optional `trigger` line and an optional `profiles` scope). The MCP layer deterministically surfaces matching rules as `skill_routes` in `init`, `preflight`, and terminal assignment results, and appends worker-surface `dispatch`/`completion` routes to the dispatch prompt pointer, filtered by the lane's assignment profile — read from the canonical assignment artifact, so an unreadable artifact narrows delivery to unscoped rules instead of widening it. Route lookup never blocks control flow and routes carry no authority: they are bounded advisory text for skill discovery, not invocation proof or settlement input. The shipped plugin names no skill pack; names live only in user/project/run configuration.
+
+The run's `guidance.md` is the third delivery surface, rendered from resolved configuration at `open` and at both revival modes and named as an advisory third document in the ORCH's first prompt. It carries the orchestrator-surface `plan`/`authoring` routes with each skill's `trigger` and its description read from the installed `SKILL.md` frontmatter, plus the worker-profile selection table (configured name, role alias, `guidance`). Descriptions resolve by walking the runtime's skill roots, so a runtime-managed skill — which exists on no filesystem root — degrades to a `skill://<name>` pointer the reading session resolves natively; that pointer is the only delivery path for those skills. Rendering is best-effort: a failure becomes a document naming the failure, a failed write becomes a result warning, and neither can fail a spawn.
 
 ## State and transitions
 

@@ -77,27 +77,42 @@ Project values override user values. A run-local configuration may override prof
   "worker_profiles": {
     "default": {
       "role": "@default",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "meticulous language work, documents, and review passes"
     },
     "task": {
       "role": "@task",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "code implementation under a clear specification"
     },
     "slow": {
       "role": "@slow",
-      "thinking": "inherit"
+      "thinking": "inherit",
+      "guidance": "long deliberate reasoning; also the profile budget auditors run on"
     }
   },
   "skill_routing": {
     "rules": [
-      { "boundary": "authoring", "surface": "orch", "skills": ["readchk", "shower"] },
-      { "boundary": "completion", "surface": "worker", "skills": ["sip"] }
+      {
+        "boundary": "authoring",
+        "surface": "orch",
+        "skills": ["readchk", "shower"],
+        "trigger": "when an assignment must execute without chat history"
+      },
+      {
+        "boundary": "completion",
+        "surface": "worker",
+        "skills": ["sip"],
+        "profiles": ["task"]
+      }
     ]
   }
 }
 ```
 
-Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. Worker lane profiles are exactly `default`, `task`, and `slow`, and select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
+Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. The built-in worker profiles are `default`, `task`, and `slow`; you may define more, and the layer that first defines a profile name must give it a `role` — a profile never inherits another profile's identity, so a misspelled name fails the layer instead of silently running on `@default`. Profiles select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
+
+Each profile may carry `guidance`: one line saying when that profile is the right choice. It is the answer to "which profile does this assignment want?", delivered to the ORCH that has to decide (see below), and it never resolves a role or a model.
 
 Every ORCH is born pre-aligned: `herdr_track open` spawns it with the configured role's `--model`/`--thinking`, so no session ever has to align itself and there is no alignment command. `orchestrator_model_mismatch` therefore fires only if the session dispatching work has drifted off that role, and the error names both sides plus the remedies.
 
@@ -106,6 +121,16 @@ Role resolution is pinned at open: `herdr_track open` records the opening sessio
 ### Advisory skill routing
 
 Optional `skill_routing.rules` (at most 16) route installed skills to protocol boundaries. `boundary` is one of `plan`, `authoring`, `dispatch`, `completion`, `settlement`, `reset`; `surface` is `orch` or `worker`; each rule names 1–8 skills. The plugin ships no skill names — rules live in user, project, or run configuration, so any skill pack plugs in without touching the plugin. Matching routes are delivered deterministically as `skill_routes` plus an imperative `skill_routes_note` in tool results (`init`, `preflight`, terminal assignment results) and inside the worker dispatch prompt; the note names the `skill://<name>` resolution scheme. Routes are advisory only: they raise discovery reliability, never gate settlement or lifecycle, and never prove a skill ran.
+
+A rule may add two optional fields. `trigger` is one line saying when the route applies — the criterion the reading session judges against, not just the skill's name. `profiles` narrows a rule to named worker profiles: a rule listing `["slow"]` reaches a slow lane's dispatch and no other, while a rule without `profiles` reaches every lane. Unknown profile names are tolerated rather than rejected, because rules and profiles may live in different layers; such a rule simply never matches. A delivery point that holds no profile — every orchestrator-surface result — receives only unscoped rules.
+
+### The run's guidance document
+
+Routed skill names alone do not tell an orchestrator when to reach for them, and nothing tells it what your `task` profile is actually for. So `herdr_track open` renders `<run>/guidance.md` from your resolved configuration before the ORCH is spawned, and the ORCH's first prompt names it as a third, explicitly advisory document. It carries the orchestrator-surface `plan`/`authoring` routes — skill name, your `trigger`, and the skill's own description read from its installed `SKILL.md` — and a table of every configured profile with its role alias and `guidance` line. Both `revive` modes re-render it, so a revived ORCH sees the configuration that is current now.
+
+Rendering is best-effort and never blocks a birth: a skill whose `SKILL.md` cannot be found degrades to a `skill://<name>` pointer the ORCH resolves itself (runtime-managed skills live on no filesystem path, so that pointer is the only way to reach them), an empty configuration renders explicit "None configured" lines, and a failed render produces a document that names what it could not render. The document is advisory throughout: it changes no scope, ownership, or completion condition.
+
+This closes a loop you can drive: when a boundary went badly because a skill was never reached for, record it with `herdr_friction`, add or adjust one `skill_routing` rule (with a `trigger` that names the situation you just hit) or one profile `guidance` line, and the next `open` or `revive` delivers that judgment at the boundary where it was missing — live, without touching the plugin.
 
 Treat a routing rule like a dependency declaration: routed skill names become instructions executed inside your ORCH and worker sessions, so route only a skill pack you trust — or better, skills you wrote and vetted yourself. The routing layer is where this plugin compounds: a small set of boundary-matched skills (context inquiry at `plan`, review passes at `settlement`) measurably tightens delegation quality without touching the plugin.
 
@@ -172,6 +197,8 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 - `budget_extend`: a bounded justification (`done`, `remaining`, `why_more`), optional `requested_tokens`.
 - `revive`: optional `mode` — `resume` reconnects the recorded birth session, `rebirth` starts generation+1 with the user's written approval.
 - `close`: requires a fresh registry revision and safely closes a fully settled track.
+
+Declare the `budget` seed rather than leaving it out: `tokens` and `minutes` are your estimate of what this mandate's scope should take, not a ceiling to wish for, and crossing the estimate parks the run until the ORCH justifies an extension — it never kills a session. An undeclared seed falls back to 500,000 tokens and 30 minutes, which is deliberately tight: the fallback exists so the audit cadence still means something, not so a real track fits inside it, and a nontrivial run that declares nothing will park early.
 
 ### `herdr_assignment`
 
