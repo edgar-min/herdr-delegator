@@ -185,13 +185,15 @@ async function sessionTokens(sessionPath: string): Promise<number | undefined> {
       // Context-size basis: a session is judged by its HIGH-WATER context size
       // — the max over assistant turns of input + cacheRead + cacheWrite +
       // output + reasoningTokens — so each token counts once, at its first
-      // appearance in the transcript. Charging cacheRead per turn re-bills the
-      // whole retained context every turn (friction d5dc8d0ebf17472a, audit 1
-      // of herdr-redesign/r1 denied on that arithmetic); summing cacheWrite
-      // cumulatively re-bills long-lived lanes for re-caching the same context
-      // (friction 7786fb331e176bcf) and cliffs when settlement sweeps re-meter
-      // (friction 3cb0593e3a9bccd7). Compaction shrinks the live context but
-      // cannot lower the high-water mark already observed.
+      // appearance in the transcript (the four context fields are disjoint:
+      // their sum equals OMP's own `totalTokens`). Charging cacheRead per turn
+      // re-bills the whole retained context every turn (friction
+      // d5dc8d0ebf17472a, audit 1 of herdr-redesign/r1 denied on that
+      // arithmetic); summing cacheWrite cumulatively re-bills long-lived lanes
+      // for re-caching the same context (friction 7786fb331e176bcf) and cliffs
+      // when settlement sweeps re-meter (friction 3cb0593e3a9bccd7). Compaction
+      // shrinks the live context but cannot lower the high-water mark already
+      // observed.
       let turn = 0;
       for (const name of ["input", "cacheRead", "cacheWrite", "output", "reasoningTokens"]) {
         const value = usage[name];
