@@ -3,9 +3,11 @@
   "mcpServers": {
     "herdr-delegator": {
       "type": "stdio",
-      "command": "${PLUGIN_ROOT}/bin/herdr-delegator-mcp",
-      "args": [],
-      "cwd": "${PLUGIN_ROOT}"
+      "command": "sh",
+      "args": ["-c", "exec \"${PLUGIN_ROOT:-.}/bin/herdr-delegator-mcp\""],
+      "env": {
+        "PATH": "/usr/bin:/bin"
+      }
     }
   }
 }
