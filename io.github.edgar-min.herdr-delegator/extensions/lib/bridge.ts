@@ -36,7 +36,24 @@ const MAX_PATH_BYTES = 4_096;
 let lastBootstrapSequence = 0;
 let activeBridgeRefresh: AbortController | undefined;
 let activeBridgeLoop: AbortController | undefined;
+// The context the pane's own session speaks through, plus the identity that
+// proved itself by publishing. A subagent session runs inside this same process
+// and OMP hands its context to the very lifecycle events this bridge listens
+// to, so an ungated capture let a subagent become the publication identity for
+// the rest of the turn: publication then failed the pane-convergence gate every
+// tick, the pane's tokens aged past their TTL, and every guarded op in that
+// window failed attest (friction 15ca828baf1b9d96, observed live on two panes).
 let latestBridgeContext: ExtensionContext | undefined;
+let paneBridgeSessionId: string | undefined;
+// Newest context this bridge declined to adopt, and whether the pinned identity
+// has since failed to publish. A declined context is never published from while
+// the pin still works — that is the subagent case. It gets its turn only after
+// an attempt under the pin fails, because that failure is the only evidence
+// that the pin may no longer be the pane's session (an unannounced session
+// change). A fallback still has to pass the same native convergence gate, so
+// recovery costs one tick and never a human step.
+let declinedBridgeContext: ExtensionContext | undefined;
+let panePublishFailures = 0;
 
 type ConcreteModel = { provider: string; model: string };
 
@@ -401,6 +418,7 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
   const aborter = new AbortController();
   activeBridgeRefresh = aborter;
   let targetPaneId: string | undefined;
+  let attemptSessionId: string | undefined;
   try {
     if (process.env.HERDR_ENV !== "1") {
       throw new Error("The current OMP session is not running in Herdr.");
@@ -410,6 +428,7 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
       throw new Error("The current OMP session exposed an unbounded Herdr pane identity.");
     }
     const sessionId = ctx.sessionManager.getSessionId();
+    attemptSessionId = isBoundedToken(sessionId) ? sessionId : undefined;
     const reportedSessionPath = ctx.sessionManager.getSessionFile();
     const cwd = ctx.cwd;
     const thinking = pi.getThinkingLevel();
@@ -481,12 +500,27 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     };
     await reportBootstrapMetadata(binary, targetPaneId, fact, aborter.signal);
     await writeFactAtomic(fact);
+    // Publication is the only proof of pane ownership: it required a unique
+    // Herdr pane whose native `agent_session` identifies this session id. So the
+    // identity that just published becomes the one this bridge speaks as, and
+    // the context that carried it becomes the context later ticks reuse.
+    paneBridgeSessionId = sessionId;
+    panePublishFailures = 0;
+    latestBridgeContext = ctx;
+    if (declinedBridgeContext === ctx) declinedBridgeContext = undefined;
   } catch (error) {
     if (!aborter.signal.aborted) {
       pi.logger.warn("herdr-delegator OMP bridge refresh failed", {
         error: compactMessage(error instanceof Error ? error.message : error, "OMP bridge refresh failed."),
         pane_id: targetPaneId,
       });
+      // Attribution decides who publishes next. A failure under the pinned
+      // identity is the only evidence that the pin may have stopped being the
+      // pane's session, so it opens the door to the declined context; a failure
+      // by the declined context proves it is not the pane either, so it is
+      // dropped and the pin keeps the heartbeat.
+      if (attemptSessionId !== undefined && attemptSessionId === paneBridgeSessionId) panePublishFailures += 1;
+      else if (paneBridgeSessionId !== undefined) declinedBridgeContext = undefined;
     }
   } finally {
     if (activeBridgeRefresh === aborter) activeBridgeRefresh = undefined;
@@ -556,22 +590,57 @@ function ensureBridgeRefreshLoop(pi: ExtensionAPI): void {
   void (async () => {
     while (await loopDelay(BOOTSTRAP_REFRESH_INTERVAL_MS, aborter.signal)) {
       if (activeBridgeLoop !== aborter) return;
-      const ctx = latestBridgeContext;
+      const ctx = selectBridgeContext(pi);
       if (ctx) await refreshWithinDeadline(pi, ctx);
     }
   })();
 }
 
+/**
+ * Adopts a lifecycle context only when it can be the pane's own session, and
+ * answers which context the next publication attempt should use.
+ *
+ * Before any identity has published, every context is a candidate: publication
+ * itself is the gate, and it fails safe under a foreign identity. Once an
+ * identity has published, a context carrying a different session id is a
+ * different session inside this process — a subagent — and it is remembered
+ * without displacing the pane. It becomes the publisher only after an attempt
+ * under the pin has failed, since that failure is the only evidence that the pin
+ * may have stopped being the pane's session.
+ */
+function selectBridgeContext(pi: ExtensionAPI, ctx?: ExtensionContext): ExtensionContext | undefined {
+  let eventSessionId: string | undefined;
+  if (ctx) {
+    const sessionId = ctx.sessionManager.getSessionId();
+    eventSessionId = isBoundedToken(sessionId) ? sessionId : undefined;
+    if (paneBridgeSessionId === undefined || sessionId === paneBridgeSessionId) {
+      latestBridgeContext = ctx;
+      declinedBridgeContext = undefined;
+    } else {
+      declinedBridgeContext = ctx;
+    }
+  }
+  const publisher =
+    panePublishFailures > 0 && declinedBridgeContext ? declinedBridgeContext : latestBridgeContext ?? declinedBridgeContext;
+  if (ctx && publisher !== ctx) {
+    pi.logger.debug("herdr-delegator OMP bridge kept the pane session as its publication identity", {
+      pane_session_id: paneBridgeSessionId,
+      event_session_id: eventSessionId,
+    });
+  }
+  return publisher;
+}
+
 export function registerOmpBridge(pi: ExtensionAPI): void {
   const refresh = async (_event: unknown, ctx: ExtensionContext) => {
-    latestBridgeContext = ctx;
+    const publisher = selectBridgeContext(pi, ctx);
     // Heartbeat before the attempt, never after it: the attempt below can fail
     // or stall, and a session that publishes nothing has no in-session way
     // back. `/reload-plugins` reloads skills, commands, agents and MCP servers
     // but never re-runs an extension, so a silent bridge stays silent for the
     // life of the session (friction bb2aec9368fa7a59).
     ensureBridgeRefreshLoop(pi);
-    await refreshWithinDeadline(pi, ctx);
+    if (publisher) await refreshWithinDeadline(pi, publisher);
   };
   pi.on("session_start", refresh);
   pi.on("session_switch", refresh);
@@ -582,5 +651,8 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
     activeBridgeRefresh?.abort();
     activeBridgeRefresh = undefined;
     latestBridgeContext = undefined;
+    declinedBridgeContext = undefined;
+    paneBridgeSessionId = undefined;
+    panePublishFailures = 0;
   });
 }
