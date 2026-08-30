@@ -24,9 +24,10 @@ export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 // tool-owned file (friction 8c1e0ea5). Reading accepts every version in
 // SUPPORTED_DELEGATION_VERSIONS; writing always emits the current one. Version 2
 // is version 1 plus the optional `budget` record and a birth's optional
-// `approval_sha256`, so an upgrade changes no existing field's meaning.
-export const DELEGATION_VERSION = 2 as const;
-export const SUPPORTED_DELEGATION_VERSIONS = [1, 2] as const;
+// `approval_sha256`; version 3 adds the optional `pinned_roles` record. Each
+// upgrade only adds optional fields, so no existing field changes meaning.
+export const DELEGATION_VERSION = 3 as const;
+export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3] as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
 // Inter-run conversation (identity/comms redesign, decisions 10-12). A doorbell
@@ -85,7 +86,8 @@ export type Effect = "none" | "confirmed" | "ambiguous";
 export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "budget" | "settlement" | "resume" | "close";
 export type AssignmentState = "queued" | "prompting" | "working" | "blocked" | "completed" | "failed" | "ambiguous";
 export type LaneState = "starting" | "idle" | "working" | "blocked" | "resume-needed" | "closing" | "closed" | "failed";
-export type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "auto";
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"] as const;
+export type Thinking = (typeof THINKING_LEVELS)[number];
 export type RunRef = { track_id: string; run_id: string };
 export type MessageBoundary = (typeof MESSAGE_BOUNDARIES)[number];
 export type FrictionKind = (typeof FRICTION_KINDS)[number];
@@ -250,6 +252,27 @@ export type OrchCreatorRecord = {
   opened_at: string;
 };
 
+// Role-table pinning (friction 681839bff914479c). `herdr_track open` records the
+// creator session's entire observed role table (bridge facts `roles`) so that
+// spawn resolution inside born sessions — where OMP collapses every role to the
+// session override, polluting `@default` — reads the creator's configuration
+// instead of the born session's live modelRoles. The table is an input to
+// resolution, never a relaxation of MOD-001/MOD-002 verification: spawns still
+// pin explicit `--model`/`--thinking` and bootstrap verification is unchanged.
+// A role absent from the table (or a pre-v3 registry without one) degrades
+// per-role to live resolution with a warning; never fail-closed.
+export type PinnedRoleModel = {
+  provider: string;
+  model: string;
+  thinking?: Thinking;
+};
+export type PinnedRolesRecord = {
+  roles: Record<string, PinnedRoleModel>;
+  observed_session_id: string;
+  observed_at: string;
+  source: string;
+};
+
 export type MandateBudget = {
   tokens?: number;
   minutes?: number;
@@ -342,13 +365,14 @@ export type DelegationRegistry = {
   lanes: Record<string, WorkerLaneRecord>;
   orch_births?: OrchBirthRecord[];
   orch_creator?: OrchCreatorRecord;
+  pinned_roles?: PinnedRolesRecord;
   budget?: BudgetRecord;
   assignments: Record<string, AssignmentRecord>;
   created_at: string;
   updated_at: string;
 };
 
-const thinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]);
+const thinkingSchema = z.enum(THINKING_LEVELS);
 const boundedTokenSchema = z.string().min(1).max(80).regex(BOUNDED_TOKEN_RE);
 const concreteModelSchema = z.object({ provider: boundedTokenSchema, model: boundedTokenSchema }).strict();
 // The bridge annotates a role with its bound thinking level when one is

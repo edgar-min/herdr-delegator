@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, readdir, realpath, stat } from "node:fs/promise
 import path from "node:path";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -42,6 +42,24 @@ function validOrchCreator(value: unknown): value is OrchCreatorRecord {
     typeof value.pane_id === "string" && value.pane_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.pane_id) &&
     typeof value.mandate_sha256 === "string" && SHA256_RE.test(value.mandate_sha256) &&
     typeof value.opened_at === "string" && value.opened_at.length <= 64;
+}
+const PINNED_ROLES_KEYS = ["roles", "observed_session_id", "observed_at", "source"] as const;
+const PINNED_ROLE_MODEL_KEYS = ["provider", "model", "thinking"] as const;
+
+function validPinnedRoles(value: unknown): value is PinnedRolesRecord {
+  return isRecord(value) &&
+    exactKeys(value, PINNED_ROLES_KEYS) &&
+    isRecord(value.roles) &&
+    Object.entries(value.roles).every(([role, model]) =>
+      ROLE_RE.test(role) &&
+      isRecord(model) &&
+      onlyKeys(model, PINNED_ROLE_MODEL_KEYS) &&
+      typeof model.provider === "string" && model.provider.length >= 1 && model.provider.length <= 80 && BOUNDED_TOKEN_RE.test(model.provider) &&
+      typeof model.model === "string" && model.model.length >= 1 && model.model.length <= 80 && BOUNDED_TOKEN_RE.test(model.model) &&
+      (model.thinking === undefined || (typeof model.thinking === "string" && (THINKING_LEVELS as readonly string[]).includes(model.thinking)))) &&
+    typeof value.observed_session_id === "string" && value.observed_session_id.length <= 80 && BOUNDED_TOKEN_RE.test(value.observed_session_id) &&
+    typeof value.observed_at === "string" && value.observed_at.length <= 64 &&
+    typeof value.source === "string" && value.source.length >= 1 && value.source.length <= 80;
 }
 const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "started_at"] as const;
 const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
@@ -204,7 +222,7 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
   // Version first, and with its own error: a server that predates a schema growth
   // must say so, because "malformed" sent an agent to repair a healthy tool-owned
   // file (friction 8c1e0ea5). Unknown-key rejection stays exact within a version.
-  if (isRecord(value) && typeof value.version === "number" && !SUPPORTED_DELEGATION_VERSIONS.includes(value.version as 1 | 2)) {
+  if (isRecord(value) && typeof value.version === "number" && !(SUPPORTED_DELEGATION_VERSIONS as readonly number[]).includes(value.version)) {
     throw new McpContractError(
       "registry_version_unsupported",
       `delegation.json declares schema version ${value.version}; this server supports ${SUPPORTED_DELEGATION_VERSIONS.join(", ")}.`,
@@ -216,7 +234,7 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
       value.version > DELEGATION_VERSION,
     );
   }
-  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator", "budget"]) || requiredKeys.some((key) => value[key] === undefined) || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
+  if (!isRecord(value) || !onlyKeys(value, [...requiredKeys, "orch_births", "orch_creator", "pinned_roles", "budget"]) || requiredKeys.some((key) => value[key] === undefined) || value.owner !== "herdr-delegator" || value.run_path !== runPath || !Number.isInteger(value.revision) || !isRecord(value.responsibilities) || !isRecord(value.lanes) || !isRecord(value.assignments)) {
     throw new McpContractError("delegation_registry_invalid", "delegation.json is malformed or belongs to another run.", "storage", "If this server is older than the fields the file carries, respawn it with /reload-plugins first — a stale reader reports a healthy registry as malformed. Otherwise preserve the registry and repair it from verified evidence; never hand-edit a tool-owned file to make a call succeed.");
   }
   if (value.orch_births !== undefined && (!Array.isArray(value.orch_births) || !value.orch_births.every((birth, index) => validOrchBirth(birth, index)))) {
@@ -224,6 +242,9 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
   }
   if (value.orch_creator !== undefined && !validOrchCreator(value.orch_creator)) {
     throw new McpContractError("delegation_registry_invalid", "The ORCH creator record is malformed.", "storage", "Repair the creator record from the opening session's verified attestation, or remove it to reopen the track.");
+  }
+  if (value.pinned_roles !== undefined && !validPinnedRoles(value.pinned_roles)) {
+    throw new McpContractError("delegation_registry_invalid", "The pinned role table is malformed.", "storage", "Repair the pinned role table from the creator session's verified bridge facts, or remove it to fall back to live role resolution.");
   }
   if (value.budget !== undefined && !validBudget(value.budget)) {
     throw new McpContractError("delegation_registry_invalid", "The budget record is malformed.", "storage", "Preserve the registry and the budget ledger, then repair the record from the ledger's recorded extensions and verdicts; never widen a cap by hand.");
@@ -297,9 +318,9 @@ export class DelegationStore {
       const result = await operation(registry);
       registry.revision += 1;
       registry.updated_at = nowIso();
-      // Writes always emit the current schema version, so a version-1 file is
-      // upgraded the first time anything mutates it. Version 2 only adds optional
-      // fields, so the upgrade changes no existing field's meaning.
+      // Writes always emit the current schema version, so an older file is
+      // upgraded the first time anything mutates it. Versions 2 and 3 only add
+      // optional fields, so the upgrade changes no existing field's meaning.
       registry.version = DELEGATION_VERSION;
       // Validate before writing, not only on the next read. The fail-closed
       // gate is the same one, but running it here attributes a malformed record
