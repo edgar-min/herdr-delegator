@@ -1060,6 +1060,7 @@ export class CompositeTools {
       `seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} min (declared estimate, not a contract)`,
       `doorbell policy: ${seeded.doorbell_policy}`,
       `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
+      "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
     // Advisory delivery surface, never a gate: the document is rendered (or
     // degrades to a document naming its own failure) before the spawn, and only
@@ -1287,7 +1288,31 @@ export class CompositeTools {
       });
       await this.budgetDoorbell(store, run, registry, resumed.budget ?? record, "resumed", [detail]);
     }
-    if (!reason) return { metering, parked: false };
+    if (!reason) {
+      // Approach warning: one doorbell at 80% of the effective cap, without
+      // parking. The armed state lives in the server-owned record and re-arms
+      // only when the effective cap changes (clamp edit or granted extension).
+      const warned = record.approach_warned;
+      const capChanged = warned !== undefined && (warned.cap_tokens !== metering.cap_tokens || warned.cap_minutes !== metering.cap_minutes);
+      const approaching = metering.judged_tokens >= metering.cap_tokens * 0.8 || metering.elapsed_minutes >= metering.cap_minutes * 0.8;
+      if (approaching && (warned === undefined || capChanged)) {
+        const stamped = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+          const current = next.budget ?? seedBudget(undefined, next.created_at);
+          current.approach_warned = { cap_tokens: metering.cap_tokens, cap_minutes: metering.cap_minutes, warned_at: nowIso() };
+          next.budget = current;
+        });
+        await this.budgetDoorbell(store, run, stamped, stamped.budget ?? record, "approaching (80% of cap)", [detail]);
+      } else if (!approaching && capChanged) {
+        // The cap moved and spend sits below the threshold again: drop the
+        // stale marker so the next crossing rings once more.
+        await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+          const current = next.budget ?? seedBudget(undefined, next.created_at);
+          delete current.approach_warned;
+          next.budget = current;
+        });
+      }
+      return { metering, parked: false };
+    }
     if (action === "wait" || action === "close") return { metering, parked: true };
     throw new McpContractError(
       "budget_parked",
@@ -1296,7 +1321,7 @@ export class CompositeTools {
       reason === "clamp-unreadable"
         ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
         : reason === "denied"
-          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)} — the clamp releases the attempt but never raises the cap.`
+          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)}. The clamp is the human's absolute ceiling: raising it above the judged spend releases the park directly, and any edit to the file releases the next extension attempt.`
           : reason === "approval-required"
             ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
             : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`,

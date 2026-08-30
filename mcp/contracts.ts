@@ -339,6 +339,11 @@ export type BudgetRecord = {
   // touching the clamp file releases the next attempt (decision 7's ladder ends
   // at the human, so the machine must be able to tell that the human acted).
   denied_clamp_sha256?: string;
+  // Armed-state for the 80% approach doorbell: present once the "approaching"
+  // warning fired for this effective cap; a cap change re-arms it (the field is
+  // replaced or cleared on the next guarded op). Additive and optional — absent
+  // in older registries, no version bump.
+  approach_warned?: { cap_tokens: number; cap_minutes: number; warned_at: string };
   started_at: string;
 };
 

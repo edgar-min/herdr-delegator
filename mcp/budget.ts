@@ -138,16 +138,20 @@ export async function clampFingerprint(runPath: string): Promise<string> {
 }
 
 /**
- * Effective ceiling. Under `full` the human approves every extension by raising
- * the clamp, so budget granted above the clamp simply does not exist yet; under
- * either policy the clamp can only lower.
+ * Effective ceiling. A clamp bound, when present, is the human-set ABSOLUTE
+ * ceiling: cap = clamp value, even above the granted figure — raising the clamp
+ * releases a denied/approval-required/over-cap park on the next guarded op, and
+ * 0 stays the kill switch. An absent bound falls back to the granted figure;
+ * under `full` the human approves every extension by raising the clamp, so
+ * budget granted above the seed simply does not exist until the clamp says so.
  */
 export function effectiveCap(record: BudgetRecord, clamp: BudgetClamp | undefined): { cap_tokens: number; cap_minutes: number } {
-  const grantedAboveSeed = record.granted_tokens > record.seed_tokens;
-  const tokensCeiling = record.doorbell_policy === "full" && grantedAboveSeed
-    ? Math.min(record.granted_tokens, clamp?.max_tokens ?? record.seed_tokens)
-    : Math.min(record.granted_tokens, clamp?.max_tokens ?? Number.MAX_SAFE_INTEGER);
-  const minutesCeiling = Math.min(record.granted_minutes, clamp?.max_minutes ?? Number.MAX_SAFE_INTEGER);
+  const tokensCeiling = clamp?.max_tokens !== undefined
+    ? clamp.max_tokens
+    : record.doorbell_policy === "full" && record.granted_tokens > record.seed_tokens
+      ? record.seed_tokens
+      : record.granted_tokens;
+  const minutesCeiling = clamp?.max_minutes !== undefined ? clamp.max_minutes : record.granted_minutes;
   return { cap_tokens: Math.max(0, tokensCeiling), cap_minutes: Math.max(0, minutesCeiling) };
 }
 
@@ -168,7 +172,7 @@ async function sessionTokens(sessionPath: string): Promise<number | undefined> {
     const key = `${sessionPath}\0${file.size}\0${file.mtimeMs}`;
     const cached = tokenCache.get(key);
     if (cached !== undefined) return cached;
-    let total = 0;
+    let highWater = 0;
     const lines = createInterface({ input: createReadStream(sessionPath), crlfDelay: Infinity });
     for await (const line of lines) {
       if (Buffer.byteLength(line) > 1024 * 1024) return undefined;
@@ -178,23 +182,27 @@ async function sessionTokens(sessionPath: string): Promise<number | undefined> {
       const message = parsed.message;
       if (message.role !== "assistant" || !isObject(message.usage)) continue;
       const usage = message.usage;
-      // Generative basis: cacheRead is a context re-read, not spend — charging
-      // it (directly or through `totalTokens`, which includes it) re-bills the
-      // whole retained context every turn, so judged spend grows superlinearly
-      // in turns with no relation to work done. Audit 1 of herdr-redesign/r1
-      // denied on exactly that arithmetic; friction d5dc8d0ebf17472a.
-      let spent = 0;
-      for (const name of ["input", "output", "cacheWrite", "reasoningTokens"]) {
+      // Context-size basis: a session is judged by its HIGH-WATER context size
+      // — the max over assistant turns of input + cacheRead + cacheWrite +
+      // output + reasoningTokens — so each token counts once, at its first
+      // appearance in the transcript. Charging cacheRead per turn re-bills the
+      // whole retained context every turn (friction d5dc8d0ebf17472a, audit 1
+      // of herdr-redesign/r1 denied on that arithmetic); summing cacheWrite
+      // cumulatively re-bills long-lived lanes for re-caching the same context
+      // (friction 7786fb331e176bcf) and cliffs when settlement sweeps re-meter
+      // (friction 3cb0593e3a9bccd7). Compaction shrinks the live context but
+      // cannot lower the high-water mark already observed.
+      let turn = 0;
+      for (const name of ["input", "cacheRead", "cacheWrite", "output", "reasoningTokens"]) {
         const value = usage[name];
-        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) spent += value;
+        if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) turn += value;
       }
-      const next = total + spent;
-      if (!Number.isSafeInteger(next)) return undefined;
-      total = next;
+      if (!Number.isSafeInteger(turn)) return undefined;
+      if (turn > highWater) highWater = turn;
     }
     if (tokenCache.size > 256) tokenCache.clear();
-    tokenCache.set(key, total);
-    return total;
+    tokenCache.set(key, highWater);
+    return highWater;
   } catch {
     return undefined;
   }
@@ -355,6 +363,8 @@ export async function readAuditDocument(auditPath: string): Promise<{ document: 
 
 /** Pane status marker for the supervision surface (decision 4). */
 export function orchPaneLabel(run: RunRef, record: BudgetRecord): string {
-  const status = record.state === "parked" ? ` budget-parked${record.park_reason ? `:${record.park_reason}` : ""}` : "";
+  const status = record.state === "parked"
+    ? ` budget-parked${record.park_reason ? `:${record.park_reason}` : ""}`
+    : record.approach_warned ? " budget-approaching" : "";
   return `ORCH ${run.track_id}/${run.run_id}${status}`;
 }

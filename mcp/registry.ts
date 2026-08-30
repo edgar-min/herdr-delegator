@@ -120,7 +120,7 @@ function validPinnedRoles(value: unknown): value is PinnedRolesRecord {
     typeof value.observed_at === "string" && value.observed_at.length <= 64 &&
     typeof value.source === "string" && value.source.length >= 1 && value.source.length <= 80;
 }
-const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "started_at"] as const;
+const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "approach_warned", "started_at"] as const;
 const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
 
 function validCount(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
@@ -164,6 +164,13 @@ function validBudget(value: unknown): value is BudgetRecord {
     (value.park_detail === undefined || (typeof value.park_detail === "string" && value.park_detail.length <= 500)) &&
     (value.parked_at === undefined || (typeof value.parked_at === "string" && value.parked_at.length <= 64)) &&
     (value.denied_clamp_sha256 === undefined || value.denied_clamp_sha256 === "absent" || (typeof value.denied_clamp_sha256 === "string" && SHA256_RE.test(value.denied_clamp_sha256))) &&
+    (value.approach_warned === undefined || (
+      isRecord(value.approach_warned) &&
+      exactKeys(value.approach_warned, ["cap_tokens", "cap_minutes", "warned_at"]) &&
+      validCount(value.approach_warned.cap_tokens) &&
+      validCount(value.approach_warned.cap_minutes) &&
+      typeof value.approach_warned.warned_at === "string" && value.approach_warned.warned_at.length <= 64
+    )) &&
     typeof value.started_at === "string" && value.started_at.length <= 64;
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
