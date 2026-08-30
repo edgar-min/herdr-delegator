@@ -115,7 +115,7 @@ export type FrictionRecord = {
 // Delivery is an observation, never a contract failure: a message tool call only
 // hard-errors on invalid input, so a broken channel stays visible instead of
 // silently killing the flow behind retryable errors.
-export type MessageDelivery = "delivered" | "rejected_blocked" | "target_unresolved" | "failed";
+export type MessageDelivery = "delivered" | "deferred" | "rejected_blocked" | "target_unresolved" | "failed";
 
 export type Separation = {
   kind: "direction" | "ownership" | "dependency";

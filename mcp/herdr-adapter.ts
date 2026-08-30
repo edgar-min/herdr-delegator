@@ -9,6 +9,11 @@ const REQUIRED_CAPABILITIES = ["agent.prompt", "agent.wait", "agent.start", "pan
 const AGENT_STATUS_KEYS = ["agent_status", "state", "status"] as const;
 // A bounded read used only to prove an already-satisfied wait or a delivered prompt.
 const STATUS_READ_TIMEOUT_MS = 5_000;
+const FOCUS_READ_TIMEOUT_MS = 5_000;
+export const NOTIFY_TICK_PLAN = { first_delay_ms: 60_000, second_delay_ms: 90_000, max_delay_ms: 150_000 } as const;
+export type NotifyDispatch =
+  | { delivery: "delivered" }
+  | { delivery: "deferred"; pane_id: string; tick_plan: typeof NOTIFY_TICK_PLAN; completion: Promise<HerdrCommandResult> };
 
 function bounded(value: string): string { return value.length <= 500 ? value : `${value.slice(0, 497)}...`; }
 function valuesForKey(value: unknown, key: string, out: unknown[] = []): unknown[] {
@@ -19,6 +24,35 @@ function valuesForKey(value: unknown, key: string, out: unknown[] = []): unknown
     valuesForKey(child, key, out);
   }
   return out;
+}
+
+function records(value: unknown, out: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (!value || typeof value !== "object") return out;
+  if (Array.isArray(value)) {
+    for (const item of value) records(item, out);
+    return out;
+  }
+  const record = value as Record<string, unknown>;
+  out.push(record);
+  for (const child of Object.values(record)) records(child, out);
+  return out;
+}
+
+function targetPaneId(snapshot: unknown, target: string): string | undefined {
+  const candidates = records(snapshot);
+  const direct = candidates.find((candidate) => candidate.pane_id === target);
+  if (direct) return target;
+  const agent = candidates.find((candidate) =>
+    (candidate.name === target || candidate.agent_name === target) &&
+    typeof candidate.pane_id === "string");
+  return typeof agent?.pane_id === "string" ? agent.pane_id : undefined;
+}
+
+function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(resolve, ms);
+  timer.unref();
+  return promise;
 }
 
 function agentStatusOf(data: unknown): string | undefined {
@@ -132,13 +166,50 @@ export class HerdrAdapter {
       return { data: observed.data, stdout: observed.stdout, warning: `Prompt landed but the status wait did not settle; the agent was freshly observed as ${bounded(status)}.` };
     }
   }
+  private async targetFocus(target: string): Promise<{ pane_id: string; focused: boolean } | undefined> {
+    const snapshot = await this.execute(["api", "snapshot"], FOCUS_READ_TIMEOUT_MS, false);
+    const focusedPaneId = valuesForKey(snapshot.data, "focused_pane_id")
+      .find((value) => typeof value === "string" && value.length > 0 && value.length <= 80);
+    if (typeof focusedPaneId !== "string") return undefined;
+    const paneId = targetPaneId(snapshot.data, target);
+    return paneId ? { pane_id: paneId, focused: paneId === focusedPaneId } : undefined;
+  }
+
   /**
-   * Fire-and-forget non-authoritative doorbell. Submits one prompt without a
-   * settled-state wait; delivery failures are mapped by the caller into soft
-   * observations, never contract errors.
+   * Fire-and-forget non-authoritative doorbell. A focused target is deferred in
+   * the server process: 60s, one re-probe, then an optional final 90s delay.
+   * Every path reaches one guarded send. Probe uncertainty fails open.
    */
-  notify(target: string, text: string, timeoutMs: number): Promise<HerdrCommandResult> {
-    return this.execute(["agent", "prompt", target, text], timeoutMs, true);
+  async notify(target: string, text: string, timeoutMs: number): Promise<NotifyDispatch> {
+    let firstProbe: { pane_id: string; focused: boolean } | undefined;
+    try { firstProbe = await this.targetFocus(target); }
+    catch {
+      await this.execute(["agent", "prompt", target, text], timeoutMs, true);
+      return { delivery: "delivered" };
+    }
+    if (!firstProbe?.focused) {
+      await this.execute(["agent", "prompt", target, text], timeoutMs, true);
+      return { delivery: "delivered" };
+    }
+
+    let sent = false;
+    const sendOnce = async (): Promise<HerdrCommandResult> => {
+      if (sent) throw new McpContractError("duplicate_doorbell_send", "A deferred doorbell attempted to send twice.", "prompt", "Preserve the durable document and inspect messages.jsonl; never replay this bell.");
+      sent = true;
+      return this.execute(["agent", "prompt", target, text], timeoutMs, true);
+    };
+    // Timers are deliberately unref'ed: server shutdown may drop this soft bell,
+    // which is acceptable only because the report/channel document already holds
+    // the authoritative content. A missing final messages.jsonl line exposes it.
+    const completion = (async () => {
+      await delay(NOTIFY_TICK_PLAN.first_delay_ms);
+      let secondProbe: { pane_id: string; focused: boolean } | undefined;
+      try { secondProbe = await this.targetFocus(target); }
+      catch { return sendOnce(); }
+      if (secondProbe?.focused) await delay(NOTIFY_TICK_PLAN.second_delay_ms);
+      return sendOnce();
+    })();
+    return { delivery: "deferred", pane_id: firstProbe.pane_id, tick_plan: NOTIFY_TICK_PLAN, completion };
   }
   /**
    * Waits for one of `until`. An already-satisfied state is proved by a fresh read

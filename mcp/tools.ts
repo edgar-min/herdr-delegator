@@ -81,6 +81,13 @@ export async function assertOrchCommand(store: DelegationStore, facts: OmpRuntim
   });
 }
 
+let messageDeliverySequence = 0;
+
+function nextMessageDeliveryId(): string {
+  messageDeliverySequence += 1;
+  return `${Date.now()}.${process.pid}.${messageDeliverySequence}`;
+}
+
 async function appendMessageLog(runPath: string, entry: Record<string, unknown>): Promise<void> {
   try { await appendFile(path.join(runPath, "a2a", "messages.jsonl"), `${JSON.stringify(entry)}\n`, { mode: 0o600 }); } catch { /* observability is best-effort */ }
 }
@@ -1971,17 +1978,69 @@ export class CompositeTools {
       }
 
       let delivery: MessageDelivery;
-      if (!target) { delivery = "target_unresolved"; if (unresolvedReason) warnings.push(unresolvedReason); }
-      else {
-        try { await this.adapter.notify(target, text, 15_000); delivery = "delivered"; }
-        catch (error) {
+      let deferredCompletion: Promise<unknown> | undefined;
+      let tickPlan: { first_delay_ms: number; second_delay_ms: number; max_delay_ms: number } | undefined;
+      let deliveryId: string | undefined;
+      if (!target) {
+        delivery = "target_unresolved";
+        if (unresolvedReason) warnings.push(unresolvedReason);
+      } else {
+        try {
+          const dispatch = await this.adapter.notify(target, text, 15_000);
+          if (dispatch.delivery === "deferred") {
+            delivery = "deferred";
+            deferredCompletion = dispatch.completion;
+            tickPlan = dispatch.tick_plan;
+            deliveryId = nextMessageDeliveryId();
+          } else {
+            delivery = "delivered";
+          }
+        } catch (error) {
           const detail = `${error instanceof McpContractError ? error.code : ""} ${error instanceof Error ? error.message : String(error)}`;
           delivery = /agent_blocked/i.test(detail) ? "rejected_blocked" : /not.?found|missing/i.test(detail) ? "target_unresolved" : "failed";
           warnings.push(`Delivery ${delivery}: ${singleLine(detail).slice(0, 300)}`);
         }
       }
-      await appendMessageLog(store.runPath, { at: nowIso(), action: input.action, sender, delivery, target: target ?? null, text, ...(warnings.length ? { warnings } : {}) });
-      return { ok: true, tool: "herdr_message", action: input.action, run, effect: delivery === "delivered" ? "confirmed" : "none", retryable: delivery !== "delivered", data: { delivery, sender, target: target ?? null, ...(channelObservation ? { channel: channelObservation } : {}), ...(warnings.length ? { warnings } : {}) } };
+      await appendMessageLog(store.runPath, {
+        at: nowIso(),
+        action: input.action,
+        sender,
+        delivery,
+        target: target ?? null,
+        text,
+        ...(deliveryId ? { delivery_id: deliveryId } : {}),
+        ...(tickPlan ? { tick_plan: tickPlan } : {}),
+        ...(warnings.length ? { warnings } : {}),
+      });
+      if (deferredCompletion && target && deliveryId) {
+        const finalBase = { action: input.action, sender, target, delivery_id: deliveryId, deferred: true };
+        void deferredCompletion.then(
+          async () => appendMessageLog(store.runPath, { at: nowIso(), ...finalBase, delivery: "delivered" }),
+          async (error) => appendMessageLog(store.runPath, {
+            at: nowIso(),
+            ...finalBase,
+            delivery: "failed",
+            warnings: [`Deferred delivery failed: ${singleLine(error instanceof Error ? error.message : String(error)).slice(0, 300)}`],
+          }),
+        );
+      }
+      const confirmed = delivery === "delivered" || delivery === "deferred";
+      return {
+        ok: true,
+        tool: "herdr_message",
+        action: input.action,
+        run,
+        effect: confirmed ? "confirmed" : "none",
+        retryable: !confirmed,
+        data: {
+          delivery,
+          sender,
+          target: target ?? null,
+          ...(delivery === "deferred" ? { explanation: "Delivery deferred to avoid interrupting the focused target; the durable document already carries the content.", tick_plan: tickPlan, delivery_id: deliveryId } : {}),
+          ...(channelObservation ? { channel: channelObservation } : {}),
+          ...(warnings.length ? { warnings } : {}),
+        },
+      };
     } catch (error) { return resultError("herdr_message", input.action, run, error); }
   }
 
