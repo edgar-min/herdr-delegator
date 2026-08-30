@@ -16,7 +16,7 @@ import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
 import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, OBSERVATION_SOURCE, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
-import { assertNoAmbiguousWork, assertRevivalDocuments, readRebirthApproval, rebirthApprovalPath } from "./revival";
+import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
 
 // ---------------------------------------------------------------------------
@@ -160,6 +160,9 @@ function runRef(input: { track_id: string; run_id: string }): RunRef { return { 
 function laneState(raw: string | undefined): LaneState { if (raw === "blocked") return "blocked"; if (raw === "working" || raw === "prompted") return "working"; if (raw === "closed") return "closed"; if (raw === "failed") return "failed"; if (raw === "resume-needed") return "resume-needed"; return "idle"; }
 
 const ASSIGNMENT_STATE_ORDER: readonly AssignmentState[] = ["queued", "prompting", "working", "blocked", "completed", "failed", "ambiguous"];
+// Refusals the human's close-approval file may substitute for: ORCH identity, and
+// only ORCH identity (plan U3 gate order).
+const CLOSE_FORCE_ELIGIBLE_CODES: Record<string, true> = { orch_identity_mismatch: true, stale_orch_generation: true };
 const ACTIVE_SETTLEMENT_STATES: Partial<Record<AssignmentState, true>> = { prompting: true, working: true, blocked: true, ambiguous: true };
 const TOKEN_FIELDS = [
   ["input", "input_tokens"],
@@ -846,7 +849,7 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
       if (input.action === "revive") return await this.reviveTrack(input, run, store, runtime);
-      await assertOrchCommand(store, runtime.facts);
+      const forced = await this.authorizeClose(store, run, runtime.facts);
       await this.judgeBudget(store, run, "close");
       const registry = await store.read();
       if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
@@ -870,8 +873,115 @@ export class CompositeTools {
         await closeWorker({ operation: "close_worker", track_id: input.track_id, run_id: input.run_id, worker_id: candidate.lane.worker_id, expected_state_change_seq: candidate.liveSequence });
       }
       const closed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { for (const lane of Object.values(next.lanes)) if (lane.state !== "failed") lane.state = "closed"; });
-      return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes) } };
+      if (forced) {
+        // Durable attribution for a closure no ORCH authorized. The ledger is an
+        // append-only run document, so the record survives independently of
+        // whoever reads the registry next — and a laneless run's closure would
+        // otherwise be indistinguishable from a no-op revision bump.
+        await appendLedger(store.runPath, "closed (human-approved force)", [
+          `closed_by session ${forced.closedBySessionId} (attested, not this run's ORCH)`,
+          `approval ${forced.approval.path} sha256 ${forced.approval.sha256}: ${singleLine(forced.approval.reason)}`,
+          `approved generation ${forced.generation}, proven gone: ${forced.evidence}`,
+          `closed_at ${forced.closedAt}`,
+        ]).catch(() => undefined);
+        await appendMessageLog(store.runPath, {
+          at: forced.closedAt,
+          kind: "track_closed_force",
+          closed_by: forced.closedBySessionId,
+          approval_sha256: forced.approval.sha256,
+          approved_generation: forced.generation,
+          dead_orch_evidence: forced.evidence,
+        });
+      }
+      return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes), ...(forced ? { forced_close: { closed_by: forced.closedBySessionId, closed_at: forced.closedAt, approved_generation: forced.generation, approval: { path: forced.approval.path, sha256: forced.approval.sha256, reason: forced.approval.reason }, dead_orch_evidence: forced.evidence } } : {}) } };
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
+  }
+
+  /**
+   * Authorizes a track close. The normal answer is the ORCH-only gate, unchanged:
+   * a run with a live ORCH is closed by that ORCH and nothing else.
+   *
+   * The exception exists because ORCH-only left a real hole: when the recorded
+   * ORCH is gone for good — pane closed, session not resumable, no documents to
+   * rebirth from — every close was refused forever and the run could never be
+   * disposed of (friction 5a95bb71e1a73d73). What the dead ORCH can no longer
+   * exercise belongs to the human, so the substitute for `assertOrchCommand` is
+   * the human's approval file plus proof of death, never a second agent's word:
+   * the caller is still attested, the approval still names this run and this
+   * generation, and the recorded ORCH is still proven absent by fresh
+   * observation. Anything ambiguous refuses.
+   */
+  private async authorizeClose(
+    store: DelegationStore,
+    run: RunRef,
+    facts: OmpRuntimeFacts,
+  ): Promise<{ approval: { path: string; sha256: string; reason: string }; generation: number; evidence: string; closedBySessionId: string; closedAt: string } | undefined> {
+    try {
+      await assertOrchCommand(store, facts);
+      return undefined;
+    } catch (error) {
+      // Only an identity refusal is eligible: the approval file substitutes for
+      // ORCH identity and for nothing else, so a storage or attestation failure
+      // stays exactly as fatal as it was.
+      if (!(error instanceof McpContractError) || !CLOSE_FORCE_ELIGIBLE_CODES[error.code]) throw error;
+      const born = latestBirth(await store.read());
+      if (!born) throw error;
+      const approval = await readCloseApproval(store.runPath, run, born.generation);
+      const evidence = await this.assertRecordedOrchGone(born);
+      return { approval, generation: born.generation, evidence, closedBySessionId: facts.session_id, closedAt: nowIso() };
+    }
+  }
+
+  /**
+   * Proof, by fresh observation, that a recorded ORCH is gone. Absence has to be
+   * proven rather than assumed: this path closes a run against its ORCH's
+   * authority, so a live or merely unobservable ORCH must refuse. Returns the
+   * evidence sentence for the closure record.
+   */
+  private async assertRecordedOrchGone(born: OrchBirthRecord): Promise<string> {
+    const refuseAmbiguous = (detail: string): never => {
+      throw new McpContractError(
+        "orch_liveness_unknown",
+        `The recorded ORCH (generation ${born.generation}, session ${born.official_session_id}) could not be proven gone: ${detail}.`,
+        "close",
+        "Nothing was closed. Observe the recorded pane and session directly, then retry once absence is observable — this path never assumes a silence means death.",
+        false,
+        true,
+      );
+    };
+    let agents: unknown;
+    try { agents = (await this.adapter.listAgents(DEFAULT_TIMEOUT_MS)).data; }
+    catch (error) { return refuseAmbiguous(`the Herdr agent list could not be read (${error instanceof Error ? error.message : String(error)})`); }
+    const liveSessionReferences = matchingObjects(
+      agents,
+      (candidate) => candidate.source === "herdr:omp" && candidate.agent === "omp" && typeof candidate.value === "string",
+    ).map((candidate) => candidate.value as string);
+    const recordedIsLive = liveSessionReferences.some((value) => {
+      if (value === born.official_session_id) return true;
+      const stem = path.basename(value).replace(/\.jsonl$/, "");
+      return stem === born.official_session_id || stem.endsWith(`_${born.official_session_id}`);
+    });
+    if (recordedIsLive) {
+      throw new McpContractError(
+        "orch_still_live",
+        `The recorded ORCH (generation ${born.generation}, session ${born.official_session_id}) is live, so this run is not orphaned.`,
+        "close",
+        `Nothing was closed. Close this run from its own ORCH pane ${born.pane_id}: an approval file never overrides a live ORCH, and the human's approval was for a run whose ORCH is gone.`,
+      );
+    }
+    let paneEvidence = "the recorded pane is absent";
+    try {
+      const pane = await this.adapter.getPane(born.pane_id, DEFAULT_TIMEOUT_MS);
+      const stillThere = matchingObjects(pane.data, (candidate) => candidate.pane_id === born.pane_id).length > 0;
+      paneEvidence = stillThere
+        ? `the recorded pane ${born.pane_id} exists but carries no reference to the recorded session`
+        : `the recorded pane ${born.pane_id} is no longer reported`;
+    } catch (error) {
+      // A pane the daemon cannot resolve is the ordinary shape of a closed pane;
+      // the agent list above already carried the decisive absence.
+      paneEvidence = `the recorded pane ${born.pane_id} is unresolvable (${error instanceof McpContractError ? error.code : "observation failed"})`;
+    }
+    return `no live Herdr agent references session ${born.official_session_id}; ${paneEvidence}`;
   }
 
   /**

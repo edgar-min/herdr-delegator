@@ -118,3 +118,71 @@ export function assertNoAmbiguousWork(registry: DelegationRegistry): void {
     "Inspect and resolve the ambiguous effect first: a reborn ORCH inherits no context and could only guess. Resume the existing session instead — it still holds what it did.",
   );
 }
+
+// ---------------------------------------------------------------------------
+// Approval-file force close (plan U3, friction 5a95bb71e1a73d73). `close` is
+// ORCH-only, which leaves a run whose ORCH is gone unclosable forever: its pane
+// no longer exists, resume refuses on identity, and a rebirth needs documents a
+// disposable fixture never wrote. The exit is the same shape as rebirth — a
+// human-owned file the machine can verify — because the authority that a dead
+// ORCH can no longer exercise belongs to the human, not to whichever session
+// happens to be attested.
+// ---------------------------------------------------------------------------
+
+export function closeApprovalPath(runPath: string): string { return path.join(runPath, "close-approval.json"); }
+
+const closeApprovalSchema = z.object({
+  version: z.literal(1),
+  track_id: z.string().min(1).max(80),
+  run_id: z.string().min(1).max(80),
+  approve_close_generation: z.number().int().positive(),
+  reason: z.string().min(1).max(500),
+}).strict();
+
+/**
+ * Reads the human's force-close approval. It names the exact run and the exact
+ * generation being closed, so a leftover file authorizes one closure of one run
+ * and never a later one or a neighbour's.
+ *
+ * The machine verifies contents, never authorship: no agent may write this file,
+ * and an agent that writes it is forging the human's approval rather than
+ * obtaining it. The refusal says so, because the only correct response to a
+ * missing approval is to stop and ask the human.
+ */
+export async function readCloseApproval(
+  runPath: string,
+  run: { track_id: string; run_id: string },
+  generation: number,
+): Promise<{ path: string; sha256: string; reason: string }> {
+  const approvalPath = closeApprovalPath(runPath);
+  const refusal = (detail: string): McpContractError => new McpContractError(
+    "close_not_approved",
+    `Closing a run whose ORCH is gone needs the human-owned approval file: ${detail}.`,
+    "close",
+    `Ask the user to write ${approvalPath} as {"version":1,"track_id":"${run.track_id}","run_id":"${run.run_id}","approve_close_generation":${generation},"reason":"..."} — and do not write it yourself: this file is the human's approval, so an agent writing it forges the one authority this path rests on. A run whose ORCH is still live is closed by that ORCH and needs no file.`,
+  );
+  let bytes: Buffer;
+  try {
+    const file = await lstat(approvalPath);
+    if (!file.isFile() || file.isSymbolicLink() || (await realpath(approvalPath)) !== approvalPath) throw refusal("the approval path is not a canonical regular file");
+    if (file.size > 8_192) throw refusal(`the approval file is ${file.size} bytes`);
+    bytes = await readFile(approvalPath);
+  } catch (error: unknown) {
+    if (error instanceof McpContractError) throw error;
+    throw refusal(isObject(error) && error.code === "ENOENT" ? `no file at ${approvalPath}` : "the approval file cannot be read");
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); } catch { throw refusal("the approval file is not valid JSON"); }
+  const result = closeApprovalSchema.safeParse(parsed);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    throw refusal(`${issue.path.join(".") || "approval"}: ${issue.message}`);
+  }
+  if (result.data.track_id !== run.track_id || result.data.run_id !== run.run_id) {
+    throw refusal(`the file approves ${result.data.track_id}/${result.data.run_id} but this run is ${run.track_id}/${run.run_id}`);
+  }
+  if (result.data.approve_close_generation !== generation) {
+    throw refusal(`the file approves closing generation ${result.data.approve_close_generation} but the latest recorded ORCH generation is ${generation}`);
+  }
+  return { path: approvalPath, sha256: sha256(bytes), reason: result.data.reason };
+}
