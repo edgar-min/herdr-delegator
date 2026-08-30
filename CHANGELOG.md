@@ -13,6 +13,61 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.2.0] - 2026-08-31
+
+Bridge resilience and identity-only attestation. A resumed session regains its
+publishing bridge, attestation carries identity and nothing else, a bridge
+outage no longer blocks opening fresh tracks, the human budget lever is
+scaffolded where the deny text points, doorbells stop interrupting a focused
+human, and a stranded run whose anchor pane died can actually be revived —
+proven live by resuming attest-tail/2026-08-31 with its context intact.
+
+### Changed
+
+- Bridge publication is identity-only: the fact file carries
+  `{version, session_id, reported_session_path?, pane_id, issued_at, nonce}`
+  and the pane carries exactly the session and attestation tokens. Provider,
+  model, thinking, role, cwd, and config payloads are gone from publication,
+  both verifiers, and the caller model facade (`assertOrchestratorAligned`,
+  `modelIdentity`, `role-thinking.ts` deleted; spawn paths take no caller
+  model context). Consistent with spawn-by-alias role inheritance: identity
+  is attested, models are post-spawn observations. SPEC CFG-017..019,
+  MOD-001/007 updated.
+- The worker dispatch pointer names the lane's materialized
+  `guidance-<profile>.md` as advisory (guidance-routing RELAY,
+  d260b9a57421779e lineage); ARCHITECTURE/SPEC describe the config-only
+  guidance projection and the additive `{ agent, moment, skills }` rule shape
+  (SRT-001/003, CFG-005a).
+
+### Fixed
+
+- A resumed OMP session never republished its bridge: module-scoped cleanup is
+  now ownership-guarded so a prior session's shutdown cannot tear down a
+  resumed publisher, and the `omp_fact_bridge_mismatch` recovery text names
+  recoveries that work (next-turn republish or process restart) instead of
+  `/reload-plugins`, which never re-runs extensions. (783b0c4c4cb5e1dc)
+- `herdr_track open` proceeds during a bridge outage: only a fresh coordinate
+  may cross `omp_fact_bridge_mismatch`, the creator is recorded explicitly
+  unverified (`verified:false`, no session id), every existing-run operation
+  stays fail-closed, and a recovered attestation upgrades the record without
+  ever downgrading one. SPEC RUN-001 family updated. (4a23ebaf4d4e8a4f)
+- `budget-clamp.json` is scaffolded — inert, self-describing, mode 0600,
+  create-exclusive, never overwriting a human value — at open and lazily on
+  every park path, and every park/deny recovery text and ledger entry names
+  the exact schema `{version:1, max_tokens?, max_minutes?, note?}`.
+  (0b04293ebcb97c2f)
+- Doorbells defer for a focused pane: one snapshot probe, a 60s tick, a
+  re-probe, at most one more 90s tick, then exactly one send — fail-open on
+  probe uncertainty, background-deferred past the MCP deadline, journaled as
+  a deferred row plus a final outcome row in `messages.jsonl`.
+  `MessageDelivery` gains `deferred`. (daedc5975efa2264)
+- `revive mode:resume` recreates a dead anchor pane or tab inside an
+  identity-sound workspace — registry coordinates move in one transaction,
+  live agents are never respawned, workers and dead workspaces keep strict
+  failures (e0940d14a4008677) — and accepts legitimate config drift for a
+  gone agent with a grounded session, refreshing `config_sources` while
+  keeping the recorded role immutable (567a804ec1ee05cc). SPEC REV-002a.
+
 ## [3.1.0] - 2026-08-31
 
 Spawn-by-alias and attest lifecycle repairs. Spawned sessions now resolve their
