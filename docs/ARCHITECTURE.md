@@ -95,7 +95,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
 | `mcp/budget.ts` | metering, clamp parsing, covenant math, audit document rendering, verdict parsing |
-| `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates |
+| `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates, and the force-close approval reader |
 
 Public calls terminate at the five MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
 
@@ -112,7 +112,7 @@ Communication is uniform across every relationship: the document append carries 
 
 | Relationship | Conversations | Document (authority) | Doorbell |
 |---|---|---|---|
-| user → ORCH | delegate, intervene, stop | mandate, `budget-clamp.json`, `rebirth-approval.json` | direct pane chat |
+| user → ORCH | delegate, intervene, stop | mandate, `budget-clamp.json`, `rebirth-approval.json`, `close-approval.json` | direct pane chat |
 | ORCH → user | report, decision request | `budget-ledger.md`, `plan.md`, reports | pane-name status marker |
 | ORCH → worker | direct, respond, nudge | assignment, `[ORCH Response]` in the lane report | dispatch delivery, `wake_worker` |
 | worker → ORCH | completion, blocked, decision request | report append | `wake_orch` |
@@ -276,7 +276,7 @@ Settlement observability is advisory; the budget machine is not. Every guarded o
 
 An extension costs a bounded justification, obeys a per-extension step cap and a minimum interval, and grants nothing until a clean auditor — spawned by the server, never by the ORCH, and not a responsibility lane — appends a verdict the server records. A deny ends the ladder at the user. `budget-clamp.json` is the user's file and only lowers; no tool op raises what the user lowered. Money units and precise cost accounting remain out of scope.
 
-Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. A reborn generation inherits the metered spend it did not spend.
+Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. A reborn generation inherits the metered spend it did not spend. A run whose recorded ORCH is provably gone is closed by an attested session against a human-owned close-approval.json, never by agent consensus.
 
 ## Model and session verification
 
