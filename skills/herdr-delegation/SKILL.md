@@ -34,7 +34,7 @@ cost for work that can finish cleanly here.
 
 ## Distill the bounded mandate
 
-Distill the conversation already held. Do not interview the user again for a
+Distill the conversation already held. Do not re-interview the user for a
 specification you are about to hand away.
 
 The mandate contains only **WHAT** and **WHY**:
