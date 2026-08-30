@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { assertOrchestratorAligned, loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { materializeGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
+import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
@@ -1600,7 +1600,13 @@ export class CompositeTools {
       .then((artifact) => artifact.assignment.profile)
       .catch(() => undefined);
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
-    const pointer = `Assignment ${assignmentId}; responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}`;
+    // The lane's own advisory document, materialized at dispatch so it carries
+    // the configuration current now. Absence stays a no-op: an unknown profile, a
+    // profile the configuration gives neither a directive nor a route, and a
+    // failed render or write all name no path, so the pointer omits the clause.
+    const laneGuidance = laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
+    if (laneGuidance.warning) warnings.push(laneGuidance.warning);
+    const pointer = `Assignment ${assignmentId}; responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
