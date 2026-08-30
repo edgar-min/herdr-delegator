@@ -1136,6 +1136,14 @@ async function startOrchestrator(
 
     if (!duplicatePrompt) {
       const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+      // Delivery wait, never settlement: the ORCH's first turn routinely outlives
+      // the ~30s MCP client transport abort (see MAX_EFFECTIVE_WAIT_MS in
+      // mcp/contracts.ts), so waiting for idle/done here loses the success payload
+      // exactly when the birth worked. `open` confirms only that the submission was
+      // accepted and the agent left its pre-prompt state — "working", or a terminal
+      // state when the turn settles faster than the poll. Settlement belongs to the
+      // born ORCH. Friction 14870ac545c4730b.
+      const deliveryTimeoutMs = Math.min(timeoutMs, 15_000);
       const prompted = await runHerdr(
         binary,
         [
@@ -1145,15 +1153,17 @@ async function startOrchestrator(
           prompt,
           "--wait",
           "--until",
+          "working",
+          "--until",
           "idle",
           "--until",
           "done",
           "--until",
           "blocked",
           "--timeout",
-          String(timeoutMs),
+          String(deliveryTimeoutMs),
         ],
-        timeoutMs + 1_000,
+        deliveryTimeoutMs + 1_000,
         signal,
       );
       if (!prompted.ok) {
