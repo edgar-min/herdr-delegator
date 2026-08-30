@@ -123,6 +123,7 @@ export type OmpModelContext = {
 export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "completion", "settlement", "reset"] as const;
 export const MAX_SKILL_ROUTE_RULES = 16;
 export const MAX_SKILLS_PER_ROUTE = 8;
+export const MAX_PROFILES_PER_ROUTE = 8;
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
@@ -146,6 +147,16 @@ export type SkillRoute = {
    * for the surface that reads the route; never a gate.
    */
   trigger?: string;
+  /**
+   * Optional worker-profile scope. A rule carrying it is delivered only when the
+   * delivery target's profile is named here; a rule without it reaches every
+   * profile. A named profile no `worker_profiles` entry defines simply never
+   * matches — rules and profiles may live in different layers, and routes are
+   * advisory. A surface with no profile in hand (every orchestrator-surface
+   * delivery point) matches only unscoped rules, so a profile-scoped route can
+   * never leak to a target whose profile is unknown.
+   */
+  profiles?: string[];
 };
 
 export type DelegatorConfig = {

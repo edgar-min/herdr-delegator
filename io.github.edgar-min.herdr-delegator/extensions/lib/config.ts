@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -102,7 +102,7 @@ function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRo
     if (!isObject(rule)) {
       throw new ContractError("invalid_config", `${ruleCoordinate}: expected an object.`, "config");
     }
-    assertExactKeys(rule, ["boundary", "surface", "skills", "trigger"], ruleCoordinate);
+    assertExactKeys(rule, ["boundary", "surface", "skills", "trigger", "profiles"], ruleCoordinate);
     if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
       throw new ContractError("invalid_config", `${ruleCoordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
     }
@@ -117,11 +117,23 @@ function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRo
     ) {
       throw new ContractError("invalid_config", `${ruleCoordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
     }
+    if (
+      rule.profiles !== undefined &&
+      (
+        !Array.isArray(rule.profiles) ||
+        rule.profiles.length < 1 ||
+        rule.profiles.length > MAX_PROFILES_PER_ROUTE ||
+        rule.profiles.some((profile) => typeof profile !== "string" || !PROFILE_RE.test(profile))
+      )
+    ) {
+      throw new ContractError("invalid_config", `${ruleCoordinate}.profiles: expected 1-${MAX_PROFILES_PER_ROUTE} worker profile names.`, "config");
+    }
     return {
       boundary: rule.boundary,
       surface: rule.surface,
       skills: [...(rule.skills as string[])],
       ...(rule.trigger === undefined ? {} : { trigger: parseGuidanceText(rule.trigger, `${ruleCoordinate}.trigger`) }),
+      ...(rule.profiles === undefined ? {} : { profiles: [...(rule.profiles as string[])] }),
     } as SkillRoute;
   });
   return { rules };
@@ -299,16 +311,25 @@ export async function loadDelegatorConfig(runPath: string | undefined, cwd: stri
  * Deterministic advisory skill-route selection for one delivery point. Routes
  * come only from strict configuration layers; the result is bounded advisory
  * text material, never authority over scope, settlement, or lifecycle.
+ *
+ * `profile` is the delivery target's worker profile where the delivery point has
+ * one — worker-surface dispatch. A rule scoped with `profiles` matches only a
+ * named profile, so a caller without one (every orchestrator-surface point)
+ * receives unscoped rules exactly as before.
  */
 export async function resolveSkillRoutes(
   runPath: string | undefined,
   cwd: string,
   boundaries: readonly SkillRouteBoundary[],
   surface: SkillRouteSurface,
+  profile?: string,
 ): Promise<SkillRoute[]> {
   const { config } = await loadDelegatorConfig(runPath, cwd);
   const rules = config.skill_routing?.rules ?? [];
-  return rules.filter((rule) => rule.surface === surface && boundaries.includes(rule.boundary));
+  return rules.filter((rule) =>
+    rule.surface === surface &&
+    boundaries.includes(rule.boundary) &&
+    (!rule.profiles || (profile !== undefined && rule.profiles.includes(profile))));
 }
 
 export function modelIdentity(model: OmpModelIdentity | undefined): { provider: string; model: string } {

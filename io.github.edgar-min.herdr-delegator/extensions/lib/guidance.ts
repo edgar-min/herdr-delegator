@@ -105,10 +105,16 @@ async function readSkillDescription(name: string, roots: readonly string[]): Pro
   return undefined;
 }
 
+/**
+ * The orchestrator-surface routes this document delivers. A profile-scoped rule
+ * is skipped: this document's reader is the ORCH, which carries no worker
+ * profile, so the same rule is already absent from every other
+ * orchestrator-surface delivery point (`resolveSkillRoutes` without a profile).
+ */
 function orchRoutes(config: DelegatorConfig): SkillRoute[] {
   const rules = config.skill_routing?.rules ?? [];
   return ORCH_GUIDANCE_BOUNDARIES.flatMap((boundary) =>
-    rules.filter((rule) => rule.surface === "orch" && rule.boundary === boundary),
+    rules.filter((rule) => rule.surface === "orch" && rule.boundary === boundary && !rule.profiles),
   );
 }
 
@@ -124,7 +130,11 @@ function renderRouteSection(routes: readonly SkillRoute[], descriptions: Readonl
       const description = descriptions.get(skill);
       const parts = [`- \`${skill}\``];
       if (route.trigger) parts.push(`when: ${route.trigger}`);
-      parts.push(description ?? "description unavailable (skill not installed here, or its SKILL.md is unreadable)");
+      // File resolution stays primary — it inlines the real description. The
+      // pointer is the degrade, and it completes delivery where a file walk
+      // cannot: a runtime-managed skill exists on no disk root, but the session
+      // reading this document resolves `skill://` natively.
+      parts.push(description ?? `read \`skill://${skill}\` for its description`);
       lines.push(parts.join(" — "));
     }
     lines.push("");

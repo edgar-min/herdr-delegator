@@ -74,6 +74,15 @@
               "trigger": {
                 "$ref": "#/$defs/guidanceText",
                 "description": "Optional prose naming when this route applies, rendered as advisory selection criteria beside the skill names."
+              },
+              "profiles": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                  "$ref": "#/$defs/profileName"
+                },
+                "description": "Optional worker-profile scope. Present: the rule is delivered only to a lane whose assignment profile is named here. Absent: the rule reaches every profile. A name no worker_profiles entry defines never matches and is not an error, since rules and profiles may live in different layers. A delivery point with no profile in hand — every orchestrator-surface point — receives only unscoped rules."
               }
             }
           },

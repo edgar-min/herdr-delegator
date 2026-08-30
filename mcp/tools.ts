@@ -161,15 +161,20 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * never block control flow, so a failed lookup degrades to an empty route
  * set; the underlying configuration error still fails closed on every
  * mutating action that loads configuration as authority.
+ *
+ * `profile` is the delivery target's worker profile, passed only where the
+ * delivery point has one. Without it, profile-scoped rules never match, so an
+ * orchestrator-surface point keeps receiving exactly the unscoped rules.
  */
 async function advisorySkillRoutes(
   runPath: string,
   cwd: string,
   boundaries: readonly SkillRouteBoundary[],
   surface: SkillRouteSurface,
+  profile?: string,
 ): Promise<SkillRoute[]> {
   try {
-    return await resolveSkillRoutes(runPath, cwd, boundaries, surface);
+    return await resolveSkillRoutes(runPath, cwd, boundaries, surface, profile);
   } catch {
     return [];
   }
@@ -1421,7 +1426,16 @@ export class CompositeTools {
       next.assignments[assignmentId].updated_at = promptedAt;
       next.lanes[workerId].state = "working";
     });
-    const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker");
+    // The lane's profile lives in the canonical assignment artifact, so it is
+    // read from there rather than mirrored into the registry. An unreadable
+    // artifact leaves the profile unknown, which delivers only unscoped rules —
+    // an advisory lookup never widens delivery on a failed read, and never
+    // blocks the dispatch it decorates.
+    const laneProfile = await store
+      .preflight(assignmentId, record.responsibility_key)
+      .then((artifact) => artifact.assignment.profile)
+      .catch(() => undefined);
+    const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
     const pointer = `Assignment ${assignmentId}; responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
