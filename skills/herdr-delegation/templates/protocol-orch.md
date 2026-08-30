@@ -66,6 +66,12 @@ Use host OMP task/subagents for bounded mechanical work that needs no persistent
 responsibility. Do not create Herdr lanes to manufacture parallelism or bypass
 uncertain ownership, identity, or topology.
 
+A run born by `open` may hold a `guidance.md` rendered from configuration. Consult it
+for the skill routes configured at your plan and authoring boundaries and for what each
+worker profile is for. It is advisory only: it never changes scope, authority, ownership,
+immutable files, completion conditions, settlement, or recovery. A missing or degraded
+document is a no-op.
+
 Before dispatch, ensure the assignment states the complete goal, observable completion
 conditions, exact write ownership, dependencies, and user boundaries in language the
 worker can execute without chat history. Run the tool's preflight and accept its
