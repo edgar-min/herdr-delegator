@@ -37,7 +37,7 @@
     "docs/**"
   ],
   "scripts": {
-    "check": "bun scripts/check-templates.ts && tsc -p tsconfig.json"
+    "check": "bun scripts/check-templates.ts && bun scripts/check-changelog.ts && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
