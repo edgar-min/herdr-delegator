@@ -64,8 +64,14 @@ const MANDATE_TRANSPORT_ITEMS = 256;
 // non-goal. The seed in the mandate is a declared estimate, never a contract, and
 // a run that declares none still gets these defaults so that no run can spend
 // unbounded without ever justifying itself.
-export const DEFAULT_BUDGET_TOKENS = 2_000_000;
-export const DEFAULT_BUDGET_MINUTES = 480;
+//
+// The fallbacks are calibrated deliberately tight: roughly 15k generative tokens
+// per minute for an ORCH plus one worker lane, over half an hour of focused work.
+// They exist so the audit cadence is meaningful on an undeclared run, not so runs
+// fit inside them — a nontrivial undeclared run is expected to park early and
+// justify itself. A caller that knows the scope declares its own estimate.
+export const DEFAULT_BUDGET_TOKENS = 500_000;
+export const DEFAULT_BUDGET_MINUTES = 30;
 export const MAX_BUDGET_TOKENS = 1_000_000_000;
 export const MAX_BUDGET_MINUTES = 100_000;
 // Covenants: one extension may raise the cap by at most half of what is already
@@ -426,8 +432,8 @@ const assignmentId = z.string().regex(ASSIGNMENT_RE);
 const workerId = z.string().regex(WORKER_RE);
 const hash = z.string().regex(SHA256_RE);
 const wait = z.object({
-  until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional().describe("Agent states that satisfy the wait; an already-current state satisfies it immediately."),
-  timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested wait budget. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms; achieve a longer logical wait by repeating bounded wait calls.`),
+  until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional().describe("Agent states that satisfy the wait; an already-current state satisfies it immediately. Name the states that actually answer what you are waiting for — a blocked lane answers a readiness question but not a completion one."),
+  timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested wait budget. Size it to how long the awaited boundary plausibly needs: short for a state probe, longer only when awaiting a settlement you expect imminently, and repeat bounded waits instead of asking for the maximum. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms; a longer logical wait is achieved by repeating bounded wait calls.`),
 }).strict().optional();
 const run = { track_id: coordinate, run_id: coordinate };
 const separation = z.object({
@@ -436,10 +442,10 @@ const separation = z.object({
   conflicts_with_worker_id: workerId,
 }).strict();
 const mandateBudget = z.object({
-  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract. Defaults to ${DEFAULT_BUDGET_TOKENS}; exceeding it parks the run until the ORCH justifies an extension.`),
-  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op. Defaults to ${DEFAULT_BUDGET_MINUTES}.`),
-  doorbell_policy: z.enum(BUDGET_POLICIES).optional().describe("notify (default): the machine audit decides each extension and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap."),
-}).strict().optional().describe("Budget seed and extension policy. Omit it to accept the documented defaults.");
+  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract; crossing it parks the run until the ORCH justifies an extension. Estimate what this mandate's scope should take. Undeclared falls back to ${DEFAULT_BUDGET_TOKENS}, which is deliberately tight.`),
+  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op — the same calibration seed in time, never a contract. Undeclared falls back to ${DEFAULT_BUDGET_MINUTES}, which is deliberately tight.`),
+  doorbell_policy: z.enum(BUDGET_POLICIES).optional().describe("Who decides an extension. notify (the fallback): the machine audit decides each one and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap. Choose full when the run's spend needs human authority, notify when the audit is sufficient."),
+}).strict().optional().describe("Budget seed and extension policy. Declare an estimate calibrated to this mandate's scope — the tokens and minutes the work should take, not a ceiling to wish for. An undeclared seed falls back to tight documented defaults that will park a nontrivial run early.");
 const mandate = z.object({
   intent: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why this track exists and what it must achieve, in the user's terms. WHAT and WHY only — HOW is the born ORCH's to decide. Limit ${MAX_MANDATE_INTENT} characters.`),
   constraints: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).max(MANDATE_TRANSPORT_ITEMS).describe(`Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each; pass an empty array when there are none.`),
@@ -459,8 +465,8 @@ export const herdrTrackInputShape = {
   mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
   justification: justification.optional(),
-  requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(),
-  mode: z.enum(REVIVAL_MODES).optional().describe("revive (default resume): resume reconnects the recorded birth session and keeps its context, bumping no generation. rebirth destroys that context and starts generation+1; it needs the human-owned rebirth-approval.json naming that generation, run documents sufficient to reconstruct command, and an ORCH that is not live."),
+  requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe("Token cap you are asking for. Ask for what the remaining work named in the justification needs; one extension may raise the cap by at most half of what is already granted regardless of what is requested."),
+  mode: z.enum(REVIVAL_MODES).optional().describe("How to bring the ORCH back. resume (the fallback) reconnects the recorded birth session and keeps its context, bumping no generation. rebirth destroys that context and starts generation+1; it needs the human-owned rebirth-approval.json naming that generation, run documents sufficient to reconstruct command, and an ORCH that is not live. Resume unless the recorded session is genuinely gone."),
   wait,
   expected_registry_revision: z.number().int().nonnegative().optional(),
 };
@@ -478,7 +484,7 @@ export const herdrWorkerInputShape = {
   action: z.enum(["list", "inspect", "resume", "close"]),
   responsibility_key: coordinate.optional(),
   worker_id: workerId.optional(),
-  output_lines: z.number().int().min(1).max(200).optional(),
+  output_lines: z.number().int().min(1).max(200).optional().describe("Trailing lines of the worker's captured output to return. Ask for the fewest that answer the question you have; 200 is the ceiling, not the reading size."),
   expected_session_id: z.string().min(1).max(256).optional(),
   expected_state_change_seq: z.number().int().nonnegative().optional(),
 };
@@ -502,7 +508,7 @@ export const herdrFrictionInputShape = {
   track_id: coordinate.optional(),
   run_id: coordinate.optional(),
   fingerprint: z.string().regex(FRICTION_FINGERPRINT_RE).optional(),
-  limit: z.number().int().min(1).max(200).optional(),
+  limit: z.number().int().min(1).max(200).optional().describe("Maximum records to return. Ask for the number you will actually read; 200 is the ceiling, not the page size."),
 };
 
 export const herdrTrackSchema = z.discriminatedUnion("action", [
