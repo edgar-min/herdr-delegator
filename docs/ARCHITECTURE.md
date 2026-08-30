@@ -280,9 +280,15 @@ Revival reads the same birth chain: `resume` reconnects the recorded birth sessi
 
 ## Model and session verification
 
-The built-in orchestrator role is `@default`; a planning-grade role such as `@plan` with elevated thinking is recommended when judgment quality takes priority over cost. The built-in worker profiles are exactly `default`, `task`, and `slow`, all selecting `@default` so they resolve without user configuration. Configured installations may map `task` to `@task`, `slow` to `@slow`, or select another bounded OMP role alias.
+The built-in orchestrator role is `@default`; a planning-grade role such as `@plan` with elevated thinking is recommended. The orchestrator is the highest-judgment seat: it holds minimal context and owns decisions, direction, delegation, and settlement — never bulk execution. The built-in worker profiles are exactly `default`, `task`, and `slow`, all selecting `@default` so they resolve without user configuration. Configured installations may map `task` to `@task`, `slow` to `@slow`, or select another bounded OMP role alias.
 
-ORCH selects the assignment profile from work characteristics: `default` for dialogue-faithful, meticulous language work; `task` for the best artifact under a clear specification; and `slow` for the deepest, most careful reasoning on hard problems where cost is secondary. Cost-efficient small mechanical work routes to host OMP task/subagents under RTE-002, so no persistent lane profile exists for it.
+ORCH selects the assignment profile on two axes — specification maturity and cost of error:
+
+- `default` — meticulous and linguistically strong; the general-purpose choice for dialogue-faithful execution, precise language/document work, and work where verification budget is thin. Its meticulousness can invert into over-engineering, so wide-discretion design work goes elsewhere or arrives with a narrowed specification.
+- `task` — the highest output ceiling on concrete implementation, but less meticulous than `default`: assign only work with a mature specification, and verify its completions more deeply than other lanes. An immature specification here produces a high-quality-looking wrong answer.
+- `slow` — the deepest reasoning; it is delegated thinking, not execution: plan rebuttal and verification, design-fork research, audits. Assign right before judgments whose failure is expensive; never assign artifact implementation. It is also the profile the server spawns budget auditors on.
+
+Cost-efficient small mechanical work routes to host OMP task/subagents under RTE-002, so no persistent lane profile exists for it.
 
 1. The bridge resolves configured roles inside OMP and publishes current session/model/thinking facts.
 2. MCP derives the fact coordinate from the verified caller pane and active OMP agent directory.
