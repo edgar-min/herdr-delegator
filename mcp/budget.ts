@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { appendFile, lstat, readFile } from "node:fs/promises";
+import { appendFile, lstat, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
@@ -41,6 +41,24 @@ export type ClampReading = { clamp?: BudgetClamp; unreadable?: string };
 export function budgetLedgerPath(runPath: string): string { return path.join(runPath, "budget-ledger.md"); }
 export function budgetClampPath(runPath: string): string { return path.join(runPath, "budget-clamp.json"); }
 export function budgetAuditPath(runPath: string, ordinal: number): string { return path.join(runPath, `budget-audit-${ordinal}.md`); }
+
+const CLAMP_SCAFFOLD_NOTE = "Human-owned. Set max_tokens and/or max_minutes to set the ceiling; raising releases a parked run; 0 is the kill switch. No agent may edit this file.";
+const CLAMP_SCHEMA = "{version:1, max_tokens?, max_minutes?, note?}";
+
+export function clampSchemaGuidance(runPath: string): string {
+  return `The human-owned clamp file already exists at ${budgetClampPath(runPath)} and accepts the exact schema ${CLAMP_SCHEMA}.`;
+}
+
+export async function scaffoldClamp(runPath: string): Promise<{ created: boolean; warning?: string }> {
+  const body = `${JSON.stringify({ version: 1, note: CLAMP_SCAFFOLD_NOTE }, null, 2)}\n`;
+  try {
+    await writeFile(budgetClampPath(runPath), body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    return { created: true };
+  } catch (error) {
+    if (isObject(error) && error.code === "EEXIST") return { created: false };
+    return { created: false, warning: "The inert human-owned budget clamp could not be scaffolded; no existing clamp was changed." };
+  }
+}
 
 function boundedLine(value: string, field: string): string {
   const line = value.replace(/[\r\n\t]+/g, " ").replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s{2,}/g, " ").trim();

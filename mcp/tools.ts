@@ -14,7 +14,7 @@ import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } f
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
 import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
-import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, seedBudget, stepCap } from "./budget";
+import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampSchemaGuidance, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
 
@@ -1092,10 +1092,11 @@ export class CompositeTools {
     const seeded = stamped.budget ?? seedBudget(input.mandate, nowIso());
     const stampedCreator = stamped.orch_creator;
     if (!stampedCreator) throw new McpContractError("creator_stamp_missing", "The open creator stamp did not persist.", "storage", "Preserve the initialized run and retry the identical open.");
+    const clampScaffold = await scaffoldClamp(store.runPath);
     await appendLedger(store.runPath, "seed", [
       `seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} min (declared estimate, not a contract)`,
       `doorbell policy: ${seeded.doorbell_policy}`,
-      `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
+      clampSchemaGuidance(store.runPath),
       `creator verification: ${stampedCreator.verified === false ? "unverified (omp_fact_bridge_mismatch)" : "attested"}`,
       "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
@@ -1114,7 +1115,7 @@ export class CompositeTools {
     const creatorWarning = stampedCreator.verified === false
       ? "Opening creator is unverified because pane attestation failed with omp_fact_bridge_mismatch; existing-run operations remain fail-closed."
       : undefined;
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning, creatorWarning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
     const retirementText = stampedCreator.verified === false
       ? "the unverified opening pane is retired for this track and cannot issue guarded calls"
       : "this session is retired for this track and every guarded call it makes now fails with creator_session_retired";
@@ -1294,7 +1295,7 @@ export class CompositeTools {
    * while `add` and `resume` (new or restarted work) are refused. Nothing here
    * ever kills a session: a parked run waits, and phase 6 revives it.
    */
-  private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close"): Promise<{ metering: BudgetMetering; parked: boolean }> {
+  private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close"): Promise<{ metering: BudgetMetering; parked: boolean; warning?: string }> {
     const registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
     const clampReading = await readClamp(store.runPath);
@@ -1312,6 +1313,7 @@ export class CompositeTools {
     const detail = clampReading.unreadable
       ? `The human-owned clamp file cannot be trusted: ${clampReading.unreadable}. No tool op raises what the human lowered, so the run waits.`
       : `${meteringLedgerLine(metering)}.`;
+    const clampScaffold = reason ? await scaffoldClamp(store.runPath) : undefined;
     if (reason && (record.state !== "parked" || record.park_reason !== reason)) {
       const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
         const current = next.budget ?? seedBudget(undefined, next.created_at);
@@ -1358,18 +1360,21 @@ export class CompositeTools {
       }
       return { metering, parked: false };
     }
-    if (action === "wait" || action === "close") return { metering, parked: true };
+    if (action === "wait" || action === "close") {
+      return { metering, parked: true, ...(clampScaffold?.warning ? { warning: clampScaffold.warning } : {}) };
+    }
+    const recovery = reason === "clamp-unreadable"
+      ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
+      : reason === "denied"
+        ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)}. The clamp is the human's absolute ceiling: raising it above the judged spend releases the park directly, and any edit to the file releases the next extension attempt.`
+        : reason === "approval-required"
+          ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
+          : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`;
     throw new McpContractError(
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
       "budget",
-      reason === "clamp-unreadable"
-        ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
-        : reason === "denied"
-          ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)}. The clamp is the human's absolute ceiling: raising it above the judged spend releases the park directly, and any edit to the file releases the next extension attempt.`
-          : reason === "approval-required"
-            ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
-            : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`,
+      `${recovery} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}`,
       false,
       true,
     );
@@ -1383,9 +1388,12 @@ export class CompositeTools {
    */
   private async budgetDoorbell(store: DelegationStore, run: RunRef, registry: DelegationRegistry, record: BudgetRecord, heading: string, lines: readonly string[]): Promise<string | undefined> {
     const birth = latestBirth(registry);
-    const warning = birth ? await labelOwnedPane(birth.pane_id, orchPaneLabel(run, record)) : "No ORCH birth record: the budget marker has no pane to name.";
-    await appendLedger(store.runPath, heading, warning ? [...lines, `doorbell warning: ${warning}`] : lines).catch(() => undefined);
-    return warning;
+    const markerWarning = birth ? await labelOwnedPane(birth.pane_id, orchPaneLabel(run, record)) : "No ORCH birth record: the budget marker has no pane to name.";
+    const clampScaffold = heading.startsWith("parked") ? await scaffoldClamp(store.runPath) : undefined;
+    const warnings = [markerWarning, clampScaffold?.warning].filter((value): value is string => typeof value === "string");
+    const ledgerLines = heading.startsWith("parked") ? [...lines, clampSchemaGuidance(store.runPath)] : [...lines];
+    await appendLedger(store.runPath, heading, [...ledgerLines, ...warnings.map((warning) => `doorbell warning: ${warning}`)]).catch(() => undefined);
+    return warnings.length ? warnings.join(" | ") : undefined;
   }
 
   /**
@@ -1420,7 +1428,7 @@ export class CompositeTools {
     if (record.park_reason === "denied" && record.denied_clamp_sha256 !== undefined) {
       const fingerprint = await clampFingerprint(store.runPath);
       if (fingerprint === record.denied_clamp_sha256) {
-        throw new McpContractError("budget_denied", "A machine audit denied the last extension and no human has touched the clamp file since.", "budget", `Escalate to the human with ${budgetLedgerPath(store.runPath)} and the audit document; a change to ${budgetClampPath(store.runPath)} is what releases the next attempt. Re-wording the justification is not an escalation.`, false, true);
+        throw new McpContractError("budget_denied", "A machine audit denied the last extension and no human has touched the clamp file since.", "budget", `Escalate to the human with ${budgetLedgerPath(store.runPath)} and the audit document; a change to ${budgetClampPath(store.runPath)} is what releases the next attempt. Re-wording the justification is not an escalation. ${clampSchemaGuidance(store.runPath)}`, false, true);
       }
     }
     // Covenant: extensions may not arrive faster than the published interval, so
@@ -1506,6 +1514,7 @@ export class CompositeTools {
     // parked, so a token-only grant would leave a minutes-parked run parked
     // forever — the cadence would become the wall this design refuses to be.
     const grantedMinutes = granted > 0 ? Math.max(1, Math.floor(record.granted_minutes * BUDGET_STEP_FRACTION)) : 0;
+    const denyScaffold = verdict.verdict === "deny" ? await scaffoldClamp(store.runPath) : undefined;
     const deniedFingerprint = verdict.verdict === "deny" ? await clampFingerprint(store.runPath) : undefined;
     const settled = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
       const current = next.budget ?? seedBudget(undefined, next.created_at);
@@ -1527,7 +1536,7 @@ export class CompositeTools {
       `granted: +${granted} tokens, +${grantedMinutes} min -> cap ${settledRecord.granted_tokens} tokens / ${settledRecord.granted_minutes} min`,
       `verdict read from ${pending.audit_path} sha256=${audit?.sha256 ?? "unreadable"}`,
       "recorded server-side; the orchestrator never wrote this entry",
-      ...(verdict.verdict === "deny" ? [`escalation: the human decides from here, armed with this verdict and the ledger; the next attempt is released only by a change to ${budgetClampPath(store.runPath)} (fingerprint at deny: ${deniedFingerprint})`] : []),
+      ...(verdict.verdict === "deny" ? [`escalation: the human decides from here, armed with this verdict and the ledger; the next attempt is released only by a change to ${budgetClampPath(store.runPath)} (fingerprint at deny: ${deniedFingerprint})`, clampSchemaGuidance(store.runPath), ...(denyScaffold?.warning ? [`scaffold warning: ${denyScaffold.warning}`] : [])] : []),
     ]);
     const closeWarning = await this.closeAuditor(store, run, pending.ordinal, pending.audit_worker_id, timeoutMs);
     // Re-judge with the new cap: a grant that still leaves the run over its
@@ -1547,9 +1556,9 @@ export class CompositeTools {
         metering: judged.metering,
         audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted },
         ledger_path: budgetLedgerPath(store.runPath),
-        ...(closeWarning ? { warnings: [closeWarning] } : {}),
+        ...((closeWarning || judged.warning || denyScaffold?.warning) ? { warnings: [closeWarning, judged.warning, denyScaffold?.warning].filter((value): value is string => typeof value === "string") } : {}),
         next_step: verdict.verdict === "deny"
-          ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here.`
+          ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here. ${clampSchemaGuidance(store.runPath)}`
           : judged.parked
             ? `Granted +${granted} tokens, and the run is still parked: read data.budget.park_reason.`
             : `Granted +${granted} tokens; the run is active again.`,
