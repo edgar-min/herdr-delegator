@@ -293,8 +293,8 @@ Cost-efficient small mechanical work routes to host OMP task/subagents under RTE
 1. The bridge resolves configured roles inside OMP and publishes current session/model/thinking facts.
 2. MCP derives the fact coordinate from the verified caller pane and active OMP agent directory.
 3. MCP verifies owner, non-symlink type, modes, strict schema, session/pane correspondence, nonce, timestamp, and metadata exact match.
-4. Child launch uses the resolved concrete provider/model and effective thinking.
-5. After prompt, canonical JSONL verifies official session, model, thinking, and fallback.
+4. Child launch passes the configured ROLE — an unresolved alias, or nothing at all for `default` — never a model the caller resolved. The child expands it against its own persisted settings, so a caller's process-local model override cannot decide a child's model (MOD-007).
+5. After prompt, canonical JSONL verifies official session, model, thinking, and fallback against the child's own bootstrap attestation. The caller holds no expected model to compare against; the child's reported identity is recorded as an observation.
 
 Resume uses only this verified official session. Missing, stale, unsafe, mismatched, or credibly duplicated sessions fail closed.
 
