@@ -996,8 +996,42 @@ async function startOrchestrator(
   let bootstrapVerification: BootstrapSessionVerification | undefined;
   let duplicatePrompt = false;
   let blockedOnPermission: { state: "blocked"; pane_id: string } | undefined;
+  let anchorRecreation: { previous_tab_id: string; previous_pane_id: string; tab_id: string; pane_id: string } | undefined;
   try {
     ({ run, target } = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
+      const recordedRun = registry.run;
+      const recordedTarget = recordedRun?.target_orchestrator;
+      let recreateDeadAnchor = false;
+      if (recordedRun && recordedTarget) {
+        const lineageMismatch = recordedRun.reset_lineage === undefined
+          ? lineage !== undefined
+          : lineage === undefined || JSON.stringify(recordedRun.reset_lineage) !== JSON.stringify(lineage);
+        if (lineageMismatch) {
+          throw new ContractError(
+            "reset_lineage_mismatch",
+            "The registry reset lineage differs from run.json/reset.json.",
+            "registry",
+          );
+        }
+        const recordedLive = await getLiveAgent(binary, recordedTarget.agent_name, timeoutMs, signal);
+        if (recordedLive.ok) {
+          assertTargetAgentBelongs(recordedRun, recordedTarget, recordedLive.data);
+        } else if (!isMissingHerdrObject(recordedLive)) {
+          throw commandError(recordedLive, "orch_reconcile", "Inspect the target ORCH before retrying.");
+        } else if (recordedTarget.session_path) {
+          try {
+            recreateDeadAnchor =
+              path.isAbsolute(recordedTarget.session_path) &&
+              (await realpath(recordedTarget.session_path)) === recordedTarget.session_path &&
+              await isFile(recordedTarget.session_path);
+          } catch {
+            recreateDeadAnchor = false;
+          }
+        }
+      }
+      const previousAnchor = recordedRun?.anchor_tab_id && recordedRun.anchor_pane_id
+        ? { tab_id: recordedRun.anchor_tab_id, pane_id: recordedRun.anchor_pane_id }
+        : undefined;
       const liveRun = await ensureRunWorkspace(
         binary,
         registry,
@@ -1009,7 +1043,22 @@ async function startOrchestrator(
         caller,
         timeoutMs,
         signal,
+        recreateDeadAnchor ? { recreateDeadAnchor: true } : undefined,
       );
+      if (
+        recreateDeadAnchor &&
+        previousAnchor &&
+        (liveRun.anchor_tab_id !== previousAnchor.tab_id || liveRun.anchor_pane_id !== previousAnchor.pane_id) &&
+        liveRun.anchor_tab_id &&
+        liveRun.anchor_pane_id
+      ) {
+        anchorRecreation = {
+          previous_tab_id: previousAnchor.tab_id,
+          previous_pane_id: previousAnchor.pane_id,
+          tab_id: liveRun.anchor_tab_id,
+          pane_id: liveRun.anchor_pane_id,
+        };
+      }
       if (!liveRun.workspace_id || !liveRun.anchor_tab_id || !liveRun.anchor_pane_id) {
         throw new ContractError("run_workspace_not_ready", "The target reset workspace has no complete anchor.", "workspace");
       }
@@ -1268,6 +1317,7 @@ async function startOrchestrator(
       model_verification: verification,
       prompt_fingerprint: instructionFingerprint,
       reset_lineage: lineage,
+      ...(anchorRecreation ? { anchor_recreation: anchorRecreation } : {}),
       ...(blockedOnPermission ? { blocked_on_permission: blockedOnPermission } : {}),
       pane_label: paneLabel,
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),

@@ -1211,6 +1211,7 @@ async function resolveRunAnchorTab(
   cwd: string,
   timeoutMs: number,
   signal?: AbortSignal,
+  recreateMissingPaneId?: string,
 ): Promise<{ anchorTabId: string; anchorPaneId: string; createdTab: boolean }> {
   const [workspace, snapshot] = await Promise.all([
     runHerdr(binary, ["workspace", "get", workspaceId], timeoutMs, signal),
@@ -1290,8 +1291,34 @@ async function resolveRunAnchorTab(
     ),
   );
   const shells = tabPanes.filter((_, index) => !sidebarProofs[index]);
-  const anchorPaneId = firstString(shells[0], ["pane_id"]);
-  if (!anchorTabId || shells.length !== 1 || !anchorPaneId) {
+  let anchorPaneId = firstString(shells[0], ["pane_id"]);
+  if (recreateMissingPaneId && shells.length === 0) {
+    const splitTarget = firstString(tabPanes[0], ["pane_id"]);
+    if (!splitTarget) {
+      throw new ContractError(
+        "identity_conflict",
+        "The surviving anchor tab has no verified pane from which to recreate its shell.",
+        "workspace_reconcile",
+        { recovery: "Preserve the tab and inspect its topology before retrying revival." },
+      );
+    }
+    const created = await runHerdr(binary, ["pane", "split", splitTarget, "--direction", "right", "--cwd", cwd, "--no-focus"], timeoutMs, signal);
+    if (!created.ok) throw commandError(created, "workspace_reconcile", "Read the original missing anchor pane again before retrying revival.");
+    anchorPaneId = firstString(created.data, ["new_pane_id", "pane_id"]);
+    if (!anchorPaneId || anchorPaneId === splitTarget) {
+      throw new ContractError(
+        "invalid_herdr_response",
+        "The anchor pane recreation response omitted the new pane coordinate.",
+        "workspace_reconcile",
+        { ambiguousEffect: true, recovery: "Inspect the labelled anchor tab; do not split it again blindly." },
+      );
+    }
+  } else if (
+    !anchorTabId ||
+    shells.length !== 1 ||
+    !anchorPaneId ||
+    (recreateMissingPaneId !== undefined && anchorPaneId !== recreateMissingPaneId)
+  ) {
     // Herdr attaches a tab's sidebar pane before it publishes that pane's label
     // and herdr-sidebar-* tokens, so a tab observed inside that window looks
     // like two shells. The state is transient, hence retryable — but never
@@ -1343,6 +1370,7 @@ export async function ensureRunWorkspace(
   orchestrator: OrchestratorRecord,
   timeoutMs: number,
   signal?: AbortSignal,
+  options?: { recreateDeadAnchor?: boolean },
 ): Promise<RunRecord> {
   const runKey = sha256(runPath);
   const workspaceLabel = `herdr/${trackId}`;
@@ -1399,7 +1427,50 @@ export async function ensureRunWorkspace(
         );
       }
       const anchor = await runHerdr(binary, ["pane", "get", run.anchor_pane_id], timeoutMs, signal);
-      if (!anchor.ok) throw commandError(anchor, "workspace_reconcile", "Read the registered anchor pane again.");
+      if (!anchor.ok) {
+        if (!options?.recreateDeadAnchor || !/not_found|not found/i.test(`${anchor.code} ${anchor.message}`)) {
+          throw commandError(anchor, "workspace_reconcile", "Read the registered anchor pane again.");
+        }
+        const target = run.target_orchestrator;
+        if (
+          !target ||
+          !target.session_path ||
+          !run.anchor_tab_id ||
+          target.workspace_id !== run.workspace_id ||
+          target.tab_id !== run.anchor_tab_id ||
+          target.pane_id !== run.anchor_pane_id
+        ) {
+          throw commandError(anchor, "workspace_reconcile", "Read the registered anchor pane again.");
+        }
+        let recreated: { anchorTabId: string; anchorPaneId: string; createdTab: boolean };
+        try {
+          recreated = await resolveRunAnchorTab(
+            binary,
+            run.workspace_id,
+            workspaceLabel,
+            anchorLabel,
+            cwd,
+            timeoutMs,
+            signal,
+            run.anchor_pane_id,
+          );
+        } catch (error) {
+          if (error instanceof ContractError && error.ambiguousEffect) throw error;
+          throw commandError(anchor, "workspace_reconcile", "Read the registered anchor pane again.");
+        }
+        if (recreated.anchorPaneId === run.anchor_pane_id) {
+          throw commandError(anchor, "workspace_reconcile", "Read the registered anchor pane again.");
+        }
+        run.anchor_tab_id = recreated.anchorTabId;
+        run.anchor_pane_id = recreated.anchorPaneId;
+        target.workspace_id = run.workspace_id;
+        target.tab_id = recreated.anchorTabId;
+        target.pane_id = recreated.anchorPaneId;
+        run.updated_at = nowIso();
+        target.updated_at = run.updated_at;
+        await writeRegistryAtomic(registryPath, registry);
+        return run;
+      }
       const anchorCwd = firstString(anchor.data, ["cwd"]);
       let canonicalAnchorCwd: string | undefined;
       try {
@@ -1420,6 +1491,9 @@ export async function ensureRunWorkspace(
     }
     if (!/not_found|not found/i.test(`${workspace.code} ${workspace.message}`)) {
       throw commandError(workspace, "workspace_reconcile", "Read the registered workspace again.");
+    }
+    if (options?.recreateDeadAnchor) {
+      throw commandError(workspace, "workspace_reconcile", "Call ensure_worker to recover the run workspace.");
     }
     run.workspace_state = "workspace-creating";
     delete run.workspace_id;
