@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { assertOrchestratorAligned, loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { materializeGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
@@ -907,6 +908,10 @@ export class CompositeTools {
       `doorbell policy: ${seeded.doorbell_policy}`,
       `clamp file (human-owned, absent until the human writes it): ${budgetClampPath(store.runPath)}`,
     ]).catch(() => undefined);
+    // Advisory delivery surface, never a gate: the document is rendered (or
+    // degrades to a document naming its own failure) before the spawn, and only
+    // a failed write is reported — open proceeds either way.
+    const guidance = await materializeGuidance(store.runPath);
 
     const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
@@ -914,7 +919,7 @@ export class CompositeTools {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
     }
     const observation = isObject(spawned.observation) ? spawned.observation : {};
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning].filter((value): value is string => typeof value === "string");
     // No skill routes here: plan and authoring boundaries belong to the ORCH,
     // and this result is read by the session that just retired.
     return {
@@ -997,6 +1002,9 @@ export class CompositeTools {
       const retirement = await retireOrchestratorSession({ operation: "retire_orch_session", track_id: run.track_id, run_id: run.run_id });
       retired = retirement.observation;
     }
+    // A revived ORCH — resumed or reborn — must see the configuration that is
+    // current now, not the rendering its first birth got. Best-effort as at open.
+    const guidance = await materializeGuidance(store.runPath);
 
     const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, runtime.ctx, runtime.thinking);
     const observedSession = stringField(started.orchestrator, ["session_id"]);
@@ -1028,7 +1036,7 @@ export class CompositeTools {
       ]).catch(() => undefined);
     }
     const observation = isObject(started.observation) ? started.observation : {};
-    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning]) {
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning]) {
       if (typeof candidate === "string") warnings.push(candidate);
     }
     return {

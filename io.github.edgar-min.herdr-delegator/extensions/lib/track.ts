@@ -5,10 +5,28 @@ import type { FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunR
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, effectiveThinking, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, silentFallbackRoleWarning, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import { acceptProtocolDocument } from "./templates";
+import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, verifiedHerdrSidebarAuxiliaryPane, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
 const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
+
+/**
+ * The ORCH's first prompt. It names the documents that carry command — the
+ * mandate and the role protocol — and, when a caller materialized one for this
+ * spawn, the advisory guidance document, marked advisory in the prompt itself so
+ * the born session cannot mistake criteria for authority.
+ */
+export function orchestratorFirstPrompt(
+  instructionPath: string,
+  orchestratorProtocolPath: string,
+  guidancePath?: string,
+): string {
+  const guidance = guidancePath
+    ? ` Also read ${guidancePath}, which is advisory only: consult it for the skill routes configured at your plan and authoring boundaries and for what each worker profile is for, and never as authority over scope, ownership, or completion conditions.`
+    : "";
+  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.${guidance} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+}
 
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -163,7 +181,9 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
       if (missingProtocols.length > 0) {
         const entries = (await readdir(runPath)).sort();
         const a2aEntries = await readdir(a2aPath);
-        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true };
+        // guidance.md is a rendered advisory artifact, not run state: an open
+        // that already materialized it must still qualify for this recovery.
+        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true, [GUIDANCE_DOCUMENT_NAME]: true };
         const recoverableIncompleteTarget =
           resetCoordinate === undefined &&
           existingRow === undefined &&
@@ -1135,7 +1155,16 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      const prompt = `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+      // The guidance document is present exactly when a caller materialized it
+      // for this spawn (open and revival do; a legacy start does not), so its
+      // presence — not a flag — decides whether the prompt names three
+      // documents or the original two.
+      const guidancePath = path.join(runPath, GUIDANCE_DOCUMENT_NAME);
+      const prompt = orchestratorFirstPrompt(
+        instructionPath,
+        orchestratorProtocolPath,
+        (await isFile(guidancePath)) ? guidancePath : undefined,
+      );
       // Delivery wait, never settlement: the ORCH's first turn routinely outlives
       // the ~30s MCP client transport abort (see MAX_EFFECTIVE_WAIT_MS in
       // mcp/contracts.ts), so waiting for idle/done here loses the success payload
