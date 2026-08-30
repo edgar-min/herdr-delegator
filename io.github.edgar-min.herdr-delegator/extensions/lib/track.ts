@@ -997,11 +997,12 @@ async function startOrchestrator(
   let duplicatePrompt = false;
   let blockedOnPermission: { state: "blocked"; pane_id: string } | undefined;
   let anchorRecreation: { previous_tab_id: string; previous_pane_id: string; tab_id: string; pane_id: string } | undefined;
+  let configDrift: { previous_sha256: string; current_sha256: string } | undefined;
   try {
     ({ run, target } = await withRegistryLock(runPath, timeoutMs, async (registry, targetRegistryPath) => {
       const recordedRun = registry.run;
       const recordedTarget = recordedRun?.target_orchestrator;
-      let recreateDeadAnchor = false;
+      let groundedRevival = false;
       if (recordedRun && recordedTarget) {
         const lineageMismatch = recordedRun.reset_lineage === undefined
           ? lineage !== undefined
@@ -1020,13 +1021,29 @@ async function startOrchestrator(
           throw commandError(recordedLive, "orch_reconcile", "Inspect the target ORCH before retrying.");
         } else if (recordedTarget.session_path) {
           try {
-            recreateDeadAnchor =
+            groundedRevival =
               path.isAbsolute(recordedTarget.session_path) &&
               (await realpath(recordedTarget.session_path)) === recordedTarget.session_path &&
               await isFile(recordedTarget.session_path);
           } catch {
-            recreateDeadAnchor = false;
+            groundedRevival = false;
           }
+        }
+      }
+      if (groundedRevival && recordedTarget) {
+        if (recordedTarget.requested_role !== resolved.launch.requested_role) {
+          throw new ContractError(
+            "model_profile_mismatch",
+            "The target ORCH launch profile differs from the registry-recorded orchestrator role.",
+            "model_verify",
+            { recovery: "Preserve the target session; initialize a sibling run instead of switching its launch profile in place." },
+          );
+        }
+        const previousSha256 = sha256(JSON.stringify(recordedTarget.config_sources));
+        const currentSha256 = sha256(JSON.stringify(resolved.launch.config_sources));
+        if (previousSha256 !== currentSha256) {
+          configDrift = { previous_sha256: previousSha256, current_sha256: currentSha256 };
+          recordedTarget.config_sources = resolved.launch.config_sources;
         }
       }
       const previousAnchor = recordedRun?.anchor_tab_id && recordedRun.anchor_pane_id
@@ -1043,10 +1060,10 @@ async function startOrchestrator(
         caller,
         timeoutMs,
         signal,
-        recreateDeadAnchor ? { recreateDeadAnchor: true } : undefined,
+        groundedRevival ? { recreateDeadAnchor: true } : undefined,
       );
       if (
-        recreateDeadAnchor &&
+        groundedRevival &&
         previousAnchor &&
         (liveRun.anchor_tab_id !== previousAnchor.tab_id || liveRun.anchor_pane_id !== previousAnchor.pane_id) &&
         liveRun.anchor_tab_id &&
@@ -1318,6 +1335,7 @@ async function startOrchestrator(
       prompt_fingerprint: instructionFingerprint,
       reset_lineage: lineage,
       ...(anchorRecreation ? { anchor_recreation: anchorRecreation } : {}),
+      ...(configDrift ? { config_drift: configDrift } : {}),
       ...(blockedOnPermission ? { blocked_on_permission: blockedOnPermission } : {}),
       pane_label: paneLabel,
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
