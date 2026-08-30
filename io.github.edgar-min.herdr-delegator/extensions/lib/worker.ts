@@ -385,6 +385,7 @@ export async function ensureWorker(
       model_verification: modelVerification,
       ...(responsibilityKey ? { pane_label: `${workerId} ${responsibilityKey}` } : {}),
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
+      ...(resolved.warnings.length ? { role_resolution_warning: resolved.warnings.join(" | ") } : {}),
     },
   };
 }
