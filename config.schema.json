@@ -40,7 +40,8 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/profilePatch"
-      }
+      },
+      "description": "Worker launch profiles, patched per layer by name. A profile inherits only from the same name in an earlier layer: a name no earlier layer defines must declare `role` in the layer that first defines it, or the layer is rejected with invalid_config. This cross-layer rule is enforced in code, not expressible here."
     },
     "skill_routing": {
       "type": "object",
@@ -69,6 +70,10 @@
                   "type": "string",
                   "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
                 }
+              },
+              "trigger": {
+                "$ref": "#/$defs/guidanceText",
+                "description": "Optional prose naming when this route applies, rendered as advisory selection criteria beside the skill names."
               }
             }
           },
@@ -89,6 +94,12 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     },
+    "guidanceText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
     "profilePatch": {
       "type": "object",
       "additionalProperties": false,
@@ -98,6 +109,10 @@
         },
         "thinking": {
           "$ref": "#/$defs/thinking"
+        },
+        "guidance": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "Optional profile-selection criteria prose for this worker profile, delivered as advisory material at judgment boundaries. It never resolves a role, a model, or authority. Required nowhere; when a layer defines a profile name for the first time it must still declare `role` (code-enforced)."
         }
       }
     }

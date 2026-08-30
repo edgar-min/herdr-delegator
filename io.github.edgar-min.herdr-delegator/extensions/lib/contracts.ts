@@ -87,6 +87,12 @@ export type ConfigThinkingLevel = (typeof CONFIG_THINKING_LEVELS)[number];
 export type ModelProfile = {
   role: string;
   thinking: ConfigThinkingLevel;
+  /**
+   * Optional profile-selection criteria prose, authored per profile in a
+   * configuration layer. It is delivered to judgment boundaries as advisory
+   * material and never resolves a model, a role, or authority.
+   */
+  guidance?: string;
 };
 
 /** A concrete model as the OMP model facade reports it. */
@@ -119,6 +125,14 @@ export const MAX_SKILL_ROUTE_RULES = 16;
 export const MAX_SKILLS_PER_ROUTE = 8;
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+/**
+ * Bound for configured advisory prose (`worker_profiles.<name>.guidance`,
+ * `skill_routing.rules[].trigger`). Single-line by contract so the text can be
+ * rendered into tables and prompts without escaping.
+ */
+export const MAX_GUIDANCE_LENGTH = 500;
+export const GUIDANCE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
+
 export type SkillRouteBoundary = (typeof SKILL_ROUTE_BOUNDARIES)[number];
 
 export type SkillRouteSurface = "orch" | "worker";
@@ -127,6 +141,11 @@ export type SkillRoute = {
   boundary: SkillRouteBoundary;
   surface: SkillRouteSurface;
   skills: string[];
+  /**
+   * Optional prose naming when this route applies. Advisory selection criteria
+   * for the surface that reads the route; never a gate.
+   */
+  trigger?: string;
 };
 
 export type DelegatorConfig = {

@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillRoute, SkillRouteBoundary, SkillRouteSurface, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -38,11 +38,37 @@ function isConfigThinkingLevel(value: unknown): value is ConfigThinkingLevel {
   return typeof value === "string" && CONFIG_THINKING_LEVELS.some((level) => level === value);
 }
 
-function parseProfilePatch(value: unknown, coordinate: string): Partial<ModelProfile> {
+/**
+ * Bounded single-line advisory prose. Judgment criteria are authored, never
+ * defaulted, so an unusable value fails the layer instead of degrading into
+ * text that would be rendered at a decision boundary.
+ */
+function parseGuidanceText(value: unknown, coordinate: string): string {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > MAX_GUIDANCE_LENGTH ||
+    GUIDANCE_CONTROL_RE.test(value)
+  ) {
+    throw new ContractError(
+      "invalid_config",
+      `${coordinate}: expected 1-${MAX_GUIDANCE_LENGTH} characters of single-line prose.`,
+      "config",
+      { recovery: "Shorten the text, remove line breaks and control characters, or omit the field; guidance is never truncated for you." },
+    );
+  }
+  return value.trim();
+}
+
+function parseProfilePatch(
+  value: unknown,
+  coordinate: string,
+  options: { guidance: boolean },
+): Partial<ModelProfile> {
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
   }
-  assertExactKeys(value, ["role", "thinking"], coordinate);
+  assertExactKeys(value, options.guidance ? ["role", "thinking", "guidance"] : ["role", "thinking"], coordinate);
   if (
     value.role !== undefined &&
     (
@@ -59,6 +85,7 @@ function parseProfilePatch(value: unknown, coordinate: string): Partial<ModelPro
   return {
     ...(typeof value.role === "string" ? { role: value.role } : {}),
     ...(isConfigThinkingLevel(value.thinking) ? { thinking: value.thinking } : {}),
+    ...(value.guidance === undefined ? {} : { guidance: parseGuidanceText(value.guidance, `${coordinate}.guidance`) }),
   };
 }
 
@@ -75,7 +102,7 @@ function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRo
     if (!isObject(rule)) {
       throw new ContractError("invalid_config", `${ruleCoordinate}: expected an object.`, "config");
     }
-    assertExactKeys(rule, ["boundary", "surface", "skills"], ruleCoordinate);
+    assertExactKeys(rule, ["boundary", "surface", "skills", "trigger"], ruleCoordinate);
     if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
       throw new ContractError("invalid_config", `${ruleCoordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
     }
@@ -90,7 +117,12 @@ function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRo
     ) {
       throw new ContractError("invalid_config", `${ruleCoordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
     }
-    return { boundary: rule.boundary, surface: rule.surface, skills: [...(rule.skills as string[])] } as SkillRoute;
+    return {
+      boundary: rule.boundary,
+      surface: rule.surface,
+      skills: [...(rule.skills as string[])],
+      ...(rule.trigger === undefined ? {} : { trigger: parseGuidanceText(rule.trigger, `${ruleCoordinate}.trigger`) }),
+    } as SkillRoute;
   });
   return { rules };
 }
@@ -112,7 +144,7 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
   }
   const patch: ConfigPatch = {};
   if (value.orchestrator !== undefined) {
-    patch.orchestrator = parseProfilePatch(value.orchestrator, `${coordinate}.orchestrator`);
+    patch.orchestrator = parseProfilePatch(value.orchestrator, `${coordinate}.orchestrator`, { guidance: false });
   }
   if (value.worker_profiles !== undefined) {
     if (!isObject(value.worker_profiles)) {
@@ -123,7 +155,7 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
       if (!PROFILE_RE.test(name)) {
         throw new ContractError("invalid_config", `${coordinate}.worker_profiles: invalid profile name ${JSON.stringify(name)}.`, "config");
       }
-      patch.worker_profiles[name] = parseProfilePatch(profile, `${coordinate}.worker_profiles.${name}`);
+      patch.worker_profiles[name] = parseProfilePatch(profile, `${coordinate}.worker_profiles.${name}`, { guidance: true });
     }
   }
   if (value.storage !== undefined) {
@@ -176,10 +208,34 @@ async function readConfigLayer(
   };
 }
 
-function mergeConfigPatch(config: DelegatorConfig, patch: ConfigPatch): void {
+/**
+ * Layer merge. A worker profile inherits only from the same name already
+ * accumulated across layers, so a first definition — including a misspelled
+ * name — must declare its own `role` instead of silently running on another
+ * profile's identity.
+ */
+function mergeConfigPatch(config: DelegatorConfig, patch: ConfigPatch, layerPath: string): void {
   if (patch.orchestrator) config.orchestrator = { ...config.orchestrator, ...patch.orchestrator };
   for (const [name, profile] of Object.entries(patch.worker_profiles ?? {})) {
-    const base = config.worker_profiles[name] ?? config.worker_profiles.default;
+    const base = config.worker_profiles[name];
+    if (!base) {
+      if (profile.role === undefined) {
+        throw new ContractError(
+          "invalid_config",
+          `${layerPath}: worker_profiles.${name} is defined for the first time and must declare role.`,
+          "config",
+          {
+            recovery: `Declare role on worker_profiles.${name}, or correct the name to a profile an earlier layer already defines; a new profile never inherits another profile's role.`,
+          },
+        );
+      }
+      config.worker_profiles[name] = {
+        role: profile.role,
+        thinking: profile.thinking ?? "inherit",
+        ...(profile.guidance === undefined ? {} : { guidance: profile.guidance }),
+      };
+      continue;
+    }
     config.worker_profiles[name] = { ...base, ...profile };
   }
   if (patch.storage) config.storage = patch.storage;
@@ -202,7 +258,7 @@ export async function loadDelegatorConfig(runPath: string | undefined, cwd: stri
   for (const [scope, candidatePath] of baseCandidates) {
     const layer = await readConfigLayer(scope, candidatePath);
     if (!layer) continue;
-    mergeConfigPatch(config, layer.patch);
+    mergeConfigPatch(config, layer.patch, layer.source.path);
     sources.push(layer.source);
   }
   if (!config.storage) {
@@ -224,7 +280,7 @@ export async function loadDelegatorConfig(runPath: string | undefined, cwd: stri
           "config",
         );
       }
-      mergeConfigPatch(config, layer.patch);
+      mergeConfigPatch(config, layer.patch, layer.source.path);
       sources.push(layer.source);
     }
   }
