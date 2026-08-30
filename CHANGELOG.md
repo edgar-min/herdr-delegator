@@ -13,7 +13,83 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
-## [2.0.0] - Unreleased
+## [3.0.0] - 2026-08-30
+
+Boundary judgment delivery and creator role-table pinning. Curated judgment criteria —
+which routed skill to read, which worker profile fits, how much budget to declare — now
+reach the ORCH at the boundary where each judgment is made, and a born session's polluted
+`@default` no longer decides worker models.
+
+### Added
+
+- Creator role-table pinning: `herdr_track open` records the creator session's observed
+  role table (each role's provider/model and bound thinking, with provenance) as
+  `pinned_roles` in `a2a/delegation.json` (schema v3; v1/v2 reads stay valid), and
+  ORCH/worker spawn resolution plus the silent-fallback judgment prefer that table over
+  the live session's roles. A born session's polluted `@default` no longer decides
+  worker models; a role absent from the table degrades to live resolution with a named
+  warning. Tradeoff by design: OMP model-config changes mid-run are not reflected in
+  that run. (friction 681839bff914479c)
+- Boundary judgment delivery: a run born by `open` (or revived by either mode) now
+  carries `guidance.md`, rendered from resolved configuration before the spawn and named
+  by the ORCH's first prompt as an explicitly advisory third document. It states the
+  orchestrator-surface `plan`/`authoring` routes as skill name + configured `trigger` +
+  the description read from the installed `SKILL.md`, and a worker-profile table of
+  configured name, role alias, and `guidance` criteria. Historical profile picks
+  collapsed onto `default` because nothing ever told an ORCH what the other profiles
+  were for; this is that missing sentence, delivered where the choice is made.
+  Rendering is best-effort: an unreachable skill degrades to a `skill://<name>` pointer
+  the reading session resolves itself (the only path to a runtime-managed skill, which
+  exists on no filesystem root), an empty configuration renders explicit "None
+  configured" sections, a render failure produces a document naming the failure, and a
+  write failure is only a result warning. The document adds no `run.json` key and no
+  open-result field.
+- Two optional configuration fields carrying that judgment: `worker_profiles.<name>.guidance`
+  (bounded single-line profile-selection criteria) and `skill_routing.rules[].trigger`
+  (bounded single-line prose naming when a route applies). Both override by same-name
+  layer and are advisory only; the shipped configuration still names no skill and ships
+  no guidance text.
+- `skill_routing.rules[].profiles`: an optional list of 1–8 worker profile names that
+  narrows a rule to matching lanes. A scoped rule reaches only a lane whose assignment
+  profile it names, an unscoped rule reaches every profile as before, and a delivery
+  point holding no profile — every orchestrator-surface point — receives only unscoped
+  rules, so a scoped route can never reach a target whose profile is unknown. A name no
+  profile defines is tolerated and simply never matches, because rules and profiles may
+  be authored in different layers.
+- `scripts/check-templates.ts`, wired into `bun run check`: it fails when an installed
+  protocol template's digest is absent from its own shipped-digest allowlist, or when a
+  list is unsorted or duplicated. The allowlist rule was previously documented only in
+  prose and had already been missed once — all three installed digests were absent when
+  this check was written — which would have broken loading *and* revival for every run
+  created since that edit.
+
+### Changed
+
+- **BREAKING for undeclared runs** — the budget seed fallbacks drop from 2,000,000 tokens
+  and 480 minutes to 500,000 tokens and 30 minutes, calibrated at roughly the generative
+  throughput of an ORCH plus one lane over half an hour of focused work. They exist so
+  the audit cadence is meaningful on a run that declares nothing, not so real runs fit
+  inside them: a nontrivial undeclared run now parks early and justifies itself. Declare
+  `mandate.budget` calibrated to the mandate's scope instead.
+- Worker-profile inheritance is same-name only. A profile inherits from the same name in
+  an earlier layer, never from the resolved `default`, and the layer that first defines a
+  name must declare its `role` or fail closed with `invalid_config` naming the profile and
+  the layer file. A misspelled profile name used to resolve silently onto `@default`'s
+  identity; that silent-failure path no longer exists.
+- Schema `describe` text states its constants as facts and leads with the judgment
+  criterion for the field. A 263-call audit found that fields publishing a constant
+  collapse onto it — `timeout_ms` to its ceiling, `mandate.budget` left undeclared in
+  4 of 4 opens — while fields whose meaning is situational diversify. `mandate.budget`
+  no longer invites omission; `wait.timeout_ms` keeps the 25000 ms client clamp as a fact
+  and asks for a size fitting the awaited boundary; `wait.until`, `doorbell_policy`,
+  `revive mode`, `requested_tokens`, `output_lines`, and `limit` each carry their
+  criterion, and a published maximum now reads as a ceiling rather than a value to use.
+- `protocol-orch.md` points at the run's guidance document, and `protocol.md`'s advisory
+  paragraph states that a rendered `guidance.md` carries the same advisory weight as a
+  routed skill: selection criteria, never authority. Both digests are appended to the
+  template allowlist alongside the versions they replace.
+
+## [2.0.0] - 2026-08-29
 
 Identity, communication, budget, and revival redesign. ORCH is born, never appointed;
 answering a worker is a document append plus a bell; a run meters and justifies its own
@@ -77,46 +153,6 @@ spend; a run whose ORCH pane died is recoverable.
   digest this project has shipped for them, so a byte-identical document passes silently,
   a previously shipped version passes with a named `template_drift_warning` instead of
   bricking an existing run, and anything else fails closed quoting its digest.
-- Creator role-table pinning: `herdr_track open` records the creator session's observed
-  role table (each role's provider/model and bound thinking, with provenance) as
-  `pinned_roles` in `a2a/delegation.json` (schema v3; v1/v2 reads stay valid), and
-  ORCH/worker spawn resolution plus the silent-fallback judgment prefer that table over
-  the live session's roles. A born session's polluted `@default` no longer decides
-  worker models; a role absent from the table degrades to live resolution with a named
-  warning. Tradeoff by design: OMP model-config changes mid-run are not reflected in
-  that run. (friction 681839bff914479c)
-- Boundary judgment delivery: a run born by `open` (or revived by either mode) now
-  carries `guidance.md`, rendered from resolved configuration before the spawn and named
-  by the ORCH's first prompt as an explicitly advisory third document. It states the
-  orchestrator-surface `plan`/`authoring` routes as skill name + configured `trigger` +
-  the description read from the installed `SKILL.md`, and a worker-profile table of
-  configured name, role alias, and `guidance` criteria. Historical profile picks
-  collapsed onto `default` because nothing ever told an ORCH what the other profiles
-  were for; this is that missing sentence, delivered where the choice is made.
-  Rendering is best-effort: an unreachable skill degrades to a `skill://<name>` pointer
-  the reading session resolves itself (the only path to a runtime-managed skill, which
-  exists on no filesystem root), an empty configuration renders explicit "None
-  configured" sections, a render failure produces a document naming the failure, and a
-  write failure is only a result warning. The document adds no `run.json` key and no
-  open-result field.
-- Two optional configuration fields carrying that judgment: `worker_profiles.<name>.guidance`
-  (bounded single-line profile-selection criteria) and `skill_routing.rules[].trigger`
-  (bounded single-line prose naming when a route applies). Both override by same-name
-  layer and are advisory only; the shipped configuration still names no skill and ships
-  no guidance text.
-- `skill_routing.rules[].profiles`: an optional list of 1–8 worker profile names that
-  narrows a rule to matching lanes. A scoped rule reaches only a lane whose assignment
-  profile it names, an unscoped rule reaches every profile as before, and a delivery
-  point holding no profile — every orchestrator-surface point — receives only unscoped
-  rules, so a scoped route can never reach a target whose profile is unknown. A name no
-  profile defines is tolerated and simply never matches, because rules and profiles may
-  be authored in different layers.
-- `scripts/check-templates.ts`, wired into `bun run check`: it fails when an installed
-  protocol template's digest is absent from its own shipped-digest allowlist, or when a
-  list is unsorted or duplicated. The allowlist rule was previously documented only in
-  prose and had already been missed once — all three installed digests were absent when
-  this check was written — which would have broken loading *and* revival for every run
-  created since that edit.
 
 ### Changed
 
@@ -131,8 +167,8 @@ spend; a run whose ORCH pane died is recoverable.
   instead of `herdr_command_failed` with `retryable`.
 - The registry is validated before it is written, not only when the next reader loads it,
   so a malformed record is attributed to the call that produced it.
-- The registry schema is versioned: the current version is 3 with a supported set of
-  `{1, 2, 3}`. Reads accept older versions, writes upgrade in place, unknown-key rejection
+- The registry schema is versioned: the current version is 2 with a supported set of
+  `{1, 2}`. Reads accept version 1, writes upgrade it in place, unknown-key rejection
   stays exact within a version, and a version outside the set fails
   `registry_version_unsupported` naming the `/reload-plugins` respawn.
 - The in-session bridge heartbeat is idempotent and session-owned: it starts once, before
@@ -148,29 +184,6 @@ spend; a run whose ORCH pane died is recoverable.
   boundary, atomic birth and creator retirement, the mandate limits, command singularity
   and naming, the template-compatibility rule, budget and revival, the response-free
   answering path, and the inter-run channel.
-- **BREAKING for undeclared runs** — the budget seed fallbacks drop from 2,000,000 tokens
-  and 480 minutes to 500,000 tokens and 30 minutes, calibrated at roughly the generative
-  throughput of an ORCH plus one lane over half an hour of focused work. They exist so
-  the audit cadence is meaningful on a run that declares nothing, not so real runs fit
-  inside them: a nontrivial undeclared run now parks early and justifies itself. Declare
-  `mandate.budget` calibrated to the mandate's scope instead.
-- Worker-profile inheritance is same-name only. A profile inherits from the same name in
-  an earlier layer, never from the resolved `default`, and the layer that first defines a
-  name must declare its `role` or fail closed with `invalid_config` naming the profile and
-  the layer file. A misspelled profile name used to resolve silently onto `@default`'s
-  identity; that silent-failure path no longer exists.
-- Schema `describe` text states its constants as facts and leads with the judgment
-  criterion for the field. A 263-call audit found that fields publishing a constant
-  collapse onto it — `timeout_ms` to its ceiling, `mandate.budget` left undeclared in
-  4 of 4 opens — while fields whose meaning is situational diversify. `mandate.budget`
-  no longer invites omission; `wait.timeout_ms` keeps the 25000 ms client clamp as a fact
-  and asks for a size fitting the awaited boundary; `wait.until`, `doorbell_policy`,
-  `revive mode`, `requested_tokens`, `output_lines`, and `limit` each carry their
-  criterion, and a published maximum now reads as a ceiling rather than a value to use.
-- `protocol-orch.md` points at the run's guidance document, and `protocol.md`'s advisory
-  paragraph states that a rendered `guidance.md` carries the same advisory weight as a
-  routed skill: selection criteria, never authority. Both digests are appended to the
-  template allowlist alongside the versions they replace.
 
 ### Removed
 
@@ -252,4 +265,5 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.0.0]: https://github.com/edgar-min/herdr-delegator/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/edgar-min/herdr-delegator/compare/v1.1.1...v2.0.0
