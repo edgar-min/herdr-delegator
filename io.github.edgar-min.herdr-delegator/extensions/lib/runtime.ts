@@ -698,9 +698,6 @@ function parseBootstrapSnapshot(
     throw bootstrapIdentityError();
   }
   const sessionId = tokens[BOOTSTRAP_TOKENS.sessionId];
-  const provider = tokens[BOOTSTRAP_TOKENS.provider];
-  const model = tokens[BOOTSTRAP_TOKENS.model];
-  const thinking = tokens[BOOTSTRAP_TOKENS.thinking];
   const attestation = tokens[BOOTSTRAP_TOKENS.attestation];
   const attestationMatch = typeof attestation === "string"
     ? /^(\d{13})\.([0-9a-f]{16})$/.exec(attestation)
@@ -710,18 +707,10 @@ function parseBootstrapSnapshot(
   if (
     !isBoundedAttestationToken(sessionId) ||
     !isBoundedAttestationToken(attestation) ||
-    !isBoundedAttestationToken(provider) ||
-    !isBoundedAttestationToken(model) ||
-    !isThinkingLevel(thinking) ||
     !attestationMatch ||
     !Number.isSafeInteger(attestedAtMs) ||
     attestedAtMs > now + 5_000 ||
     now - attestedAtMs > BOOTSTRAP_METADATA_TTL_MS ||
-    // Structural identity only. The child's reported provider/model/thinking is
-    // recorded as an OBSERVATION, never compared against a caller prediction:
-    // the spawn passes a role alias and the child resolves it from its own
-    // persisted settings, so the caller has nothing to predict with
-    // (friction 221abf10d2280b47, plan rev 3 deviation 1).
     !sessionIdMatchesReportedPath(sessionId, reportedPath)
   ) {
     throw bootstrapIdentityError();
@@ -731,9 +720,6 @@ function parseBootstrapSnapshot(
     verification: {
       session_id: sessionId,
       reported_path: reportedPath,
-      provider,
-      model,
-      thinking,
       attestation,
       attested_at: new Date(attestedAtMs).toISOString(),
     },
@@ -806,12 +792,7 @@ export function assertPersistedMatchesBootstrap(
   persisted: SessionVerification,
   bootstrap: BootstrapSessionVerification,
 ): void {
-  if (
-    persisted.session_id !== bootstrap.session_id ||
-    persisted.provider !== bootstrap.provider ||
-    persisted.model !== bootstrap.model ||
-    persisted.thinking !== bootstrap.thinking
-  ) {
+  if (persisted.session_id !== bootstrap.session_id) {
     throw new ContractError(
       "session_identity_mismatch",
       "The persisted OMP session initialization differs from its bootstrap attestation.",

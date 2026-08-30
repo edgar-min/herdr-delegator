@@ -1,7 +1,7 @@
 // Worker responsibilities for the Herdr delegator extension.
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { FocusRestoration, OmpModelContext, Operation, RegistryRecord, SessionVerification, ThinkingLevel, ToolParams, WorkerResult } from "./contracts";
+import type { FocusRestoration, Operation, RegistryRecord, SessionVerification, ToolParams, WorkerResult } from "./contracts";
 import { COORDINATE_RE, ContractError, DEDUPE_STATES, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, SETTLED_STATES, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { canonicalInstruction, canonicalWorkerId, isFile, normalizeTimeout, resolveLaunchProfile, resolveRunCoordinate } from "./config";
 import type { BootstrapSessionVerification, CommandResult, OwnedFocus } from "./runtime";
@@ -25,13 +25,6 @@ function storeWorkerBootstrap(
   const bootstrapRecord = record as BootstrapWorkerRecord;
   record.agent_session_path = verification.reported_path;
   record.verified_session_id = verification.session_id;
-  // The child's OWN reported identity, recorded as an observation rather than
-  // checked against a caller prediction (plan rev 3 deviation 1): the spawn
-  // passed a role alias and the child resolved it from its persisted settings,
-  // so this is the first point at which the model is knowable at all.
-  record.expected_provider = verification.provider;
-  record.expected_model = verification.model;
-  record.effective_thinking = verification.thinking;
   bootstrapRecord.bootstrap_attestation = verification.attestation;
   bootstrapRecord.bootstrap_attested_at = verification.attested_at;
   bootstrapRecord.bootstrap_verified_at = nowIso();
@@ -43,9 +36,6 @@ function storedWorkerBootstrap(record: RegistryRecord): BootstrapSessionVerifica
   if (
     !record.agent_session_path ||
     !record.verified_session_id ||
-    !record.expected_provider ||
-    !record.expected_model ||
-    !record.effective_thinking ||
     !bootstrapRecord.bootstrap_attestation ||
     !bootstrapRecord.bootstrap_attested_at ||
     !bootstrapRecord.bootstrap_verified_at
@@ -55,9 +45,6 @@ function storedWorkerBootstrap(record: RegistryRecord): BootstrapSessionVerifica
   return {
     session_id: record.verified_session_id,
     reported_path: record.agent_session_path,
-    provider: record.expected_provider,
-    model: record.expected_model,
-    thinking: record.effective_thinking,
     attestation: bootstrapRecord.bootstrap_attestation,
     attested_at: bootstrapRecord.bootstrap_attested_at,
   };
@@ -96,8 +83,6 @@ async function verifyWorkerBootstrap(
 
 export async function ensureWorker(
   params: ToolParams,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
   signal?: AbortSignal,
 ): Promise<WorkerResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -107,7 +92,7 @@ export async function ensureWorker(
   const cwd = coordinate.manifest.cwd;
   const workerKey = sha256(`${runPath}\0${workerId}`);
   const { registryPath } = registryPaths(runPath);
-  const resolved = await resolveLaunchProfile(params, runPath, cwd, ctx, currentThinking);
+  const resolved = await resolveLaunchProfile(params, runPath, cwd);
   const { binary, paneId } = await requireHerdrEnvironment();
   const orchestrator = await observeOrchestrator(binary, paneId, resolved.orchestrator, timeoutMs, signal);
   const focusBefore = await captureFocus(binary, signal);
@@ -181,9 +166,6 @@ export async function ensureWorker(
           selected_profile: resolved.launch.selected_profile,
           selection_source: resolved.launch.selection_source,
           requested_role: resolved.launch.requested_role,
-          // expected_provider / expected_model / effective_thinking are
-          // deliberately absent: they are observations written once the child
-          // reports its own identity (storeWorkerBootstrap), not predictions.
           created_at: timestamp,
           updated_at: timestamp,
         };
@@ -380,9 +362,6 @@ export async function ensureWorker(
       modelVerification = {
         status: "bootstrap-verified",
         session_id: bootstrapVerification.session_id,
-        provider: bootstrapVerification.provider,
-        model: bootstrapVerification.model,
-        thinking: bootstrapVerification.thinking,
         attested_at: bootstrapVerification.attested_at,
       };
     }

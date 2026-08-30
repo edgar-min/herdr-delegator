@@ -4,10 +4,7 @@ import { constants as fsConstants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { ConfigSource, ThinkingLevel } from "./contracts";
-import { ROLE_RE, SHA256_RE, compactMessage, isObject } from "./contracts";
-import { isThinkingLevel, loadDelegatorConfig } from "./config";
-import { observeRoleThinking } from "./role-thinking";
+import { compactMessage, isObject } from "./contracts";
 
 export const BOOTSTRAP_METADATA_SOURCE = "herdr-delegator:bootstrap";
 // Freshness window a published pane-token set and fact nonce stay attestable for.
@@ -26,9 +23,6 @@ export const BOOTSTRAP_REFRESH_DEADLINE_MS = 20_000;
 export const BOOTSTRAP_TOKEN_PREFIX = "herdr-delegator-";
 export const BOOTSTRAP_TOKENS = {
   sessionId: `${BOOTSTRAP_TOKEN_PREFIX}session`,
-  provider: `${BOOTSTRAP_TOKEN_PREFIX}provider`,
-  model: `${BOOTSTRAP_TOKEN_PREFIX}model`,
-  thinking: `${BOOTSTRAP_TOKEN_PREFIX}thinking`,
   attestation: `${BOOTSTRAP_TOKEN_PREFIX}attestation`,
 } as const;
 
@@ -56,24 +50,11 @@ let paneBridgeSessionId: string | undefined;
 let declinedBridgeContext: ExtensionContext | undefined;
 let panePublishFailures = 0;
 
-type ConcreteModel = { provider: string; model: string };
-
-/**
- * A configured role as published. `thinking` is present only when the role is
- * bound to an explicit `:level` suffix, so a consumer reading no field reads
- * "this role imposes no level" — the same thing a pre-`thinking` bridge said.
- */
-type RoleModel = ConcreteModel & { thinking?: ThinkingLevel };
-
 export type OmpFactBridgeV1 = {
   version: 1;
   session_id: string;
   reported_session_path?: string;
   pane_id: string;
-  cwd: string;
-  current: ConcreteModel & { thinking: ThinkingLevel };
-  roles: Record<`@${string}`, RoleModel>;
-  config_sources: { scope: string; path: string; sha256: string }[];
   issued_at: string;
   nonce: string;
 };
@@ -81,9 +62,6 @@ export type OmpFactBridgeV1 = {
 export type BootstrapSessionVerification = {
   session_id: string;
   reported_path: string;
-  provider: string;
-  model: string;
-  thinking: ThinkingLevel;
   attestation: string;
   attested_at: string;
 };
@@ -120,24 +98,6 @@ function assertBoundedPath(value: unknown, field: string): asserts value is stri
   }
 }
 
-function concreteModel(value: ExtensionContext["model"], coordinate: string): ConcreteModel {
-  const provider = value?.provider;
-  const model = value?.id;
-  if (!isBoundedToken(provider) || !isBoundedToken(model)) {
-    throw new Error(`${coordinate} did not resolve to a bounded concrete provider/model.`);
-  }
-  return { provider, model };
-}
-
-function validatedConfigSources(sources: ConfigSource[]): OmpFactBridgeV1["config_sources"] {
-  return sources.map((source) => {
-    assertBoundedPath(source.path, `config source ${source.scope}`);
-    if (!isBoundedToken(source.scope) || !SHA256_RE.test(source.sha256)) {
-      throw new Error("A config source is not bounded or hash-verified.");
-    }
-    return { scope: source.scope, path: source.path, sha256: source.sha256 };
-  });
-}
 
 function sessionValueIdentifiesId(value: string, sessionId: string): boolean {
   if (value === sessionId) return true;
@@ -387,9 +347,6 @@ async function reportBootstrapMetadata(
 ): Promise<void> {
   const tokenValues = [
     [BOOTSTRAP_TOKENS.sessionId, fact.session_id],
-    [BOOTSTRAP_TOKENS.provider, fact.current.provider],
-    [BOOTSTRAP_TOKENS.model, fact.current.model],
-    [BOOTSTRAP_TOKENS.thinking, fact.current.thinking],
     [BOOTSTRAP_TOKENS.attestation, fact.nonce],
   ] as const;
   const args = [
@@ -431,12 +388,9 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
     const sessionId = ctx.sessionManager.getSessionId();
     attemptSessionId = isBoundedToken(sessionId) ? sessionId : undefined;
     const reportedSessionPath = ctx.sessionManager.getSessionFile();
-    const cwd = ctx.cwd;
-    const thinking = pi.getThinkingLevel();
-    if (!isBoundedToken(sessionId) || !isThinkingLevel(thinking)) {
-      throw new Error("OMP did not expose a bounded session/thinking identity.");
+    if (!isBoundedToken(sessionId)) {
+      throw new Error("OMP did not expose a bounded session identity.");
     }
-    assertBoundedPath(cwd, "cwd");
     // `reported_session_path` is an OPTIONAL corroborating field, so a value
     // that does not identify this session may not cost the session its whole
     // publication. A spawned pane's `getSessionFile()` does not name the live
@@ -462,22 +416,6 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
       }
     }
 
-    const current = concreteModel(ctx.models.current(), "current model");
-    const { config, sources } = await loadDelegatorConfig(undefined, cwd);
-    const roleAliases = new Set([
-      config.orchestrator.role,
-      ...Object.values(config.worker_profiles).map((profile) => profile.role),
-    ]);
-    const roles = {} as Record<`@${string}`, RoleModel>;
-    for (const role of roleAliases) {
-      if (role.length > 80 || !ROLE_RE.test(role)) {
-        throw new Error(`Configured role ${JSON.stringify(role)} is not bounded.`);
-      }
-      const model = concreteModel(ctx.models.resolve(role), `role ${role}`);
-      const roleThinking = await observeRoleThinking(role);
-      roles[role as `@${string}`] = roleThinking === undefined ? model : { ...model, thinking: roleThinking };
-    }
-
     const binary = await findHerdrBinary();
     targetPaneId = await resolveBootstrapPane(
       binary,
@@ -492,10 +430,6 @@ async function refreshOmpBridge(pi: ExtensionAPI, ctx: ExtensionContext): Promis
       session_id: sessionId,
       ...(publishedSessionPath === undefined ? {} : { reported_session_path: publishedSessionPath }),
       pane_id: targetPaneId,
-      cwd,
-      current: { ...current, thinking },
-      roles,
-      config_sources: validatedConfigSources(sources),
       issued_at: new Date(issuedAtMs).toISOString(),
       nonce: `${issuedAtMs}.${randomBytes(8).toString("hex")}`,
     };

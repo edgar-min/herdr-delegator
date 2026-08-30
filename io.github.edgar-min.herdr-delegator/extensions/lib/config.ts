@@ -5,8 +5,8 @@ import { copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } 
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OmpModelContext, OmpModelIdentity, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillMetadata, SkillRoute, SkillRouteBoundary, SkillRouteSurface, SkillRoutingConfig, TargetOrchestratorRecord, ThinkingLevel, ToolParams, WorkerMoment } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, ORCH_MOMENTS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_MOMENTS, WORKER_RE, assertExactKeys, compactMessage, isObject, orchestratorMismatchError, sha256 } from "./contracts";
+import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillMetadata, SkillRoute, SkillRouteBoundary, SkillRouteSurface, SkillRoutingConfig, TargetOrchestratorRecord, ThinkingLevel, ToolParams, WorkerMoment } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, ORCH_MOMENTS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_MOMENTS, WORKER_RE, assertExactKeys, compactMessage, isObject, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -415,50 +415,12 @@ export async function resolveSkillRoutes(
     (!rule.profiles || (profile !== undefined && rule.profiles.includes(profile))));
 }
 
-export function modelIdentity(model: OmpModelIdentity | undefined): { provider: string; model: string } {
-  if (!model || typeof model.provider !== "string" || typeof model.id !== "string") {
-    throw new ContractError("model_role_unresolved", "The configured OMP role did not resolve to a concrete model.", "model_verify");
-  }
-  return { provider: model.provider, model: model.id };
-}
-
-/**
- * Fail-closed ORCH identity gate, owned in one place. `resolveLaunchProfile`
- * runs it during `ensure_worker`, and `herdr_assignment add` runs it before it
- * allocates any registry record — a mismatch used to surface only after `select`
- * had already created a lane and an assignment, leaving a worker-less `starting`
- * lane and a `failed` assignment behind (friction cf7c4a8eb2bdb9c1).
- */
-export function assertOrchestratorAligned(
-  config: DelegatorConfig,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
-): void {
-  const resolved = modelIdentity(ctx.models.resolve(config.orchestrator.role));
-  const live = modelIdentity(ctx.models.current());
-  // `inherit` states no delegator opinion, so there is nothing for the session
-  // to disagree with: the ORCH keeps whatever level its own role or session
-  // settled on. Only a configured level is held to.
-  const declared = config.orchestrator.thinking;
-  const thinkingAligned = declared === "inherit" || declared === currentThinking;
-  if (resolved.provider === live.provider && resolved.model === live.model && thinkingAligned) return;
-  throw orchestratorMismatchError(
-    "The live ORCH identity",
-    config.orchestrator.role,
-    { ...resolved, thinking: declared === "inherit" ? currentThinking : declared },
-    { ...live, thinking: currentThinking },
-  );
-}
-
 export async function resolveLaunchProfile(
   params: ToolParams,
   runPath: string,
   cwd: string,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
 ): Promise<{ launch: ResolvedLaunchProfile; orchestrator: Omit<OrchestratorRecord, "pane_id" | "observed_at">; warnings: string[] }> {
   const { config, sources } = await loadDelegatorConfig(runPath, cwd);
-  assertOrchestratorAligned(config, ctx, currentThinking);
   if (typeof params.profile !== "string" || !PROFILE_RE.test(params.profile)) {
     throw new ContractError(
       "invalid_profile",
@@ -475,11 +437,6 @@ export async function resolveLaunchProfile(
       "config",
     );
   }
-  // No model is resolved for the child. The spawn passes the role alias and the
-  // child expands it from its own persisted settings, so this caller's role
-  // view — which inside a spawned session reflects its own launch override —
-  // never decides a child's model (friction 221abf10d2280b47).
-  const caller = modelIdentity(ctx.models.current());
   return {
     launch: {
       config_sources: sources,
@@ -490,11 +447,6 @@ export async function resolveLaunchProfile(
     },
     orchestrator: {
       requested_role: config.orchestrator.role,
-      // The caller's own observed identity. Unlike the child's, this is a fact
-      // already in hand rather than a prediction.
-      expected_provider: caller.provider,
-      expected_model: caller.model,
-      effective_thinking: currentThinking,
       config_sources: sources,
     },
     warnings: [],

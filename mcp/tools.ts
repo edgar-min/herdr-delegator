@@ -4,13 +4,12 @@ import { appendFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { assertOrchestratorAligned, loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
-import { ContractError as LegacyContractError, type ThinkingLevel, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
+import { ContractError as LegacyContractError, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
@@ -410,7 +409,7 @@ function boundedAbsolutePath(value: string, coordinate: string): void {
   }
 }
 
-async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFacts; ctx: ExtensionContext; thinking: ThinkingLevel }> {
+async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFacts }> {
   const callerPane = process.env.HERDR_PANE_ID;
   if (!callerPane || callerPane.length > 80 || !BOUNDED_TOKEN_RE.test(callerPane)) {
     throw new McpContractError("omp_fact_bridge_missing", "Inherited HERDR_PANE_ID is unavailable or invalid.", "model-verify", "Launch this stdio server from the active OMP pane.");
@@ -475,8 +474,6 @@ async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFact
   if (path.basename(factPath, ".json") !== officialSessionId || facts.session_id !== officialSessionId || facts.pane_id !== callerPane) {
     throw new McpContractError("omp_fact_bridge_mismatch", "Fact filename, payload session, or pane does not match the official caller.", "attest", "Do not mutate; refresh the exact caller bridge.");
   }
-  boundedAbsolutePath(facts.cwd, "bridge cwd");
-  for (const source of facts.config_sources) boundedAbsolutePath(source.path, `config source ${source.scope}`);
   if (facts.reported_session_path !== undefined) {
     boundedAbsolutePath(facts.reported_session_path, "reported session path");
     if (facts.reported_session_path !== agentPath) throw new McpContractError("omp_fact_bridge_mismatch", "Bridge and native official session paths disagree.", "attest", "Refresh the same active session bridge.");
@@ -487,19 +484,10 @@ async function loadFacts(adapter: HerdrAdapter): Promise<{ facts: OmpRuntimeFact
   if (!Number.isSafeInteger(issuedAt) || new Date(issuedAt).toISOString() !== facts.issued_at || !nonceMatch || Number(nonceMatch[1]) !== issuedAt || issuedAt > now + 5_000 || now - issuedAt > BOOTSTRAP_METADATA_TTL_MS) {
     throw new McpContractError("omp_fact_bridge_stale", "OMP fact timestamp or nonce is stale, skewed, or inconsistent.", "model-verify", "Refresh facts from the current before_agent_start boundary.");
   }
-  if (
-    tokens[BOOTSTRAP_TOKENS.provider] !== facts.current.provider ||
-    tokens[BOOTSTRAP_TOKENS.model] !== facts.current.model ||
-    tokens[BOOTSTRAP_TOKENS.thinking] !== facts.current.thinking ||
-    tokens[BOOTSTRAP_TOKENS.attestation] !== facts.nonce
-  ) {
+  if (tokens[BOOTSTRAP_TOKENS.attestation] !== facts.nonce) {
     throw new McpContractError("omp_fact_bridge_mismatch", "Pane bootstrap metadata and bridge payload disagree.", "attest", "Do not mutate until metadata and fact publication converge.");
   }
-  const models = {
-    current: () => ({ provider: facts.current.provider, id: facts.current.model }),
-    resolve: (role: string) => { const model = facts.roles[role]; return model ? { provider: model.provider, id: model.model } : undefined; },
-  };
-  return { facts, ctx: { models } as unknown as ExtensionContext, thinking: facts.current.thinking };
+  return { facts };
 }
 
 function normalizeLegacyPhase(phase: string): ErrorPhase {
@@ -833,7 +821,7 @@ export class CompositeTools {
       if (input.action === "inspect") {
         const registry = await store.read();
         let orchestrator: unknown;
-        try { const runtime = await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
+        try { await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
         const budget = await this.observeBudget(store, registry);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget } };
       }
@@ -844,7 +832,7 @@ export class CompositeTools {
         // owned by `open`, so allowing it here would hand any attested session a
         // generation bump around the creator lockout.
         if ((await store.read()).orch_creator) throw new McpContractError("track_opened_atomically", "This run was opened with herdr_track open, which owns its ORCH spawn.", "attest", "Re-run herdr_track open with the identical mandate to reconcile the ORCH; start_orchestrator remains only for runs created by init.");
-        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
+        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
         const birth = await this.recordSpawnBirth(store, result.orchestrator);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
@@ -1067,7 +1055,7 @@ export class CompositeTools {
     // a failed write is reported — open proceeds either way.
     const guidance = await materializeGuidance(store.runPath);
 
-    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, runtime.ctx, runtime.thinking);
+    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
     if (!birth) {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
@@ -1135,7 +1123,7 @@ export class CompositeTools {
     input: Extract<HerdrTrackInput, { action: "revive" }>,
     run: RunRef,
     store: DelegationStore,
-    runtime: { facts: OmpRuntimeFacts; ctx: ExtensionContext; thinking: ThinkingLevel },
+    runtime: { facts: OmpRuntimeFacts },
   ): Promise<McpResult> {
     const mode = input.mode ?? "resume";
     const before = await store.read();
@@ -1162,7 +1150,7 @@ export class CompositeTools {
     // current now, not the rendering its first birth got. Best-effort as at open.
     const guidance = await materializeGuidance(store.runPath);
 
-    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, runtime.ctx, runtime.thinking);
+    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id });
     const observedSession = stringField(started.orchestrator, ["session_id"]);
     if (mode === "resume" && observedSession && observedSession !== born.official_session_id) {
       // Fail closed: a resume that came back as a different session is a context
@@ -1416,7 +1404,7 @@ export class CompositeTools {
     const facts = machineFacts(registry);
     await writeAtomic(auditPath, renderAuditInput(run, ordinal, record, normalized, requested, metering, facts));
     try {
-      const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: auditWorkerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeout(input) }, runtime.ctx, runtime.thinking);
+      const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: auditWorkerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeout(input) });
       const agentName = stringField(ensured.worker, ["agent_name"]);
       if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
       await this.adapter.prompt(agentName, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. You are a clean auditor: do not contact the orchestrator, do not call any herdr_* tool, and change nothing else in this run.`, ["idle", "done"], timeout(input));
@@ -1686,22 +1674,13 @@ export class CompositeTools {
         }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
-        // Model verification before allocation (friction cf7c4a8eb2bdb9c1): a
-        // mismatch discovered inside ensure_worker used to surface only after
-        // `select` had already created a lane and an assignment, so a drifted
-        // ORCH left registry residue behind on every rejected dispatch.
-        assertOrchestratorAligned(
-          (await loadDelegatorConfig(store.runPath, store.cwd)).config,
-          runtime.ctx,
-          runtime.thinking,
-        );
         await this.judgeBudget(store, run, "add");
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
         let ensured: WorkerResult;
         try {
-          ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, responsibility_key: selected.lane.responsibility_key, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) }, runtime.ctx, runtime.thinking);
+          ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, responsibility_key: selected.lane.responsibility_key, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) });
         } catch (error) {
           const cleaned = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
             const assignment = next.assignments[input.assignment_id];
@@ -1834,7 +1813,7 @@ export class CompositeTools {
         if (!assignment) throw new McpContractError("resume_not_eligible", "Lane assignment is absent from the minimal registry.", "resume", "Reconcile assignment routing before resume.");
         const artifact = await store.assignmentFile(assignmentId, assignment.responsibility_key, assignment.instructions_sha256);
         try {
-          const result = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, responsibility_key: assignment.responsibility_key, profile: artifact.assignment.profile }, runtime.ctx, runtime.thinking);
+          const result = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, responsibility_key: assignment.responsibility_key, profile: artifact.assignment.profile });
           registry = await updateLaneFromWorker(store, input.worker_id, result);
           return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: result };
         } catch (error) {

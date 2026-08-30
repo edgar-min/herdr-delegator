@@ -1,9 +1,9 @@
 // Track lifecycle responsibilities for the Herdr delegator extension.
 import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import type { ConfigThinkingLevel, FocusRestoration, OmpModelContext, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, ThinkingLevel, TrackOperation, TrackParams, TrackResult } from "./contracts";
+import type { ConfigThinkingLevel, FocusRestoration, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, isFile, loadDelegatorConfig, modelIdentity, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
 import { acceptProtocolDocument } from "./templates";
 import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
@@ -428,11 +428,6 @@ function storeTargetBootstrap(
   const bootstrapTarget = target as BootstrapTargetRecord;
   target.session_path = verification.reported_path;
   target.session_id = verification.session_id;
-  // The born ORCH's OWN reported identity, recorded as an observation rather
-  // than checked against a caller prediction (plan rev 3 deviation 1).
-  target.expected_provider = verification.provider;
-  target.expected_model = verification.model;
-  target.effective_thinking = verification.thinking;
   bootstrapTarget.bootstrap_attestation = verification.attestation;
   bootstrapTarget.bootstrap_attested_at = verification.attested_at;
   bootstrapTarget.bootstrap_verified_at = nowIso();
@@ -446,9 +441,6 @@ function storedTargetBootstrap(
   if (
     !target.session_path ||
     !target.session_id ||
-    !target.expected_provider ||
-    !target.expected_model ||
-    !target.effective_thinking ||
     !bootstrapTarget.bootstrap_attestation ||
     !bootstrapTarget.bootstrap_attested_at ||
     !bootstrapTarget.bootstrap_verified_at
@@ -458,9 +450,6 @@ function storedTargetBootstrap(
   return {
     session_id: target.session_id,
     reported_path: target.session_path,
-    provider: target.expected_provider,
-    model: target.expected_model,
-    thinking: target.effective_thinking,
     attestation: bootstrapTarget.bootstrap_attestation,
     attested_at: bootstrapTarget.bootstrap_attested_at,
   };
@@ -856,7 +845,6 @@ async function verifyTargetOrchestratorSession(
 
 async function inspectOrchestrator(
   params: TrackParams,
-  ctx: OmpModelContext,
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
@@ -953,8 +941,6 @@ async function inspectOrchestrator(
  */
 async function startOrchestrator(
   params: TrackParams,
-  ctx: OmpModelContext,
-  currentThinking: ThinkingLevel,
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
