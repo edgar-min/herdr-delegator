@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { isObject } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
@@ -17,6 +18,32 @@ import { McpContractError, sha256, type DelegationRegistry } from "./contracts";
 // ---------------------------------------------------------------------------
 
 export function rebirthApprovalPath(runPath: string): string { return path.join(runPath, "rebirth-approval.json"); }
+
+/**
+ * Reads a human-owned approval file as the exact bytes that were validated.
+ *
+ * Validation and read go through one open descriptor rather than the path twice:
+ * a path validated by `lstat` and then re-opened by name is a different file if
+ * anything swapped it in between, and this file is the whole authority for an
+ * operation the machine would otherwise refuse. The descriptor is also what
+ * proves the target is a regular file rather than a symlink or a device.
+ */
+async function readApprovalBytes(approvalPath: string, refusal: (detail: string) => McpContractError): Promise<Buffer> {
+  let handle: FileHandle | undefined;
+  try {
+    if ((await lstat(approvalPath)).isSymbolicLink()) throw refusal("the approval path is a symlink");
+    handle = await open(approvalPath, "r");
+    const opened = await handle.stat();
+    if (!opened.isFile()) throw refusal("the approval path is not a regular file");
+    if (opened.size > 8_192) throw refusal(`the approval file is ${opened.size} bytes`);
+    return await handle.readFile();
+  } catch (error: unknown) {
+    if (error instanceof McpContractError) throw error;
+    throw refusal(isObject(error) && error.code === "ENOENT" ? `no file at ${approvalPath}` : "the approval file cannot be read");
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
 
 // A human-edited file, so it is parsed once at the boundary with a strict schema
 // and every rejection names its own reason.
@@ -40,16 +67,7 @@ export async function readRebirthApproval(runPath: string, nextGeneration: numbe
     "resume",
     `Ask the user to write ${approvalPath} as {"version":1,"approve_generation":${nextGeneration},"acknowledge_context_loss":true,"reason":"..."} — destroying an ORCH's context is the user's call, not yours. Resume keeps the context and needs no approval.`,
   );
-  let bytes: Buffer;
-  try {
-    const file = await lstat(approvalPath);
-    if (!file.isFile() || file.isSymbolicLink() || (await realpath(approvalPath)) !== approvalPath) throw refusal("the approval path is not a canonical regular file");
-    if (file.size > 8_192) throw refusal(`the approval file is ${file.size} bytes`);
-    bytes = await readFile(approvalPath);
-  } catch (error: unknown) {
-    if (error instanceof McpContractError) throw error;
-    throw refusal(isObject(error) && error.code === "ENOENT" ? `no file at ${approvalPath}` : "the approval file cannot be read");
-  }
+  const bytes = await readApprovalBytes(approvalPath, refusal);
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")); } catch { throw refusal("the approval file is not valid JSON"); }
   const result = approvalSchema.safeParse(parsed);
@@ -161,16 +179,7 @@ export async function readCloseApproval(
     "close",
     `Ask the user to write ${approvalPath} as {"version":1,"track_id":"${run.track_id}","run_id":"${run.run_id}","approve_close_generation":${generation},"reason":"..."} — and do not write it yourself: this file is the human's approval, so an agent writing it forges the one authority this path rests on. A run whose ORCH is still live is closed by that ORCH and needs no file.`,
   );
-  let bytes: Buffer;
-  try {
-    const file = await lstat(approvalPath);
-    if (!file.isFile() || file.isSymbolicLink() || (await realpath(approvalPath)) !== approvalPath) throw refusal("the approval path is not a canonical regular file");
-    if (file.size > 8_192) throw refusal(`the approval file is ${file.size} bytes`);
-    bytes = await readFile(approvalPath);
-  } catch (error: unknown) {
-    if (error instanceof McpContractError) throw error;
-    throw refusal(isObject(error) && error.code === "ENOENT" ? `no file at ${approvalPath}` : "the approval file cannot be read");
-  }
+  const bytes = await readApprovalBytes(approvalPath, refusal);
   let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString("utf8")); } catch { throw refusal("the approval file is not valid JSON"); }
   const result = closeApprovalSchema.safeParse(parsed);

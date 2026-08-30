@@ -927,7 +927,7 @@ export class CompositeTools {
       const born = latestBirth(await store.read());
       if (!born) throw error;
       const approval = await readCloseApproval(store.runPath, run, born.generation);
-      const evidence = await this.assertRecordedOrchGone(born);
+      const evidence = await this.assertRecordedOrchGone(born, facts.pane_id);
       return { approval, generation: born.generation, evidence, closedBySessionId: facts.session_id, closedAt: nowIso() };
     }
   }
@@ -938,7 +938,7 @@ export class CompositeTools {
    * authority, so a live or merely unobservable ORCH must refuse. Returns the
    * evidence sentence for the closure record.
    */
-  private async assertRecordedOrchGone(born: OrchBirthRecord): Promise<string> {
+  private async assertRecordedOrchGone(born: OrchBirthRecord, callerPaneId: string): Promise<string> {
     const refuseAmbiguous = (detail: string): never => {
       throw new McpContractError(
         "orch_liveness_unknown",
@@ -956,6 +956,16 @@ export class CompositeTools {
       agents,
       (candidate) => candidate.source === "herdr:omp" && candidate.agent === "omp" && typeof candidate.value === "string",
     ).map((candidate) => candidate.value as string);
+    // An absence read from a census that cannot even see the caller is not
+    // evidence of absence: an empty or truncated agent list would otherwise read
+    // exactly like a dead ORCH. The caller's own pane is the one entry the list
+    // must contain, so its presence is what makes this observation a census.
+    const observedPaneIds = new Set(
+      matchingObjects(agents, (candidate) => typeof candidate.pane_id === "string").map((candidate) => candidate.pane_id as string),
+    );
+    if (!observedPaneIds.has(callerPaneId)) {
+      refuseAmbiguous(`the Herdr agent list does not report the calling pane ${callerPaneId}, so it is not a census this path can read absence from`);
+    }
     const recordedIsLive = liveSessionReferences.some((value) => {
       if (value === born.official_session_id) return true;
       const stem = path.basename(value).replace(/\.jsonl$/, "");
