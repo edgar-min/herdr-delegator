@@ -135,9 +135,9 @@ function isRegistry(value: unknown): value is Registry {
       typeof orchestrator.pane_id !== "string" ||
       typeof orchestrator.requested_role !== "string" ||
       !ROLE_RE.test(orchestrator.requested_role) ||
-      typeof orchestrator.expected_provider !== "string" ||
-      typeof orchestrator.expected_model !== "string" ||
-      !isThinkingLevel(orchestrator.effective_thinking) ||
+      (orchestrator.expected_provider !== undefined && typeof orchestrator.expected_provider !== "string") ||
+      (orchestrator.expected_model !== undefined && typeof orchestrator.expected_model !== "string") ||
+      (orchestrator.effective_thinking !== undefined && !isThinkingLevel(orchestrator.effective_thinking)) ||
       !Array.isArray(orchestrator.config_sources) ||
       !orchestrator.config_sources.every(isConfigSource) ||
       typeof orchestrator.observed_at !== "string" ||
@@ -198,9 +198,10 @@ function isRegistry(value: unknown): value is Registry {
       record.selection_source === "explicit" &&
       typeof record.requested_role === "string" &&
       ROLE_RE.test(record.requested_role) &&
-      typeof record.expected_provider === "string" &&
-      typeof record.expected_model === "string" &&
-      isThinkingLevel(record.effective_thinking) &&
+      // Observations, absent until the child reports (221abf10d2280b47).
+      (record.expected_provider === undefined || typeof record.expected_provider === "string") &&
+      (record.expected_model === undefined || typeof record.expected_model === "string") &&
+      (record.effective_thinking === undefined || isThinkingLevel(record.effective_thinking)) &&
       (record.resolved_model_is_fallback === undefined || typeof record.resolved_model_is_fallback === "boolean") &&
       typeof record.created_at === "string" &&
       typeof record.updated_at === "string" &&

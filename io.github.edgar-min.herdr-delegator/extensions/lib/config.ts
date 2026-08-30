@@ -68,7 +68,11 @@ function parseProfilePatch(
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
   }
-  assertExactKeys(value, options.guidance ? ["role", "thinking", "guidance"] : ["role", "thinking"], coordinate);
+  assertExactKeys(
+    value,
+    options.guidance ? ["role", "thinking", "guidance", "intent", "directive"] : ["role", "thinking"],
+    coordinate,
+  );
   if (
     value.role !== undefined &&
     (
@@ -86,14 +90,118 @@ function parseProfilePatch(
     ...(typeof value.role === "string" ? { role: value.role } : {}),
     ...(isConfigThinkingLevel(value.thinking) ? { thinking: value.thinking } : {}),
     ...(value.guidance === undefined ? {} : { guidance: parseGuidanceText(value.guidance, `${coordinate}.guidance`) }),
+    ...(value.intent === undefined ? {} : { intent: parseGuidanceText(value.intent, `${coordinate}.intent`) }),
+    ...(value.directive === undefined ? {} : { directive: parseGuidanceText(value.directive, `${coordinate}.directive`) }),
   };
 }
 
-function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRoute[] } {
+/** The two worker moments, lowered onto the boundaries every resolver speaks. */
+const WORKER_MOMENT_BOUNDARY: Record<WorkerMoment, SkillRouteBoundary> = { intake: "dispatch", report: "completion" };
+
+function parseSkillNames(value: unknown, coordinate: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MAX_SKILLS_PER_ROUTE ||
+    value.some((skill) => typeof skill !== "string" || !SKILL_NAME_RE.test(skill))
+  ) {
+    throw new ContractError("invalid_config", `${coordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
+  }
+  return [...(value as string[])];
+}
+
+/**
+ * Per-skill authored metadata. Nothing here is looked up on disk or in a
+ * lockfile: an unauthored or uninstalled skill is a reader-side no-op.
+ */
+function parseSkillMetadataMap(value: unknown, coordinate: string): Record<string, SkillMetadata> {
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
   }
-  assertExactKeys(value, ["rules"], coordinate);
+  const entries = Object.entries(value);
+  if (entries.length > MAX_SKILL_METADATA_ENTRIES) {
+    throw new ContractError("invalid_config", `${coordinate}: expected at most ${MAX_SKILL_METADATA_ENTRIES} skills.`, "config");
+  }
+  const skills: Record<string, SkillMetadata> = {};
+  for (const [name, metadata] of entries) {
+    const skillCoordinate = `${coordinate}.${name}`;
+    if (!SKILL_NAME_RE.test(name)) {
+      throw new ContractError("invalid_config", `${coordinate}: invalid skill name ${JSON.stringify(name)}.`, "config");
+    }
+    if (!isObject(metadata)) {
+      throw new ContractError("invalid_config", `${skillCoordinate}: expected an object.`, "config");
+    }
+    assertExactKeys(metadata, ["intent", "trigger"], skillCoordinate);
+    skills[name] = {
+      ...(metadata.intent === undefined ? {} : { intent: parseGuidanceText(metadata.intent, `${skillCoordinate}.intent`) }),
+      ...(metadata.trigger === undefined ? {} : { trigger: parseGuidanceText(metadata.trigger, `${skillCoordinate}.trigger`) }),
+    };
+  }
+  return skills;
+}
+
+/**
+ * The authored `agent` × `moment` rule, lowered into the internal
+ * boundary × surface vocabulary. The direction is deliberate: every resolver and
+ * delivery point keeps one shape, so no call site changes when a configuration
+ * adopts this rule shape. An `orch` agent's moments are already boundary names;
+ * a profile agent names exactly one profile, which is where the scope goes.
+ */
+function parseAgentRule(rule: Record<string, unknown>, coordinate: string): SkillRoute {
+  assertExactKeys(rule, ["agent", "moment", "skills"], coordinate);
+  const skills = parseSkillNames(rule.skills, coordinate);
+  if (rule.agent === "orch") {
+    const moment = ORCH_MOMENTS.find((candidate) => candidate === rule.moment);
+    if (!moment) {
+      throw new ContractError("invalid_config", `${coordinate}.moment: expected one of ${ORCH_MOMENTS.join(", ")} for agent orch.`, "config");
+    }
+    return { boundary: moment, surface: "orch", skills };
+  }
+  if (typeof rule.agent !== "string" || !PROFILE_RE.test(rule.agent)) {
+    throw new ContractError("invalid_config", `${coordinate}.agent: expected orch or a worker profile name.`, "config");
+  }
+  const moment = WORKER_MOMENTS.find((candidate) => candidate === rule.moment);
+  if (!moment) {
+    throw new ContractError("invalid_config", `${coordinate}.moment: expected one of ${WORKER_MOMENTS.join(", ")} for a worker profile agent.`, "config");
+  }
+  return { boundary: WORKER_MOMENT_BOUNDARY[moment], surface: "worker", skills, profiles: [rule.agent] };
+}
+
+/** The boundary × surface rule shape, parsed exactly as it always was. */
+function parseBoundaryRule(rule: Record<string, unknown>, coordinate: string): SkillRoute {
+  assertExactKeys(rule, ["boundary", "surface", "skills", "trigger", "profiles"], coordinate);
+  if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
+    throw new ContractError("invalid_config", `${coordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
+  }
+  if (rule.surface !== "orch" && rule.surface !== "worker") {
+    throw new ContractError("invalid_config", `${coordinate}.surface: expected orch or worker.`, "config");
+  }
+  const skills = parseSkillNames(rule.skills, coordinate);
+  if (
+    rule.profiles !== undefined &&
+    (
+      !Array.isArray(rule.profiles) ||
+      rule.profiles.length < 1 ||
+      rule.profiles.length > MAX_PROFILES_PER_ROUTE ||
+      rule.profiles.some((profile) => typeof profile !== "string" || !PROFILE_RE.test(profile))
+    )
+  ) {
+    throw new ContractError("invalid_config", `${coordinate}.profiles: expected 1-${MAX_PROFILES_PER_ROUTE} worker profile names.`, "config");
+  }
+  return {
+    boundary: rule.boundary,
+    surface: rule.surface,
+    skills,
+    ...(rule.trigger === undefined ? {} : { trigger: parseGuidanceText(rule.trigger, `${coordinate}.trigger`) }),
+    ...(rule.profiles === undefined ? {} : { profiles: [...(rule.profiles as string[])] }),
+  } as SkillRoute;
+}
+
+function parseSkillRouting(value: unknown, coordinate: string): SkillRoutingConfig {
+  if (!isObject(value)) {
+    throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
+  }
+  assertExactKeys(value, ["rules", "skills"], coordinate);
   if (!Array.isArray(value.rules) || value.rules.length > MAX_SKILL_ROUTE_RULES) {
     throw new ContractError("invalid_config", `${coordinate}.rules: expected at most ${MAX_SKILL_ROUTE_RULES} rules.`, "config");
   }
@@ -102,48 +210,21 @@ function parseSkillRouting(value: unknown, coordinate: string): { rules: SkillRo
     if (!isObject(rule)) {
       throw new ContractError("invalid_config", `${ruleCoordinate}: expected an object.`, "config");
     }
-    assertExactKeys(rule, ["boundary", "surface", "skills", "trigger", "profiles"], ruleCoordinate);
-    if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
-      throw new ContractError("invalid_config", `${ruleCoordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
-    }
-    if (rule.surface !== "orch" && rule.surface !== "worker") {
-      throw new ContractError("invalid_config", `${ruleCoordinate}.surface: expected orch or worker.`, "config");
-    }
-    if (
-      !Array.isArray(rule.skills) ||
-      rule.skills.length < 1 ||
-      rule.skills.length > MAX_SKILLS_PER_ROUTE ||
-      rule.skills.some((skill) => typeof skill !== "string" || !SKILL_NAME_RE.test(skill))
-    ) {
-      throw new ContractError("invalid_config", `${ruleCoordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
-    }
-    if (
-      rule.profiles !== undefined &&
-      (
-        !Array.isArray(rule.profiles) ||
-        rule.profiles.length < 1 ||
-        rule.profiles.length > MAX_PROFILES_PER_ROUTE ||
-        rule.profiles.some((profile) => typeof profile !== "string" || !PROFILE_RE.test(profile))
-      )
-    ) {
-      throw new ContractError("invalid_config", `${ruleCoordinate}.profiles: expected 1-${MAX_PROFILES_PER_ROUTE} worker profile names.`, "config");
-    }
-    return {
-      boundary: rule.boundary,
-      surface: rule.surface,
-      skills: [...(rule.skills as string[])],
-      ...(rule.trigger === undefined ? {} : { trigger: parseGuidanceText(rule.trigger, `${ruleCoordinate}.trigger`) }),
-      ...(rule.profiles === undefined ? {} : { profiles: [...(rule.profiles as string[])] }),
-    } as SkillRoute;
+    return rule.agent !== undefined || rule.moment !== undefined
+      ? parseAgentRule(rule, ruleCoordinate)
+      : parseBoundaryRule(rule, ruleCoordinate);
   });
-  return { rules };
+  return {
+    rules,
+    ...(value.skills === undefined ? {} : { skills: parseSkillMetadataMap(value.skills, `${coordinate}.skills`) }),
+  };
 }
 
 type ConfigPatch = {
   orchestrator?: Partial<ModelProfile>;
   worker_profiles?: Record<string, Partial<ModelProfile>>;
   storage?: { root: string };
-  skill_routing?: { rules: SkillRoute[] };
+  skill_routing?: SkillRoutingConfig;
 };
 
 function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
@@ -554,9 +635,11 @@ export function isTargetOrchestratorRecord(value: unknown): value is TargetOrche
     value.config_sources.every(isConfigSource) &&
     typeof value.requested_role === "string" &&
     ROLE_RE.test(value.requested_role) &&
-    typeof value.expected_provider === "string" &&
-    typeof value.expected_model === "string" &&
-    isThinkingLevel(value.effective_thinking) &&
+    // Observations, absent until the born session reports its own identity
+    // (friction 221abf10d2280b47); records written before that carry values.
+    (value.expected_provider === undefined || typeof value.expected_provider === "string") &&
+    (value.expected_model === undefined || typeof value.expected_model === "string") &&
+    (value.effective_thinking === undefined || isThinkingLevel(value.effective_thinking)) &&
     (value.resolved_model_is_fallback === undefined || typeof value.resolved_model_is_fallback === "boolean") &&
     hasValidBootstrapFacts(value) &&
     typeof value.created_at === "string" &&
