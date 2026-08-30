@@ -350,8 +350,27 @@ export function modelIdentity(model: OmpModelIdentity | undefined): { provider: 
  * resolution with a per-role warning, never a refusal — the MCP side already
  * fail-closes on a malformed registry before it can be mutated.
  */
+export const PINNED_PROVENANCES = ["runtime", "overlay", "project", "global", "default"] as const;
+export type PinnedProvenance = (typeof PINNED_PROVENANCES)[number];
+
+/**
+ * One role as pinned. `provenance` is present only when `open` could NOT derive
+ * the role from the user's persisted configuration and pinned a degraded live
+ * observation instead (friction 221abf10d2280b47), so a correctly derived pin
+ * reads exactly as a pre-provenance pin did. `persisted_pattern` carries the
+ * raw configured selector when one existed but did not resolve to an available
+ * model at observation time.
+ */
+export type PinnedRoleEntry = {
+  provider: string;
+  model: string;
+  thinking?: ThinkingLevel;
+  provenance?: PinnedProvenance;
+  persisted_pattern?: string;
+};
+
 export type PinnedRoleTable = {
-  roles: Record<string, { provider: string; model: string; thinking?: ThinkingLevel }>;
+  roles: Record<string, PinnedRoleEntry>;
   observed_session_id: string;
   observed_at: string;
   source: string;
@@ -365,7 +384,9 @@ function isPinnedRoleTable(value: unknown): value is PinnedRoleTable {
       isObject(entry) &&
       typeof entry.provider === "string" && entry.provider.length >= 1 &&
       typeof entry.model === "string" && entry.model.length >= 1 &&
-      (entry.thinking === undefined || isThinkingLevel(entry.thinking))) &&
+      (entry.thinking === undefined || isThinkingLevel(entry.thinking)) &&
+      (entry.provenance === undefined || (typeof entry.provenance === "string" && (PINNED_PROVENANCES as readonly string[]).includes(entry.provenance))) &&
+      (entry.persisted_pattern === undefined || (typeof entry.persisted_pattern === "string" && entry.persisted_pattern.length >= 1))) &&
     typeof value.observed_session_id === "string" &&
     typeof value.observed_at === "string" &&
     typeof value.source === "string";
@@ -394,6 +415,27 @@ export function pinnedRoleDegradeWarning(pinned: PinnedRoleTable | undefined, ro
     ? `is not in this run's pinned role table (observed from session ${pinned.observed_session_id} at open)`
     : "resolved without a pinned role table (this run's registry predates role pinning)";
   return `${role} ${cause}; it resolved through this session's live role view, which inside a spawned session reflects the session's own model override rather than configured OMP roles. Open a fresh track to pin the current role configuration.`;
+}
+
+/**
+ * Degraded-pin note (friction 221abf10d2280b47). A pinned entry carries
+ * `provenance` only when `open` could not derive the role from the user's
+ * persisted configuration: the creator session held a runtime or config-overlay
+ * override on the role, so the pinned value is that session's LIVE view rather
+ * than a configured default. An explicit `--model` launch is the common cause —
+ * it installs `modelRoles.default` in OMP's runtime override layer, so every
+ * spawned session observes `@default` as its own launch model. Correctly
+ * derived pins carry no provenance, so this is silent for them. Never blocks.
+ */
+export function degradedPinWarning(entry: PinnedRoleEntry | undefined, role: string): string | undefined {
+  if (entry === undefined || (entry.provenance !== "runtime" && entry.provenance !== "overlay")) return undefined;
+  const source = entry.provenance === "runtime"
+    ? "a runtime model override in the creator session (an explicit --model launch collapses the default role onto the launched model)"
+    : "a config-overlay model override in the creator session";
+  const persisted = entry.persisted_pattern === undefined
+    ? " No persisted configuration for the role was observable at open."
+    : ` The persisted configuration for the role was ${JSON.stringify(entry.persisted_pattern)}, which did not resolve to an available model at open.`;
+  return `${role} is pinned to ${entry.provider}/${entry.model} from ${source}; that is a creator-observed live view under a session override, not the user's configured default.${persisted} Configure the role in OMP settings, then open a fresh track so the configured value is what gets pinned.`;
 }
 
 /**
@@ -465,7 +507,14 @@ export async function resolveLaunchProfile(
   const warnings: string[] = [];
   const resolveRole = (role: string): { provider: string; model: string } => {
     const entry = pinned?.roles[role];
-    if (entry) return { provider: entry.provider, model: entry.model };
+    if (entry) {
+      // A degraded pin still resolves — it is the best observation this run
+      // has — but the operator is told the value came from the creator's
+      // session override rather than from configuration.
+      const degraded = degradedPinWarning(entry, role);
+      if (degraded !== undefined && !warnings.includes(degraded)) warnings.push(degraded);
+      return { provider: entry.provider, model: entry.model };
+    }
     warnings.push(pinnedRoleDegradeWarning(pinned, role));
     return modelIdentity(ctx.models.resolve(role));
   };
@@ -536,14 +585,25 @@ export function silentFallbackRoleWarning(
   if (role === "@default") return undefined;
   const pinnedEntry = pinned?.roles[role];
   let fallback: { provider: string; model: string } | undefined;
+  let degradedBase: PinnedRoleEntry | undefined;
   if (pinnedEntry) {
-    fallback = pinned?.roles["@default"];
+    const pinnedDefault = pinned?.roles["@default"];
+    fallback = pinnedDefault;
+    if (pinnedDefault?.provenance === "runtime" || pinnedDefault?.provenance === "overlay") {
+      degradedBase = pinnedDefault;
+    }
   } else {
     const live = ctx.models.resolve("@default");
     fallback = live ? { provider: live.provider, model: live.id } : undefined;
   }
   if (!fallback || fallback.provider !== expected.provider || fallback.model !== expected.model) return undefined;
-  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then open a fresh track so its ORCH is born on the intended model; this run's ORCH keeps the model it was spawned with.`;
+  // The judgment is identity against @default, so a degraded @default makes the
+  // match itself suspect: the equality may be an artifact of the creator's
+  // session override rather than an unconfigured role (221abf10d2280b47).
+  const base = degradedBase === undefined
+    ? ""
+    : ` Note: the @default this was judged against is itself a degraded pin (provenance ${degradedBase.provenance}) — a creator-observed live view under a session override, not the user's configured default — so this match may be an artifact of that override rather than a real silent fallback.`;
+  return `${role} resolved to the same model as @default (${expected.provider}/${expected.model}) — if OMP modelRoles.${role.slice(1)} is not configured this is a silent fallback, not a ${role}-grade model. Configure modelRoles.${role.slice(1)} in OMP settings (or launch with the matching omp role flag), then open a fresh track so its ORCH is born on the intended model; this run's ORCH keeps the model it was spawned with.${base}`;
 }
 /**
  * Resolves the configured orchestrator role for a spawn. There is no caller
