@@ -321,7 +321,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 - **ARC-001**: `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` MUST remain a bridge-only entry and MUST NOT register public MCP tools.
 - **ARC-002**: `io.github.edgar-min.herdr-delegator/extensions/lib/bridge.ts` MUST own OMP fact publication and bootstrap metadata reporting.
-- **ARC-003**: `mcp/server.ts` MUST own stdio transport and exactly three public registrations.
+- **ARC-003**: `mcp/server.ts` MUST own stdio transport and exactly five public registrations.
 - **ARC-004**: `mcp/contracts.ts` MUST own strict public schemas and bounded shared MCP contracts.
 - **ARC-005**: `mcp/herdr-adapter.ts` MUST expose fixed, bounded Herdr operations and MUST NOT accept raw public argv.
 - **ARC-006**: `mcp/registry.ts` MUST own immutable assignment parsing, responsibility routing, FIFO lane state, and minimal delegation registry.

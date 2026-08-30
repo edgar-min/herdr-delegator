@@ -75,6 +75,8 @@ The Agent Plugins root `mcp.json` starts bare `sh` with `${PLUGIN_ROOT}/bin/herd
 - `herdr_track`
 - `herdr_assignment`
 - `herdr_worker`
+- `herdr_message`
+- `herdr_friction`
 
 It emits JSON-RPC on stdout and diagnostics on stderr.
 
@@ -82,7 +84,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 
 | Module | Responsibility |
 |---|---|
-| `mcp/server.ts` | stdio transport, three registrations, strict action parsing, structured results |
+| `mcp/server.ts` | stdio transport, five registrations, strict action parsing, structured results |
 | `mcp/contracts.ts` | public schemas, bounded identifiers, seven assignment states, result/error shapes, bridge schema |
 | `mcp/herdr-adapter.ts` | verified Herdr binary and schema, fixed bounded argv, prompt/wait/response/metadata primitives |
 | `mcp/registry.ts` | immutable assignment parsing, responsibility routing, lane queueing, minimal delegation registry and lock |
