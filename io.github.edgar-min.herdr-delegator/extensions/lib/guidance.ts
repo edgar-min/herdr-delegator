@@ -45,23 +45,24 @@ export function workerGuidanceDocumentName(profile: string): string {
  * timing label of a moment. No judgment sentence lives here: everything a
  * reader is asked to weigh comes from configuration.
  */
-const ORCH_HEADER = "# guidance.md — ORCH 자문 (advisory: 기준일 뿐, 권한·범위·완료 조건을 바꾸지 않음)";
-const ORCH_PROFILE_SECTION = "## 워커 프로필 선택";
+const ORCH_HEADER = "# guidance.md — ORCH advisory (criteria only; changes no authority, scope, or completion condition)";
+const ORCH_PROFILE_SECTION = "## Worker profile selection";
 const ORCH_PROFILE_TABLE_HEAD = ["| profile | role | intent |", "| --- | --- | --- |"];
-const ORCH_SELECTION_AXES = "선택 축: 명세 성숙도 × 오류 비용. 한정된 기계적 작업은 레인 없이 host OMP 서브에이전트로 처리한다.";
-const ORCH_ROUTE_SECTION = "## 라우트된 스킬 — 당신의 판단 시점별";
-const ORCH_FOOTER = "미설치 스킬은 no-op. intent 미저작 스킬은 `read skill://<name>`로 렌더된다.";
-const WORKER_DIRECTIVE_SECTION = "## 지시";
-const WORKER_ROUTE_SECTION = "## 스킬";
-const WORKER_FOOTER = "미설치 스킬은 no-op. `read skill://<name>`로 본문을 읽는다.";
+const ORCH_SELECTION_AXES = "Selection axes: specification maturity × cost of error. Bounded mechanical work goes to host OMP subagents without a lane.";
+const ORCH_ROUTE_SECTION = "## Routed skills — by your judgment moment";
+const ORCH_FOOTER = "An uninstalled skill is a no-op. A skill without an authored intent renders as `read skill://<name>`.";
+const WORKER_HEADER_SUFFIX = "advisory for this lane's profile (criteria only; the immutable assignment is the sole contract)";
+const WORKER_DIRECTIVE_SECTION = "## Directive";
+const WORKER_ROUTE_SECTION = "## Skills";
+const WORKER_FOOTER = "An uninstalled skill is a no-op. Read bodies via `read skill://<name>`.";
 const ABSENT_CELL = "—";
 
 /** The judgment each ORCH moment sits in front of. */
 const ORCH_MOMENT_GLOSS: Record<(typeof ORCH_MOMENTS)[number], string> = {
-  plan: "plan.md를 굳히기 전",
-  authoring: "어사인먼트를 확정하기 전",
-  settlement: "완료를 판정하기 전",
-  reset: "리셋/핸드오프를 결정할 때",
+  plan: "before freezing plan.md",
+  authoring: "before finalizing an assignment",
+  settlement: "before judging completion",
+  reset: "when deciding a reset/handoff",
 };
 
 /**
@@ -71,8 +72,8 @@ const ORCH_MOMENT_GLOSS: Record<(typeof ORCH_MOMENTS)[number], string> = {
  * worker-facing display form.
  */
 const WORKER_MOMENTS_IN_ORDER: ReadonlyArray<{ boundary: SkillRouteBoundary; label: string }> = [
-  { boundary: "dispatch", label: "착수 전" },
-  { boundary: "completion", label: "완료 보고 전" },
+  { boundary: "dispatch", label: "Before starting" },
+  { boundary: "completion", label: "Before your completion report" },
 ];
 
 /** Table- and prompt-safe single-line text. Configured prose is already bounded. */
@@ -119,7 +120,12 @@ function renderOrchRoutes(config: DelegatorConfig): string[] {
       // The trigger is the ORCH's own timing criterion, so it renders only here;
       // a worker's moment label already carries the timing it needs.
       const trigger = config.skill_routing?.skills?.[skill]?.trigger;
-      const timing = trigger ? ` (시점: ${cell(trigger).replace(/\.$/, "")})` : "";
+      // A trigger is authored as its own sentence but renders as a clause, so
+      // the terminal period goes and ordinary sentence capitalization is folded
+      // back down. An acronym or proper noun opening (`OMP`, `ORCH`) is left
+      // alone: only a capital followed by a lowercase letter is sentence case.
+      const clause = cell(trigger ?? "").replace(/\.$/, "").replace(/^[A-Z](?=[a-z])/, (head) => head.toLowerCase());
+      const timing = trigger ? ` (when: ${clause})` : "";
       sections.push(`- \`${skill}\` — ${skillIntent(config, skill)}${timing}`);
     }
     sections.push("");
@@ -161,7 +167,7 @@ export function renderWorkerGuidanceDocument(config: DelegatorConfig, profile: s
   }
   if (!directive && !routeLines.length) return undefined;
   return [
-    `# ${workerGuidanceDocumentName(profile)} — ${profile} 레인 자문 (advisory: 기준일 뿐, 어사인먼트가 유일한 계약)`,
+    `# ${workerGuidanceDocumentName(profile)} — ${WORKER_HEADER_SUFFIX}`,
     "",
     ...(directive ? [WORKER_DIRECTIVE_SECTION, "", cell(directive), ""] : []),
     ...(routeLines.length ? [WORKER_ROUTE_SECTION, "", ...routeLines, ""] : []),
@@ -175,11 +181,11 @@ export function renderGuidanceFailure(reason: string): string {
   return [
     ORCH_HEADER,
     "",
-    "## 렌더 불가",
+    "## Unavailable",
     "",
-    `이 문서는 설정에서 렌더되지 못했다: ${compactMessage(reason, "unknown error")}`,
+    `This document could not be rendered from configuration: ${compactMessage(reason, "unknown error")}`,
     "",
-    "이 문서에 걸린 것은 없다. mandate, `plan.md`, `protocol-orch.md`로 작업하고, 프로필 기준이 필요하면 델리게이터 설정을 직접 읽어라.",
+    "Nothing is gated by this. Work from the mandate, `plan.md`, and `protocol-orch.md`, and read the delegator configuration directly if profile criteria matter.",
     "",
   ].join("\n");
 }
