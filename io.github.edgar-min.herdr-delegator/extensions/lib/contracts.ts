@@ -93,6 +93,20 @@ export type ModelProfile = {
    * material and never resolves a model, a role, or authority.
    */
   guidance?: string;
+  /**
+   * Optional ORCH-facing selection criteria, including what NOT to assign to
+   * this profile. It renders only to the selector (`guidance.md`) and never
+   * resolves a model, a role, or authority. When absent, `guidance` — the
+   * field it supersedes — is rendered in its place.
+   */
+  intent?: string;
+  /**
+   * Optional worker-facing execution do/don't compensating this profile's
+   * characteristic failure mode. It renders only to the selected lane
+   * (`guidance-<profile>.md`) and is advisory: the assignment stays the only
+   * contract.
+   */
+  directive?: string;
 };
 
 /** A concrete model as the OMP model facade reports it. */
@@ -124,12 +138,14 @@ export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "complet
 export const MAX_SKILL_ROUTE_RULES = 16;
 export const MAX_SKILLS_PER_ROUTE = 8;
 export const MAX_PROFILES_PER_ROUTE = 8;
+export const MAX_SKILL_METADATA_ENTRIES = 64;
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * Bound for configured advisory prose (`worker_profiles.<name>.guidance`,
- * `skill_routing.rules[].trigger`). Single-line by contract so the text can be
- * rendered into tables and prompts without escaping.
+ * Bound for configured advisory prose (`worker_profiles.<name>.{guidance,
+ * intent,directive}`, `skill_routing.rules[].trigger`,
+ * `skill_routing.skills.<name>.{intent,trigger}`). Single-line by contract so
+ * the text can be rendered into tables and prompts without escaping.
  */
 export const MAX_GUIDANCE_LENGTH = 500;
 export const GUIDANCE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
@@ -159,12 +175,57 @@ export type SkillRoute = {
   profiles?: string[];
 };
 
+/** Judgment points an ORCH acts at; each is an existing boundary name. */
+export const ORCH_MOMENTS = ["plan", "authoring", "settlement", "reset"] as const;
+
+/**
+ * Judgment points a worker acts at. They are the worker-surface half of the
+ * `agent` × `moment` rule shape and lower into existing boundaries:
+ * `intake` → `dispatch`, `report` → `completion`.
+ */
+export const WORKER_MOMENTS = ["intake", "report"] as const;
+
+export type OrchMoment = (typeof ORCH_MOMENTS)[number];
+
+export type WorkerMoment = (typeof WORKER_MOMENTS)[number];
+
+/**
+ * The authored `agent` × `moment` rule shape. It carries no rule-level trigger:
+ * timing prose lives per skill in `skill_routing.skills`, and the moment itself
+ * carries the timing a worker document needs. Rules of this shape are lowered
+ * into `SkillRoute` at parse, so every resolver and delivery point keeps one
+ * internal vocabulary.
+ */
+export type SkillAgentRule =
+  | { agent: "orch"; moment: OrchMoment; skills: string[] }
+  | { agent: string; moment: WorkerMoment; skills: string[] };
+
+/**
+ * Per-skill authored metadata. `intent` is what the skill does, rendered
+ * wherever the skill is named; `trigger` is when it applies, rendered only to
+ * the ORCH. Neither is presence detection: an uninstalled skill stays a
+ * reader-side no-op and its body resolves natively through `skill://`.
+ */
+export type SkillMetadata = {
+  intent?: string;
+  trigger?: string;
+};
+
+/**
+ * Resolved routing configuration. Unlike `worker_profiles`, this object is
+ * replaced whole by a later configuration layer.
+ */
+export type SkillRoutingConfig = {
+  rules: SkillRoute[];
+  skills?: Record<string, SkillMetadata>;
+};
+
 export type DelegatorConfig = {
   version: 1;
   orchestrator: ModelProfile;
   worker_profiles: Record<string, ModelProfile>;
   storage?: { root: string };
-  skill_routing?: { rules: SkillRoute[] };
+  skill_routing?: SkillRoutingConfig;
 };
 
 export type ConfigSource = {
