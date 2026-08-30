@@ -24,7 +24,7 @@ flowchart LR
   M -->|births| O[ORCH pane]
   O -->|contract| D[Deterministic documents]
   O -->|5 composite tools| M
-  X[Bridge-only OMP extension] -->|session/model facts| M
+  X[Bridge-only OMP extension] -->|session/attestation facts| M
   M -->|bounded lifecycle| H[Herdr]
   H --> W[Persistent responsibility lanes]
   W -->|report appends| D
@@ -61,10 +61,9 @@ The plugin does not:
 `io.github.edgar-min.herdr-delegator/extensions/lib/bridge.ts`:
 
 - refreshes on OMP session start, session switch, and before agent start;
-- resolves configured OMP role aliases to concrete provider/model facts;
-- records current provider/model/thinking separately from configured roles;
-- writes an owner-only session-scoped fact under the active OMP agent directory;
-- reports matching bootstrap metadata to the verified Herdr caller pane.
+- publishes a strict identity-only version-1 fact: session ID, optional corroborating session path, pane ID, issue time, and nonce;
+- writes that fact atomically to an owner-only session-scoped file under the active OMP agent directory;
+- reports exactly the matching session and attestation tokens to the verified Herdr caller pane.
 
 The reverse-domain directory and matching `plugin.json#extensions` member contain client-specific OMP data. Current OMP loads the entry through `package.json#omp.extensions`. The bridge is not a model-visible tool and does not execute worker lifecycle.
 
@@ -90,7 +89,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `mcp/registry.ts` | immutable assignment parsing, responsibility routing, lane queueing, minimal delegation registry and lock |
 | `mcp/tools.ts` | composite track/assignment/worker transactions, bridge verification, settlement, observation, close preparation |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` | layered configuration, deterministic run coordinates, manifests, atomic file authority |
-| `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session/model verification, resume, focus, and guarded close |
+| `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session identity verification, resume, focus, anchor recreation, and guarded close |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/close operations consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
@@ -120,6 +119,8 @@ Communication is uniform across every relationship: the document append carries 
 | ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<to_track_id>_<to_run_id>.md` | `notify_run` |
 | server ↔ auditor | budget audit | `budget-audit-<n>.md`, ledger verdict | internal |
 | forbidden | cross-organization worker messaging (escalate instead), ORCH↔auditor contact, shadow channels | — | — |
+
+A doorbell to a currently focused target is deferred in the server process: wait 60 seconds, re-probe once, then send immediately if focus moved or the probe failed, otherwise wait a final 90 seconds and send exactly once. The call returns `delivery: "deferred"` without waiting. `a2a/messages.jsonl` records the scheduled row immediately and a final delivered/failed row after the background send. Server shutdown may lose that soft send because the named document already carries the authoritative content; the absent final row makes the loss observable.
 
 Terminal output is a bounded observation, not a durable result.
 
@@ -274,9 +275,9 @@ ORCH uses settlement actuals, staleness, queue depth, track totals, and unowned-
 
 Settlement observability is advisory; the budget machine is not. Every guarded op meters the run — each ORCH generation and every lane session, from the official OMP JSONL on a generative basis, plus wall clock — and judges it against a cap seeded by the mandate. Crossing the cap parks the run: a named reason in the registry, an entry in the append-only `budget-ledger.md`, and a marker on the ORCH pane name. Only a landing allowlist runs while parked, and the run resumes by itself once judged back under the ceiling.
 
-An extension costs a bounded justification, obeys a per-extension step cap and a minimum interval, and grants nothing until a clean auditor — spawned by the server, never by the ORCH, and not a responsibility lane — appends a verdict the server records. A deny ends the ladder at the user. `budget-clamp.json` is the user's file and only lowers; no tool op raises what the user lowered. Money units and precise cost accounting remain out of scope.
+An extension costs a bounded justification, obeys a per-extension step cap and a minimum interval, and grants nothing until a clean auditor — spawned by the server, never by the ORCH, and not a responsibility lane — appends a verdict the server records. A deny ends the ladder at the user. Fresh open scaffolds `budget-clamp.json`; every park path scaffolds it lazily for older runs. Creation is owner-only and never overwrites an existing file. Park/deny recovery and ledger entries name its exact editable schema `{version:1, max_tokens?, max_minutes?, note?}`. The file remains human-owned: only human value edits may lower or raise its ceiling, and no tool op raises what the human lowered. Money units and precise cost accounting remain out of scope.
 
-Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. A reborn generation inherits the metered spend it did not spend. A run whose recorded ORCH is provably gone is closed by an attested session against a human-owned close-approval.json, never by agent consensus.
+Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. When the recorded ORCH agent is gone but its canonical session path and identity-sound workspace survive, revival may recreate only the dead anchor tab/pane, atomically update the recorded coordinates, and resume that session; a live agent or dead/mismatched workspace keeps the strict prior behavior. A reborn generation inherits the metered spend it did not spend. A run whose recorded ORCH is provably gone is closed by an attested session against a human-owned close-approval.json, never by agent consensus.
 
 ## Model and session verification
 
@@ -290,11 +291,13 @@ ORCH selects the assignment profile on two axes — specification maturity and c
 
 Cost-efficient small mechanical work routes to host OMP task/subagents under RTE-002, so no persistent lane profile exists for it.
 
-1. The bridge resolves configured roles inside OMP and publishes current session/model/thinking facts.
+1. The bridge publishes a strict identity-only fact `{version, session_id, reported_session_path?, pane_id, issued_at, nonce}` and exactly two pane tokens: session and attestation.
 2. MCP derives the fact coordinate from the verified caller pane and active OMP agent directory.
-3. MCP verifies owner, non-symlink type, modes, strict schema, session/pane correspondence, nonce, timestamp, and metadata exact match.
+3. MCP verifies owner, non-symlink type, modes, strict schema, official session/path/pane correspondence, nonce, timestamp, and exact equality with the session/attestation pane tokens.
 4. Child launch passes the configured ROLE — an unresolved alias, or nothing at all for `default` — never a model the caller resolved. The child expands it against its own persisted settings, so a caller's process-local model override cannot decide a child's model (MOD-007).
-5. After prompt, canonical JSONL verifies official session, model, thinking, and fallback against the child's own bootstrap attestation. The caller holds no expected model to compare against; the child's reported identity is recorded as an observation.
+5. Before prompt, the child bootstrap verifier independently checks the same session/attestation identity. After prompt, canonical JSONL verifies official session, provider/model, thinking, and fallback; the caller holds no expected model to compare against, so the child's reported model identity is an observation.
+
+Fresh `open` alone may cross `omp_fact_bridge_mismatch`. Its creator record is either attested `{session_id, pane_id, mandate_sha256, opened_at, verified?: true}` or degraded `{pane_id, mandate_sha256, opened_at, verified: false}` with no session ID. A later attested retry on the same pane upgrades degraded to verified; an outage never downgrades a verified record. Every operation on an existing run remains fail-closed behind the identity verifier.
 
 Resume uses only this verified official session. Missing, stale, unsafe, mismatched, or credibly duplicated sessions fail closed.
 
