@@ -13,7 +13,7 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
-## [3.4.0] - Unreleased
+## [3.4.0] - 2026-08-31
 
 An approved budget extension now reaches the file the human actually reads, and a
 ceiling the human typed is permanent. Both halves were forged in one live run —
