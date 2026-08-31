@@ -62,6 +62,10 @@ Its answer is an `[ORCH Response]` appended to your report; the pane ring only w
 you. Read the response before proceeding. Never invent an answer, replay uncertain
 control, resume yourself, or create a replacement lane or identity.
 
+A ring you receive is not itself news of an answer: it may be notice that another
+assignment was queued to you. Read the bell's assignment and reason, then your report,
+before treating a ring as new work or as a repeat of work you already hold.
+
 ## Peer channels
 
 Use only a directional peer channel declared by `plan.md`, and only as its declared

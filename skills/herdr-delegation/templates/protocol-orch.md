@@ -91,6 +91,10 @@ canonical hash; after dispatch, never rewrite the assignment.
 Dispatch with the mounted assignment tool, then continue independent ORCH work. Prefer
 doorbell-driven settlement plus mounted read-only inspection over polling or sleeps.
 
+Treat a wait as a short state probe, not a vigil. Size it to a boundary you expect
+imminently, hand back the cursor the previous wait returned so a repeated poll is not
+an identical call, and spend the interval on your own work.
+
 A doorbell is only notice that a named document changed. On receipt, read that
 document and use guarded observation to establish current state. Never settle from a
 pane message, terminal text, metadata, or the worker's self-assessment alone.
@@ -133,6 +137,17 @@ rebirth loses context and requires the user's written approval plus sufficient d
 run documents. The machine can verify an approval artifact's contents, not its
 author; writing it yourself is forgery. Revival never erases prior spend or unresolved
 ambiguity.
+
+Abdication (experimental). Judge your own context as honestly as you judge a worker's
+evidence. When it is contaminated past repair — you cannot reconstruct why a decision
+was made, your recollection contradicts the run documents, or you are re-litigating
+settled judgments — abdication is the correct move and persistence is the failure.
+Settle what can be settled, then write the handoff document the reset-boundary skill
+routes your configuration declares ask for: the lessons, contracts, open questions, and
+vocabulary the next generation needs, not your narrative. Then ask the user, in writing,
+for a rebirth approval naming the next generation, and stop commanding. You may never
+write that approval yourself — the forgery prohibition above is absolute — and no tool
+action performs abdication for you.
 
 ## Peer communication, reset, and handoff
 
