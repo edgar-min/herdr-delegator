@@ -13,6 +13,36 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.3.0] - 2026-08-31
+
+Draft plans now default to adversarial review, and a subagent can no longer
+starve its pane's attestation heartbeat. Both changes were forged in one live
+run — orch-plan-adversarial-review/minimal-policy-path — whose own plan went
+through nine review rounds of the very policy this release ships.
+
+### Added
+
+- `protocol-orch.md` gained a default pre-freeze step: after drafting `plan.md`
+  with the user, ORCH dispatches a slow-profile lane charged as the draft's
+  adversary and folds its evidence-cited findings into the plan until a round
+  yields no blocking findings or acceptance is recorded with grounds; the plan
+  records the review lane and every disposition. User-authority items keep
+  their judgment-ladder route, and a trivially fixed plan may skip the review
+  by recording that judgment. Normative clause: SPEC RTE-009. The adversarial
+  charge is repository-owned; the review's reasoning depth follows the
+  installation's role mapping for `slow`. (c9227d8)
+
+### Fixed
+
+- The OMP bridge no longer loses a pane's attestation heartbeat when an
+  in-process subagent session starts. OMP re-invokes the extension entry per
+  session, so a subagent's `session_start` reached `claimBridgeOwnership` over
+  the shared module with a fresh owner symbol and wiped the pane attribution;
+  entry events are now pin-gated, and `session_switch` adopts a successor by
+  owner-tested adopt-then-prove with the pin retained until publication
+  re-pins it. Frictions 94d55e7e7d802eb5, 5f732d5481a720a3; lineage
+  15ca828baf1b9d96 / 783b0c4c4cb5e1dc. (0845add)
+
 ## [3.2.0] - 2026-08-31
 
 Bridge resilience and identity-only attestation. A resumed session regains its
@@ -398,5 +428,8 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.3.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.2.0...v3.3.0
+[3.2.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.1.0...v3.2.0
+[3.1.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/edgar-min/herdr-delegator/compare/v2.0.0...v3.0.0
 [2.0.0]: https://github.com/edgar-min/herdr-delegator/compare/v1.1.1...v2.0.0
