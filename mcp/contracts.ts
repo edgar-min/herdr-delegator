@@ -347,6 +347,15 @@ export type BudgetRecord = {
   // replaced or cleared on the next guarded op). Additive and optional — absent
   // in older registries, no version bump.
   approach_warned?: { cap_tokens: number; cap_minutes: number; warned_at: string };
+  // Token VALUES the server wrote into the human-owned clamp file, or committed
+  // to write — never a byte fingerprint of that file: a human edit to
+  // `max_minutes` or `note` expresses no opinion about the token ceiling and must
+  // not pin it. `confirmed` is the last value a write is known to have landed;
+  // `intended` is the value a settled, write-permitted grant owes the file.
+  // A present `max_tokens` equal to neither is the human's own ceiling — a
+  // permanent pin, `0` included. Additive and optional — absent in older
+  // registries, no version bump.
+  server_clamp_tokens?: { confirmed?: number; intended?: number };
   started_at: string;
 };
 

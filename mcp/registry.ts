@@ -124,7 +124,7 @@ function validPinnedRoles(value: unknown): value is PinnedRolesRecord {
     typeof value.observed_at === "string" && value.observed_at.length <= 64 &&
     typeof value.source === "string" && value.source.length >= 1 && value.source.length <= 80;
 }
-const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "approach_warned", "started_at"] as const;
+const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "approach_warned", "server_clamp_tokens", "started_at"] as const;
 const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
 
 function validCount(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
@@ -174,6 +174,16 @@ function validBudget(value: unknown): value is BudgetRecord {
       validCount(value.approach_warned.cap_tokens) &&
       validCount(value.approach_warned.cap_minutes) &&
       typeof value.approach_warned.warned_at === "string" && value.approach_warned.warned_at.length <= 64
+    )) &&
+    // Token values the server wrote to the human-owned clamp or owes it. Both
+    // slots are optional and partial: a first write that failed leaves `intended`
+    // alone, and a drained owed state removes the field entirely, so this is
+    // `onlyKeys`, not `exactKeys`. Additive optional — no schema version bump.
+    (value.server_clamp_tokens === undefined || (
+      isRecord(value.server_clamp_tokens) &&
+      onlyKeys(value.server_clamp_tokens, ["confirmed", "intended"]) &&
+      (value.server_clamp_tokens.confirmed === undefined || validCount(value.server_clamp_tokens.confirmed)) &&
+      (value.server_clamp_tokens.intended === undefined || validCount(value.server_clamp_tokens.intended))
     )) &&
     typeof value.started_at === "string" && value.started_at.length <= 64;
 }

@@ -13,6 +13,46 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.4.0] - Unreleased
+
+An approved budget extension now reaches the file the human actually reads, and a
+ceiling the human typed is permanent. Both halves were forged in one live run —
+budget-clamp-max-tokens/run-20260831 — which reproduced the symptom on itself:
+two audits granted +175,000 and +260,000 tokens while its own
+`budget-clamp.json` still carried no `max_tokens` at all.
+
+### Added
+
+- Under the default `notify` policy, a grant of more than zero tokens writes the
+  new granted figure into `budget-clamp.json` as `max_tokens`, so an approved
+  ceiling is visible in the human-owned file instead of living only in the
+  registry. The registry records the value the server intended to write and then
+  the value it confirmed as written (`budget.server_clamp_tokens`, additive and
+  optional), which is also how it later notices a write that crashed and
+  completes it at the next guarded op. Normative clauses: SPEC BUD-010, BUD-012,
+  BUD-013.
+- A `max_tokens` the human typed is a permanent pin on the token ceiling. The
+  machine recognizes it by value — never by a fingerprint of the file, so editing
+  `max_minutes` or `note` says nothing about the token ceiling — and under a pin
+  it stops raising `max_tokens`, parks an over-cap token axis as
+  `approval-required` naming the pinned file and the human decision, refuses
+  `budget_extend` with `budget_clamp_pinned` unless the run is over on wall clock
+  with no `max_minutes` set, and tells the auditor in its own input document that
+  the token ceiling cannot move. `0` remains the kill switch. Raising
+  `max_tokens` above the judged spend resumes the run directly; deleting it hands
+  the ceiling back and the next approved grant resumes automatic raises. A value
+  equal to a ceiling the machine recorded reads as machine-written; both clamp
+  notes disclose that exception. Normative clauses: SPEC BUD-012, BUD-012a.
+
+### Changed
+
+- Budget recovery prose and the SPEC's budget requirements no longer promise that
+  any edit to the clamp releases the next attempt: raising the ceiling above the
+  judged spend resumes directly, an edit at or below it pins and routes to the
+  human, and deleting `max_tokens` hands it back. A `denied` park under a pin
+  keeps its `denied` reason while `budget_extend` returns the pinned refusal —
+  both route to the same human.
+
 ## [3.3.0] - 2026-08-31
 
 Draft plans now default to adversarial review, and a subagent can no longer
@@ -428,6 +468,7 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.4.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.0.0...v3.1.0

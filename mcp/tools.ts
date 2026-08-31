@@ -14,7 +14,7 @@ import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } f
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
 import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
-import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampSchemaGuidance, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap } from "./budget";
+import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, healClampTokens, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
 
@@ -786,6 +786,18 @@ function budgetSection(mandate: Mandate): string {
   ].join("\n");
 }
 
+/**
+ * The audit ordinal a clamp write cites in its server note: the latest settled
+ * extension, which is the approval the written ceiling came from.
+ */
+function lastSettledAuditOrdinal(record: BudgetRecord): number {
+  for (let index = record.extensions.length - 1; index >= 0; index -= 1) {
+    const entry = record.extensions[index];
+    if (entry.state === "settled") return entry.ordinal;
+  }
+  return record.extensions.length;
+}
+
 /** Bounded machine facts for the auditor: what the registry knows, not what the ORCH says. */
 function machineFacts(registry: DelegationRegistry): string[] {
   const totals = trackTotals(registry);
@@ -1295,6 +1307,32 @@ export class CompositeTools {
   }
 
   /**
+   * Applies the classification-time repairs — the T2 self-heal and the X1
+   * clear-heal — and returns the record to classify with.
+   *
+   * BOTH classification sites run this: the judgment every guarded op makes and
+   * the grant path's own pre-settle read. The grant path needs it because a lost
+   * `confirmed` promotion is repaired by whichever classification observes the
+   * disk next, and a `budget_extend` does not judge the budget first — so a
+   * crash between a successful clamp write and its promotion, followed directly
+   * by another extension, would otherwise let the server's OWN bytes classify
+   * as a human pin and freeze the ceiling it had just raised.
+   */
+  private async healClampState(store: DelegationStore, reading: ClampReading, record: BudgetRecord): Promise<BudgetRecord> {
+    const owed = record.server_clamp_tokens;
+    if (owed?.intended === undefined || owed.intended === owed.confirmed) return record;
+    // Probe a copy first: `store.mutate` always bumps the revision, so a
+    // no-op repair must not write the registry at every guarded op.
+    if (!healClampTokens(reading, { ...record, server_clamp_tokens: { ...owed } })) return record;
+    const healed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      const current = next.budget ?? seedBudget(undefined, next.created_at);
+      healClampTokens(reading, current);
+      next.budget = current;
+    });
+    return healed.budget ?? record;
+  }
+
+  /**
    * The budget judgment every guarded op makes (decisions 7-8). Over the cap the
    * run parks explicitly — reason in the registry, entry in the append-only
    * ledger, marker on the ORCH pane name — and only the landing allowlist still
@@ -1304,10 +1342,47 @@ export class CompositeTools {
    */
   private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close"): Promise<{ metering: BudgetMetering; parked: boolean; warning?: string }> {
     const registry = await store.read();
-    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const notify = (registry.budget ?? seedBudget(undefined, registry.created_at)).doorbell_policy === "notify";
+    const warnings: string[] = [];
+    // Classification read — the first of the owed case's three deliberate clamp
+    // reads (trigger, helper, metering; never collapsed into one). The two heals
+    // and the owed-write reconcile run HERE, before the metering read below:
+    // write first, then read fresh, so the healing op itself never parks on the
+    // stale cap, rings no doorbell, and appends no reversed ledger entry.
+    const triggerReading = await readClamp(store.runPath);
+    let record = await this.healClampState(store, triggerReading, registry.budget ?? seedBudget(undefined, registry.created_at));
+    // The reconcile completes an audit-approved write, never a human keystroke:
+    // with the grant path gated on write permission, every owed `intended` was
+    // recorded by a settled grant whose write was permitted at settle time.
+    const reconcileValue = notify ? clampReconcileValue(triggerReading, record) : undefined;
+    if (reconcileValue !== undefined) {
+      const outcome = await writeClampMaxTokens(store.runPath, reconcileValue, record, lastSettledAuditOrdinal(record));
+      if (outcome.outcome === "written") {
+        try {
+          const promoted = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+            const current = next.budget ?? seedBudget(undefined, next.created_at);
+            current.server_clamp_tokens = { ...current.server_clamp_tokens, confirmed: outcome.value };
+            next.budget = current;
+          });
+          record = promoted.budget ?? record;
+        } catch (error) {
+          warnings.push(`The reconciled ceiling ${outcome.value} reached the clamp file but its promotion in the registry failed (${error instanceof Error ? error.message : String(error)}); the next guarded op's classification heals it.`);
+        }
+      } else if (outcome.outcome === "failed") {
+        warnings.push(outcome.warning);
+      }
+    }
+    // Metering read: fresh, so a reconcile that just landed is already in the cap.
     const clampReading = await readClamp(store.runPath);
     const metering = await meterRun(registry, record, clampReading.clamp);
     const lastExtension = record.extensions[record.extensions.length - 1];
+    // One predicate, token axis only (`pin_present`): a human-valued max_tokens is
+    // a permanent ceiling on exactly the dimension a token grant would raise, so
+    // an over-cap token axis under a pin is a human decision, not a cadence step.
+    // A run over on minutes only keeps `over-cap`, because a grant raises
+    // granted_minutes and an extension there genuinely helps.
+    const pinPresent = notify && classifyClampTokens(clampReading, record) === "pinned";
+    const tokenAxisOver = metering.judged_tokens >= metering.cap_tokens;
     const reason: BudgetParkReason | undefined = clampReading.unreadable
       ? "clamp-unreadable"
       : !metering.over_cap
@@ -1316,10 +1391,29 @@ export class CompositeTools {
           ? "denied"
           : record.doorbell_policy === "full" && record.granted_tokens > (clampReading.clamp?.max_tokens ?? record.seed_tokens)
             ? "approval-required"
-            : "over-cap";
+            : pinPresent && tokenAxisOver
+              ? "approval-required"
+              : "over-cap";
+    const pinnedCeiling = clampReading.clamp?.max_tokens;
+    const pinDetail = `${budgetClampPath(store.runPath)} holds a human-set max_tokens (${pinnedCeiling}): the token ceiling is the human's decision and no tool op raises it.`;
+    // The terminating signal on the last axis: a settled extension that moved
+    // nothing (0 tokens, therefore 0 minutes) under a pin leaves budget_extend
+    // with nothing to buy, so every surface routes to the human instead of back
+    // to the extend op. No extend/zero-grant/interval loop exists on any axis.
+    const zeroMoveSettled = pinPresent && lastExtension?.state === "settled" && (lastExtension.granted_tokens ?? 0) === 0;
+    const zeroMoveClause = zeroMoveSettled
+      ? ` Extension ${lastExtension?.ordinal} settled granting 0 tokens and 0 minutes, so budget_extend has nothing left to buy: this is the human's decision, not a retry.`
+      : "";
+    const minutesExceptionOpen = pinPresent
+      && !zeroMoveSettled
+      && metering.elapsed_minutes >= metering.cap_minutes
+      && clampReading.clamp?.max_minutes === undefined;
+    const humanRoute = `Escalate to the human with ${budgetLedgerPath(store.runPath)}; only they change ${budgetClampPath(store.runPath)}. Raising max_tokens above the judged spend releases this park directly, an edit at or below it keeps the pin, and deleting max_tokens hands the ceiling back so the next approved grant resumes automatic raises.`;
     const detail = clampReading.unreadable
       ? `The human-owned clamp file cannot be trusted: ${clampReading.unreadable}. No tool op raises what the human lowered, so the run waits.`
-      : `${meteringLedgerLine(metering)}.`;
+      : reason !== undefined && pinPresent
+        ? `${meteringLedgerLine(metering)}. ${pinDetail}${zeroMoveClause}`
+        : `${meteringLedgerLine(metering)}.`;
     const clampScaffold = reason ? await scaffoldClamp(store.runPath) : undefined;
     if (reason && (record.state !== "parked" || record.park_reason !== reason)) {
       const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
@@ -1365,23 +1459,28 @@ export class CompositeTools {
           next.budget = current;
         });
       }
-      return { metering, parked: false };
+      return { metering, parked: false, ...(warnings.length ? { warning: warnings.join(" | ") } : {}) };
     }
     if (action === "wait" || action === "close") {
-      return { metering, parked: true, ...(clampScaffold?.warning ? { warning: clampScaffold.warning } : {}) };
+      const parkWarnings = [clampScaffold?.warning, ...warnings].filter((value): value is string => typeof value === "string");
+      return { metering, parked: true, ...(parkWarnings.length ? { warning: parkWarnings.join(" | ") } : {}) };
     }
     const recovery = reason === "clamp-unreadable"
       ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
       : reason === "denied"
-        ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)}. The clamp is the human's absolute ceiling: raising it above the judged spend releases the park directly, and any edit to the file releases the next extension attempt.`
+        ? `A machine audit denied the last extension. Escalate to the human with the verdict and ${budgetLedgerPath(store.runPath)}; the next budget_extend stays refused until the human changes ${budgetClampPath(store.runPath)}. That file is the human's absolute ceiling: raising max_tokens above the judged spend releases this park directly, an edit at or below the judged spend pins the ceiling and routes every further token request to the human, and deleting max_tokens hands it back so the next approved grant resumes automatic raises.${pinPresent ? ` The ceiling is pinned now (max_tokens ${pinnedCeiling}), so budget_extend returns the pinned refusal while this park reads \`denied\` — both route to the same human, which is not a contradiction.${zeroMoveClause}` : ""}`
         : reason === "approval-required"
-          ? `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
-          : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.`;
+          ? pinPresent
+            ? `The human pinned this run's token ceiling. ${pinDetail} budget_extend cannot buy token headroom here. ${humanRoute}${zeroMoveClause}${minutesExceptionOpen ? " The wall clock is over its own ceiling and no max_minutes is set, so a budget_extend may still buy minutes: the token pin does not govern the time dimension." : ""}`
+            : `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
+          : pinPresent && !minutesExceptionOpen
+            ? `${pinDetail} ${humanRoute}${zeroMoveClause}`
+            : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.${minutesExceptionOpen ? ` The wall clock, not the token cap, is what is over: a grant raises granted_minutes, and the human's token pin in ${budgetClampPath(store.runPath)} does not govern the time dimension.` : ""}`
     throw new McpContractError(
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
       "budget",
-      `${recovery} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}`,
+      `${recovery} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
       false,
       true,
     );
@@ -1428,6 +1527,26 @@ export class CompositeTools {
         throw new McpContractError("budget_audit_in_flight", `Audit ${pending.ordinal} is still open for a different justification.`, "budget", `Re-send the identical justification to land audit ${pending.ordinal}, or read ${pending.audit_path} to see what the auditor has written so far. A second request would let one ORCH shop for a verdict.`, false, true);
       }
       return await this.landAudit(store, run, timeout(input));
+    }
+    // A human pin on the token ceiling makes almost every extension pointless
+    // before it costs an auditor session: under a pin `cap_tokens` can never
+    // move, so the only grant that buys anything is a minutes raise the run
+    // actually needs. Everything else — including a proactive extend below the
+    // pin — is refused here, at the same rung as `budget_denied`, and AFTER the
+    // pending-landing branch above so a pending audit always lands and its
+    // auditor session is still closed: a human edit mid-audit strands nothing.
+    if (record.doorbell_policy === "notify" && clampTokensPinned(clampReading.clamp?.max_tokens, record)) {
+      const minutesException = metering.elapsed_minutes >= metering.cap_minutes && clampReading.clamp?.max_minutes === undefined;
+      if (!minutesException) {
+        throw new McpContractError(
+          "budget_clamp_pinned",
+          `The human pinned this run's token ceiling at max_tokens ${clampReading.clamp?.max_tokens}, so no verdict can raise the effective token cap.`,
+          "budget",
+          `Escalate to the human with ${budgetLedgerPath(store.runPath)}; only they change ${budgetClampPath(store.runPath)}. Raising max_tokens above the judged spend resumes the run directly, an edit at or below the judged spend keeps the pin, and deleting max_tokens hands the ceiling back so the next approved grant resumes automatic raises. Spending an auditor session on a ceiling that cannot move is not an escalation. ${clampSchemaGuidance(store.runPath)}`,
+          false,
+          true,
+        );
+      }
     }
     // The ladder ends at the human. A denied run may not simply re-word its
     // justification and buy a second audit: the next attempt is released only
@@ -1523,6 +1642,25 @@ export class CompositeTools {
     const grantedMinutes = granted > 0 ? Math.max(1, Math.floor(record.granted_minutes * BUDGET_STEP_FRACTION)) : 0;
     const denyScaffold = verdict.verdict === "deny" ? await scaffoldClamp(store.runPath) : undefined;
     const deniedFingerprint = verdict.verdict === "deny" ? await clampFingerprint(store.runPath) : undefined;
+    // GATED T1. Under `notify` an approved ceiling belongs in the human-visible
+    // clamp file, or the approval is invisible and the override clamp silently
+    // caps every later grant. The classification runs BEFORE the settle
+    // mutation, and `intended` is recorded only when it permits a write: the
+    // registry never learns a number the disk will not hold, so no approval is
+    // owed forever, no human lowering is misread, and no later non-grant op can
+    // resurrect a refused write. The reading here is a PREDICTION of the
+    // helper's own authoritative read below — a pin landing between them is
+    // caught there and drained by the clear-on-skip.
+    const clampWriteGated = record.doorbell_policy === "notify" && granted > 0;
+    let preSettleClass: ClampTokenClass | undefined;
+    let gateRecord = record;
+    if (clampWriteGated) {
+      const preSettleReading = await readClamp(store.runPath);
+      gateRecord = await this.healClampState(store, preSettleReading, record);
+      preSettleClass = classifyClampTokens(preSettleReading, gateRecord);
+    }
+    const writePermitted = preSettleClass === "open" || preSettleClass === "server-authored";
+    const previousCeiling = gateRecord.server_clamp_tokens?.confirmed;
     const settled = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
       const current = next.budget ?? seedBudget(undefined, next.created_at);
       const entry = current.extensions.find((candidate) => candidate.ordinal === pending.ordinal);
@@ -1536,13 +1674,51 @@ export class CompositeTools {
       current.granted_minutes += grantedMinutes;
       if (deniedFingerprint === undefined) delete current.denied_clamp_sha256;
       else current.denied_clamp_sha256 = deniedFingerprint;
+      if (clampWriteGated) {
+        if (writePermitted) current.server_clamp_tokens = { ...current.server_clamp_tokens, intended: current.granted_tokens };
+        else clearOwedClampTokens(current);
+      }
       next.budget = current;
     });
     const settledRecord = settled.budget ?? record;
+    // T2: write the approved ceiling, then promote `confirmed` to the value the
+    // helper reports it WROTE (never a re-read of `intended`, which may have
+    // moved). The promotion is a best-effort follow-up: its failure is a warning
+    // that the next guarded op's self-heal repairs, never a failed grant.
+    const clampWarnings: string[] = [];
+    let clampOutcome: ClampWriteOutcome | undefined;
+    if (clampWriteGated && writePermitted) {
+      const outcome = await writeClampMaxTokens(store.runPath, settledRecord.granted_tokens, settledRecord, pending.ordinal);
+      clampOutcome = outcome;
+      try {
+        if (outcome.outcome === "written") {
+          await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+            const current = next.budget ?? seedBudget(undefined, next.created_at);
+            current.server_clamp_tokens = { ...current.server_clamp_tokens, confirmed: outcome.value };
+            next.budget = current;
+          });
+        } else if (outcome.outcome === "skipped" && outcome.reason === "pinned") {
+          // CLEAR-ON-SKIP: drain the owed state at the refusal itself, where the
+          // event is known, rather than waiting for a later disk state to imply
+          // it. The clear-heal remains the repair for a failed best-effort clear.
+          await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+            const current = next.budget ?? seedBudget(undefined, next.created_at);
+            clearOwedClampTokens(current);
+            next.budget = current;
+          });
+        }
+      } catch (error) {
+        clampWarnings.push(`The clamp write outcome (${outcome.outcome}) could not be recorded in the registry (${error instanceof Error ? error.message : String(error)}); the next guarded op's classification repairs it.`);
+      }
+      if (outcome.outcome === "failed") clampWarnings.push(outcome.warning);
+    }
     await appendLedger(store.runPath, `extension ${pending.ordinal} verdict ${verdict.verdict}`, [
       `granted: +${granted} tokens, +${grantedMinutes} min -> cap ${settledRecord.granted_tokens} tokens / ${settledRecord.granted_minutes} min`,
       `verdict read from ${pending.audit_path} sha256=${audit?.sha256 ?? "unreadable"}`,
       "recorded server-side; the orchestrator never wrote this entry",
+      ...(clampOutcome ? [clampWriteLedgerLine(store.runPath, clampOutcome, previousCeiling)] : []),
+      ...(clampWriteGated && !writePermitted ? [`clamp write: skipped (${preSettleClass}) — ${budgetClampPath(store.runPath)} is the human's ceiling on the token axis and was not touched; the approved figure lives in the registry only, and no write is owed`] : []),
+      ...(clampWarnings.map((warning) => `clamp warning: ${warning}`)),
       ...(verdict.verdict === "deny" ? [`escalation: the human decides from here, armed with this verdict and the ledger; the next attempt is released only by a change to ${budgetClampPath(store.runPath)} (fingerprint at deny: ${deniedFingerprint})`, clampSchemaGuidance(store.runPath), ...(denyScaffold?.warning ? [`scaffold warning: ${denyScaffold.warning}`] : [])] : []),
     ]);
     const closeWarning = await this.closeAuditor(store, run, pending.ordinal, pending.audit_worker_id, timeoutMs);
@@ -1563,12 +1739,14 @@ export class CompositeTools {
         metering: judged.metering,
         audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted },
         ledger_path: budgetLedgerPath(store.runPath),
-        ...((closeWarning || judged.warning || denyScaffold?.warning) ? { warnings: [closeWarning, judged.warning, denyScaffold?.warning].filter((value): value is string => typeof value === "string") } : {}),
+        ...((closeWarning || judged.warning || denyScaffold?.warning || clampWarnings.length) ? { warnings: [closeWarning, judged.warning, denyScaffold?.warning, ...clampWarnings].filter((value): value is string => typeof value === "string") } : {}),
         next_step: verdict.verdict === "deny"
           ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here. ${clampSchemaGuidance(store.runPath)}`
-          : judged.parked
-            ? `Granted +${granted} tokens, and the run is still parked: read data.budget.park_reason.`
-            : `Granted +${granted} tokens; the run is active again.`,
+          : clampOutcome?.outcome === "skipped" && clampOutcome.reason === "pinned"
+            ? `Granted +${granted} tokens in the registry, but ${budgetClampPath(store.runPath)} holds a human ceiling, so the effective token cap did not move. Escalate to the human; only they change that file.`
+            : judged.parked
+              ? `Granted +${granted} tokens, and the run is still parked: read data.budget.park_reason.`
+              : `Granted +${granted} tokens; the run is active again.`,
       },
     };
   }

@@ -3,6 +3,7 @@ import { appendFile, lstat, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
+import { writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { isObject } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import {
   ASSUMED_SESSION_TOKENS,
@@ -42,8 +43,19 @@ export function budgetLedgerPath(runPath: string): string { return path.join(run
 export function budgetClampPath(runPath: string): string { return path.join(runPath, "budget-clamp.json"); }
 export function budgetAuditPath(runPath: string, ordinal: number): string { return path.join(runPath, `budget-audit-${ordinal}.md`); }
 
-const CLAMP_SCAFFOLD_NOTE = "Human-owned. Set max_tokens and/or max_minutes to set the ceiling; raising releases a parked run; 0 is the kill switch. No agent may edit this file.";
+// Both notes carry the real contract, including the retype exception: a human
+// who cannot read the pin rule off the file they own has no way to know that
+// re-typing a number the machine recorded hands the ceiling back to it.
+const CLAMP_PIN_CONTRACT = "human edits to max_tokens pin the ceiling — except values equal to the machine's recorded ceilings, which are treated as machine-written; delete max_tokens to hand it back — the next approved grant resumes automatic raises (a ceiling already approved whose write crashed, and that no pin has since touched, may be restored at the next tool call)";
+// The note must stay inside the clamp schema's own 500-character bound: a note
+// the server cannot read back would park the run it was written to protect.
+const CLAMP_SCAFFOLD_NOTE = `Human-owned; no agent may edit this file. Set max_tokens and/or max_minutes; 0 kills the run. Raising max_tokens above judged spend releases a park. ${CLAMP_PIN_CONTRACT}.`;
 const CLAMP_SCHEMA = "{version:1, max_tokens?, max_minutes?, note?}";
+
+/** Deterministic (no timestamp) server note: the same audit rewrites the same bytes. */
+function clampServerNote(auditOrdinal: number): string {
+  return `Server-written after budget audit ${auditOrdinal}: max_tokens is the approved ceiling. Human-owned; ${CLAMP_PIN_CONTRACT}.`;
+}
 
 export function clampSchemaGuidance(runPath: string): string {
   return `The human-owned clamp file already exists at ${budgetClampPath(runPath)} and accepts the exact schema ${CLAMP_SCHEMA}.`;
@@ -153,6 +165,182 @@ export async function clampFingerprint(runPath: string): Promise<string> {
   } catch {
     return "absent";
   }
+}
+
+// ---------------------------------------------------------------------------
+// The clamp's token axis: who wrote `max_tokens`, and may the server write it?
+//
+// A grant that never reaches the human-visible clamp file is invisible, and
+// because a present `max_tokens` is an ABSOLUTE override of `granted_tokens`
+// (`effectiveCap`), a clamp that never moves silently caps every future
+// approval. So the server keeps the file in step with the grants it made — but
+// it rewrites `max_tokens` only where the value on disk is absent or is one of
+// the token values it recorded. The judgment is by VALUE, never by a byte
+// fingerprint of the file: a human edit to `max_minutes` or `note` expresses no
+// opinion about the token ceiling and must not pin it.
+//
+// `server_clamp_tokens` holds the two values identity is judged against:
+// `confirmed` (the last value a write is known to have landed) and `intended`
+// (the value a settled, write-permitted grant owes the file). INVARIANT, both
+// directions: whenever the server wrote the disk's `max_tokens`, that value is a
+// member of {confirmed, intended}; and every member is a value the server wrote
+// to disk or is currently owed by a permitted, settled grant. "Owed by a settled
+// but REFUSED grant" is not a state this machine can hold: the grant path
+// records `intended` only when a pre-settle classification permits a write, and
+// the clear-on-skip plus the clear-heal below drain the read race.
+//
+// A present `max_tokens` equal to neither member is the human's own opinion
+// about the ceiling: a permanent pin, `0` included. Accepted edge, disclosed in
+// both clamp notes: a human who types a value equal to a recorded ceiling has
+// restored a number the machine itself wrote or owes, and it reads as
+// machine-written. A human ceiling must be a different number than both; the
+// kill switch `0` is always below them and can never be misread. Authorship is
+// never claimed to be proved (SPEC NG-014) — the classification is "not
+// provably server-authored", not a proof of who typed what.
+// ---------------------------------------------------------------------------
+
+export type ClampTokenClass = "unreadable" | "open" | "server-authored" | "pinned";
+
+/** Presence, never truthiness: `0` is present and is the kill switch. */
+export function clampTokensPinned(maxTokens: number | undefined, record: BudgetRecord): boolean {
+  if (maxTokens === undefined) return false;
+  const slots = record.server_clamp_tokens;
+  return maxTokens !== slots?.confirmed && maxTokens !== slots?.intended;
+}
+
+/** Classification over ONE clamp reading. An unreadable reading is skipped, never classified. */
+export function classifyClampTokens(reading: ClampReading, record: BudgetRecord): ClampTokenClass {
+  if (reading.unreadable) return "unreadable";
+  const disk = reading.clamp?.max_tokens;
+  if (disk === undefined) return "open";
+  return clampTokensPinned(disk, record) ? "pinned" : "server-authored";
+}
+
+/**
+ * Drains an owed ceiling the disk will not hold: `intended := confirmed`, which
+ * DELETES `intended` when `confirmed` is absent. A clear guarded on `confirmed`
+ * being present would latch the owed state forever after a first-write failure.
+ */
+export function clearOwedClampTokens(record: BudgetRecord): void {
+  const slots = record.server_clamp_tokens;
+  if (!slots) return;
+  if (slots.confirmed === undefined) {
+    delete record.server_clamp_tokens;
+    return;
+  }
+  slots.intended = slots.confirmed;
+}
+
+/**
+ * The two classification-time repairs. They live in the judgment every guarded
+ * op makes, and that — not any within-call ordering — is what guarantees they
+ * fire before a later grant can interleave:
+ *   self-heal  — the disk holds `intended`, which proves the write landed and
+ *                only the promotion of `confirmed` was lost.
+ *   clear-heal — the disk is pinned while a write is still owed, so the owed
+ *                value can never be honored and is drained instead. Symmetric
+ *                with the self-heal and at the same site; the only state that
+ *                matches it is the refused-grant read race, and after it fires
+ *                nothing is owed, so no resurrection is possible.
+ * Mutates `record` and returns the repair applied.
+ */
+export function healClampTokens(reading: ClampReading, record: BudgetRecord): "self-heal" | "clear-heal" | undefined {
+  if (reading.unreadable) return undefined;
+  const slots = record.server_clamp_tokens;
+  if (slots?.intended === undefined || slots.intended === slots.confirmed) return undefined;
+  const disk = reading.clamp?.max_tokens;
+  if (disk !== undefined && disk === slots.intended) {
+    slots.confirmed = slots.intended;
+    return "self-heal";
+  }
+  if (clampTokensPinned(disk, record)) {
+    clearOwedClampTokens(record);
+    return "clear-heal";
+  }
+  return undefined;
+}
+
+/**
+ * Whether a write is OWED right now — the write TRIGGER, a separate question
+ * from whether a write is permitted. It fires only for a settled, permitted
+ * grant whose write did not land: either the disk still shows the previously
+ * confirmed value (the second-or-later crash window) or it shows nothing at all
+ * with nothing ever confirmed (the first-ever failed write). A handback after a
+ * successful write is excluded by `intended === confirmed`; a handback after a
+ * FAILED write keeps `confirmed`, so a deleted `max_tokens` is respected until
+ * the next grant. A pinned value never reconciles.
+ */
+export function clampReconcileValue(reading: ClampReading, record: BudgetRecord): number | undefined {
+  if (reading.unreadable) return undefined;
+  const slots = record.server_clamp_tokens;
+  if (slots?.intended === undefined || slots.intended === slots.confirmed) return undefined;
+  const disk = reading.clamp?.max_tokens;
+  const secondOrLaterCrash = disk !== undefined && disk === slots.confirmed;
+  const firstEverFailure = slots.confirmed === undefined && disk === undefined;
+  return secondOrLaterCrash || firstEverFailure ? slots.intended : undefined;
+}
+
+export type ClampWriteOutcome =
+  | { outcome: "written"; value: number }
+  | { outcome: "skipped"; reason: "pinned" | "unreadable"; detail: string }
+  | { outcome: "failed"; warning: string };
+
+/**
+ * Writes an approved token ceiling into the human-owned clamp.
+ *
+ * The helper OWNS the classifying read, so the read-then-rename window is one
+ * syscall pair, and THAT reading — not any earlier prediction by a caller — is
+ * authoritative for permission: a pin landing in between is caught here and
+ * returns `skipped("pinned")`, fail-closed. The residual TOCTOU is named and
+ * accepted; file locking is out of scope. `writeAtomic` is temp+rename, so a
+ * failed write leaves the previous bytes intact and observable. This never
+ * throws to its callers: a clamp write is a visibility repair, not a budget
+ * transition, and must not turn a settled grant into an exception.
+ */
+export async function writeClampMaxTokens(runPath: string, value: number, record: BudgetRecord, auditOrdinal: number): Promise<ClampWriteOutcome> {
+  const reading = await readClamp(runPath);
+  const classification = classifyClampTokens(reading, record);
+  if (classification === "unreadable") {
+    return { outcome: "skipped", reason: "unreadable", detail: reading.unreadable ?? "the clamp file cannot be read" };
+  }
+  if (classification === "pinned") {
+    return { outcome: "skipped", reason: "pinned", detail: `max_tokens ${reading.clamp?.max_tokens} is a human ceiling` };
+  }
+  const body = {
+    version: 1,
+    max_tokens: value,
+    ...(reading.clamp?.max_minutes !== undefined ? { max_minutes: reading.clamp.max_minutes } : {}),
+    note: clampServerNote(auditOrdinal),
+  };
+  try {
+    await writeAtomic(budgetClampPath(runPath), `${JSON.stringify(body, null, 2)}\n`, 0o600);
+    return { outcome: "written", value };
+  } catch (error) {
+    return {
+      outcome: "failed",
+      warning: `The approved ceiling ${value} could not be written to ${budgetClampPath(runPath)} (${error instanceof Error ? error.message : String(error)}). The previous bytes are intact and the write is retried at the next guarded op.`,
+    };
+  }
+}
+
+/**
+ * Names the outcome on every grant-path invocation, and carries the retype
+ * caution on a successful write: re-typing EITHER recorded ceiling — the number
+ * just announced or the one before it — reads as machine-written, so a human
+ * ceiling must be a different number than both.
+ */
+export function clampWriteLedgerLine(runPath: string, outcome: ClampWriteOutcome, previousCeiling: number | undefined): string {
+  const clampPath = budgetClampPath(runPath);
+  if (outcome.outcome === "written") {
+    const recorded = previousCeiling === undefined || previousCeiling === outcome.value
+      ? `${outcome.value}`
+      : `${outcome.value} or ${previousCeiling}`;
+    return `clamp write: max_tokens ${outcome.value} written to ${clampPath}; to pin the ceiling yourself use a number that is NOT ${recorded} — re-typing a ceiling the machine recorded reads as machine-written and the next approved grant may overwrite it`;
+  }
+  if (outcome.outcome === "skipped") {
+    return `clamp write: skipped (${outcome.reason}) — ${outcome.detail}; ${clampPath} is unchanged and the token ceiling stays with the human`;
+  }
+  return `clamp write: failed — ${outcome.warning}`;
 }
 
 /**
@@ -297,6 +485,13 @@ export function renderAuditInput(
   machineFacts: readonly string[],
 ): string {
   const granted = record.extensions.filter((entry) => entry.verdict === "grant" || entry.verdict === "partial").length;
+  // An auditor judging an extension under a human pin must know that the token
+  // ceiling cannot rise no matter what it grants: the effective cap is the
+  // human's number, and only a minutes raise buys the run anything.
+  const pinned = clampTokensPinned(metering.clamp?.max_tokens, record);
+  const capLine = pinned
+    ? `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — the token ceiling is PINNED by the human in ${metering.clamp?.path ?? "the clamp file"}, so a token grant moves the registry figure above and CANNOT raise the effective token cap; only the wall-clock dimension a grant also moves can buy this run anything.\n`
+    : `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — a grant raises the registry figure above, and the effective cap follows it unless the human's clamp file holds a lower ceiling.\n`;
   return `---
 version: 1
 track_id: ${run.track_id}
@@ -315,6 +510,7 @@ facts below, then append your verdict to this file.
 - requested increase: ${requestedTokens} tokens (step cap ${stepCap(record)})
 - current cap: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes})
 - extensions already granted: ${granted}
+${capLine}\
 - doorbell policy: ${record.doorbell_policy}
 
 ## The orchestrator's justification
