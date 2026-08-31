@@ -649,13 +649,26 @@ async function updateLaneFromWorker(store: DelegationStore, workerId: string, re
   });
 }
 
-export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord): Promise<DelegationRegistry> {
+/**
+ * Settles one assignment from its own durable evidence, or leaves it untouched.
+ *
+ * The predicate is unchanged: the lane is observed idle or failed AND its report
+ * carries the tool-recognized completion block with exactly one status line.
+ * `warnings` is an optional observation sink — a block that exists but does not
+ * parse names itself there instead of degrading into a silent no-op, because a
+ * worker that believes it reported and a run that disagrees is precisely the
+ * state nobody discovers by reading a registry (friction bbc360a158e3a3bf).
+ */
+export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord, warnings?: string[]): Promise<DelegationRegistry> {
   if (lane.state !== "idle" && lane.state !== "failed") return registry;
   let report: Buffer;
   try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); }
   catch { return registry; }
   const completion = new RegExp(`^\\[Assignment Completion: ${assignment.assignment_id}\\]$([\\s\\S]*?)(?=^\\[[^\\n]+\\]$|(?![\\s\\S]))`, "m").exec(report.toString("utf8"));
   const statuses = completion?.[1].match(/^status: (completed|failed)$/gm) ?? [];
+  if (completion && statuses.length !== 1) {
+    warnings?.push(`completion_block_unparsable: [Assignment Completion: ${assignment.assignment_id}] in a2a/${lane.worker_id}-report.md carries ${statuses.length} recognized status lines; exactly one line reading "status: completed" or "status: failed" settles it, so the assignment stays ${assignment.state}.`);
+  }
   if (!completion || statuses.length !== 1 || !lane.official_session_id || !Number.isSafeInteger(lane.state_change_seq)) return registry;
   const terminal = statuses[0] === "status: failed" ? "failed" as const : "completed" as const;
   const settledAt = nowIso();
@@ -685,6 +698,58 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
     const following = currentLane.queued_assignment_ids.shift();
     if (following) currentLane.active_assignment_id = following;
   });
+}
+
+/**
+ * Settlement sweep at the observation and consumption points (friction
+ * bbc360a158e3a3bf).
+ *
+ * Settlement used to hang off two call points only, both of them the ORCH's own
+ * `add`/`wait` (:1874 and :2019 before this change). A lane that finished while
+ * nobody asked therefore stayed `working` in the registry, and the two readers
+ * that consume that record as truth — the budget audit's machine facts and
+ * `add`'s FIFO placement — read a settled lane as busy. The sweep re-runs the
+ * unchanged settlement predicate for every lane holding a live assignment, so
+ * the truth is restored by whoever looks, not only by whoever waits.
+ *
+ * A doorbell is deliberately NOT a trigger: a bell is non-authoritative
+ * (contracts.ts:34-39), so it may point at a report but never settle one.
+ *
+ * The predicate needs a LIVE lane state, because the stale registry state is
+ * exactly the defect; a lane the caller has just observed is passed as `fresh`
+ * so one observation is never paid for twice.
+ */
+export async function sweepSettlements(
+  store: DelegationStore,
+  run: RunRef,
+  registry: DelegationRegistry,
+  warnings: string[],
+  fresh?: string,
+): Promise<DelegationRegistry> {
+  let current = registry;
+  for (const workerId of Object.keys(current.lanes)) {
+    const assignmentId = current.lanes[workerId].active_assignment_id;
+    if (!assignmentId) continue;
+    const assignment = current.assignments[assignmentId];
+    if (!assignment || !ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
+    if (current.lanes[workerId].state !== "idle" && current.lanes[workerId].state !== "failed") {
+      if (workerId === fresh) continue;
+      try {
+        const live = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId });
+        current = await updateLaneFromWorker(store, workerId, live);
+      } catch (error) {
+        warnings.push(`settlement_sweep_unobserved: lane ${workerId} could not be observed, so assignment ${assignmentId} stays ${assignment.state}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+    }
+    const before = current.assignments[assignmentId].state;
+    current = await settleIfReported(store, current, current.lanes[workerId], current.assignments[assignmentId], warnings);
+    const settled = current.assignments[assignmentId].state;
+    if (settled === before) continue;
+    const promoted = current.lanes[workerId].active_assignment_id;
+    warnings.push(`settlement_swept: assignment ${assignmentId} on lane ${workerId} settled as ${settled} from its reported completion block${promoted ? `; queued head ${promoted} promoted` : ""}.`);
+  }
+  return current;
 }
 
 
@@ -1592,7 +1657,14 @@ export class CompositeTools {
       }];
       next.budget = current;
     });
-    const facts = machineFacts(registry);
+    // The auditor judges the ORCH's narrative against the registry, so the
+    // registry must be true before it is quoted: a lane that settled while
+    // nobody waited would otherwise be presented as unfinished work
+    // (friction bbc360a158e3a3bf, same defect class as 183b6d4102ddfbfa).
+    const sweepWarnings: string[] = [];
+    const swept = await sweepSettlements(store, run, registry, sweepWarnings);
+    if (sweepWarnings.length) await appendLedger(store.runPath, `extension ${ordinal} settlement sweep`, sweepWarnings).catch(() => undefined);
+    const facts = machineFacts(swept);
     await writeAtomic(auditPath, renderAuditInput(run, ordinal, record, normalized, requested, metering, facts));
     try {
       const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: auditWorkerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeout(input) });
@@ -1926,9 +1998,15 @@ export class CompositeTools {
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
         await this.judgeBudget(store, run, "add");
+        // FIFO placement is judged from the lane record, so the sweep runs
+        // first: a lane that finished while nobody asked must not queue this
+        // assignment behind a completed one (friction bbc360a158e3a3bf).
+        const sweepWarnings: string[] = [];
+        await sweepSettlements(store, run, await store.read(), sweepWarnings);
+        const sweptData = sweepWarnings.length ? { data: { settlement_sweep: sweepWarnings } } : {};
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
-        if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state } };
-        if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" } };
+        if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...sweptData };
+        if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...sweptData };
         let ensured: WorkerResult;
         try {
           ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, responsibility_key: selected.lane.responsibility_key, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) });
@@ -1965,14 +2043,14 @@ export class CompositeTools {
         const agentName = stringField(ensured.worker, ["agent_name"]);
         const paneId = stringField(ensured.worker, ["root_pane_id"]);
         if (!agentName || !paneId) throw new McpContractError("worker_identity_conflict", "Ensured worker lacks canonical agent or pane coordinates.", "attest", "Inspect the lifecycle registry before prompting.");
-        const warnings: string[] = [];
+        const warnings: string[] = [...sweepWarnings];
         const until = input.wait?.until ?? ["idle", "done", "blocked"];
         registry = await this.promptAssignment(store, run, lane.worker_id, input.assignment_id, agentName, paneId, until, timeout(input), warnings);
         registry = await this.dispatchPromotedHead(store, run, lane.worker_id, until, timeout(input), warnings) ?? registry;
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
         const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, ...sweptData };
       }
 
       // `wait` is a guarded run-command op (it dispatches promoted heads), so
@@ -2036,6 +2114,11 @@ export class CompositeTools {
       if (input.action === "inspect") {
         const result = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: input.worker_id, output_lines: input.output_lines });
         registry = await updateLaneFromWorker(store, input.worker_id, result);
+        // Observation point: an ORCH that looks at a lane learns the truth,
+        // including a settlement nobody waited for (friction bbc360a158e3a3bf).
+        // The inspected lane is `fresh`, so its live state is not re-read.
+        const sweepWarnings: string[] = [];
+        registry = await sweepSettlements(store, run, registry, sweepWarnings, input.worker_id);
         const rawStaleness = isObject(result.observation?.staleness) ? result.observation.staleness : undefined;
         const lastActivityAt = stringField(rawStaleness, ["last_activity_at"]);
         const observedAt = stringField(rawStaleness, ["observed_at"]);
@@ -2048,7 +2131,7 @@ export class CompositeTools {
           };
           data = { ...result, observation: { ...result.observation, staleness } };
         }
-        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data };
+        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: sweepWarnings.length ? { ...data, settlement_sweep: sweepWarnings } : data };
       }
       const runtime = await loadFacts(this.adapter);
       await assertOrchCommand(store, runtime.facts);
