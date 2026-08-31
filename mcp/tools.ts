@@ -207,9 +207,11 @@ async function laneWaitCursor(store: DelegationStore, registry: DelegationRegist
  * anything happen"; the revision stays in the token as the coordinate the ORCH's
  * own reads are ordered by.
  */
+const CURSOR_AXES_RE = /^v1\.r\d+\.s(\d+)\.b(\d+)\.t\d+$/;
+
 function cursorMoved(previous: string, current: string): boolean | undefined {
-  const before = /^v1\.r\d+\.s(\d+)\.b(\d+)\.t\d+$/.exec(previous);
-  const after = /^v1\.r\d+\.s(\d+)\.b(\d+)\.t\d+$/.exec(current);
+  const before = CURSOR_AXES_RE.exec(previous);
+  const after = CURSOR_AXES_RE.exec(current);
   if (!before || !after) return undefined;
   return before[1] !== after[1] || before[2] !== after[2];
 }
@@ -841,16 +843,17 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
  * Settlement sweep at the observation and consumption points (friction
  * bbc360a158e3a3bf).
  *
- * Settlement used to hang off two call points only, both of them the ORCH's own
- * `add`/`wait` (:1874 and :2019 before this change). A lane that finished while
- * nobody asked therefore stayed `working` in the registry, and the two readers
- * that consume that record as truth — the budget audit's machine facts and
- * `add`'s FIFO placement — read a settled lane as busy. The sweep re-runs the
- * unchanged settlement predicate for every lane holding a live assignment, so
- * the truth is restored by whoever looks, not only by whoever waits.
+ * Settlement used to hang off two call points only, both of them reached by the
+ * ORCH's own `add`/`wait` (promptAssignment's tail and the wait tail). A lane
+ * that finished while nobody asked therefore stayed `working` in the registry,
+ * and the two readers that consume that record as truth — the budget audit's
+ * machine facts and `add`'s FIFO placement — read a settled lane as busy. The
+ * sweep re-runs the unchanged settlement predicate for every lane holding a live
+ * assignment, so the truth is restored by whoever looks, not only by whoever
+ * waits.
  *
- * A doorbell is deliberately NOT a trigger: a bell is non-authoritative
- * (contracts.ts:34-39), so it may point at a report but never settle one.
+ * A doorbell is deliberately NOT a trigger: a bell is non-authoritative by
+ * contract, so it may point at a report but never settle one.
  *
  * The predicate needs a LIVE lane state, because the stale registry state is
  * exactly the defect; a lane the caller has just observed is passed as `fresh`
