@@ -580,12 +580,34 @@ function selectBridgeContext(pi: ExtensionAPI, ctx?: ExtensionContext): Extensio
   return publisher;
 }
 
+/**
+ * Whether a lifecycle context is allowed to claim this bridge for its own host.
+ *
+ * OMP re-invokes the extension entry once per session in the process
+ * (`sdk.ts` re-calls `loadExtensions` for every session), so a subagent's
+ * `session_start` reaches this bridge over the SAME module state carrying a
+ * fresh owner symbol. An ungated claim therefore wiped the pane's attribution
+ * and aborted its heartbeat mid-turn: the pane's tokens aged past their TTL and
+ * every guarded op failed attest until the next pane `before_agent_start`
+ * (friction 94d55e7e7d802eb5, duplicate 5f732d5481a720a3). The pin is the only
+ * in-process evidence of which session proved itself on this pane, so a claim
+ * needs it absent — nothing has proved itself yet and publication is the gate,
+ * which is also the herdr revival case (new process, fresh module state) — or
+ * naming this very session, which is a reconnect of the identity that owns it.
+ */
+function contextMayClaimBridge(ctx: ExtensionContext): boolean {
+  return (
+    paneBridgeSessionId === undefined ||
+    ctx.sessionManager.getSessionId() === paneBridgeSessionId
+  );
+}
+
 export function registerOmpBridge(pi: ExtensionAPI): void {
   const owner = Symbol("herdr-delegator OMP bridge registration");
-  const refresh = async (_event: unknown, ctx: ExtensionContext) => {
-    // Extension modules can be cached across OMP session hosts. Claim before
-    // selecting a context so a resumed host cannot inherit the prior host's
-    // pane attribution, loop, or late shutdown cleanup.
+  // The full path for an event that speaks for this host's own session. Claim
+  // before selecting a context so a resumed host cannot inherit a cached
+  // module's pane attribution, loop, or late shutdown cleanup.
+  const publishAsHostSession = async (ctx: ExtensionContext) => {
     claimBridgeOwnership(owner);
     const publisher = selectBridgeContext(pi, ctx);
     // Heartbeat before the attempt, never after it: the attempt below can fail
@@ -596,9 +618,45 @@ export function registerOmpBridge(pi: ExtensionAPI): void {
     ensureBridgeRefreshLoop(pi, owner);
     if (publisher) await refreshWithinDeadline(pi, publisher);
   };
-  pi.on("session_start", refresh);
-  pi.on("session_switch", refresh);
-  pi.on("before_agent_start", refresh);
+  // A session entering this process while another session owns the pane is a
+  // subagent. It is remembered as the declined context and nothing else: no
+  // claim, no publication, and no `ensureBridgeRefreshLoop` call — that
+  // function claims at its first line, which is the second door into the same
+  // heartbeat abort.
+  const enterSession = async (_event: unknown, ctx: ExtensionContext) => {
+    if (contextMayClaimBridge(ctx)) await publishAsHostSession(ctx);
+    else selectBridgeContext(pi, ctx);
+  };
+  const switchSession = async (_event: unknown, ctx: ExtensionContext) => {
+    if (contextMayClaimBridge(ctx)) {
+      await publishAsHostSession(ctx);
+      return;
+    }
+    // `session_switch` is the only event that hands this host a successor
+    // identity of its own (reasons `new`, `resume` and `fork`, each with no
+    // `session_shutdown`), and it fires on the registration that is already
+    // running — so the owner symbol is unchanged and cannot signal the
+    // succession. The owner is therefore a test here and never a claim: only
+    // the registration that already owns the pane can adopt a successor, and a
+    // subagent's own registration fails the test and only records a decline.
+    if (activeBridgeOwner !== owner) {
+      selectBridgeContext(pi, ctx);
+      return;
+    }
+    // Adopt, then prove, with the pin retained. The successor becomes the
+    // context this bridge speaks through and re-proves the identity by
+    // publishing, which re-pins it above. Clearing the pin first instead would
+    // reopen the very window the decline logic closes, since
+    // `selectBridgeContext` adopts any context while the pin is unset.
+    latestBridgeContext = ctx;
+    declinedBridgeContext = undefined;
+    panePublishFailures = 0;
+    ensureBridgeRefreshLoop(pi, owner);
+    await refreshWithinDeadline(pi, ctx);
+  };
+  pi.on("session_start", enterSession);
+  pi.on("session_switch", switchSession);
+  pi.on("before_agent_start", enterSession);
 
   pi.on("session_shutdown", async () => {
     // A prior host may shut down after a resumed host has claimed the cached
