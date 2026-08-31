@@ -72,6 +72,15 @@ worker profile is for. It is advisory only: it never changes scope, authority, o
 immutable files, completion conditions, settlement, or recovery. A missing or degraded
 document is a no-op.
 
+By default, after writing the draft `plan.md` with the user and before freezing it,
+dispatch a slow-profile lane charged as its adversary: it attacks omissions, unstated
+assumptions, and vulnerabilities and returns evidence-cited findings through its lane
+report. Answer each round with an `[ORCH Response]`, fold accepted findings into the
+plan, and re-engage the lane for the next round until one yields no blocking findings or
+you record acceptance with grounds. Record the review lane and every finding's
+disposition in `plan.md`; route items requiring user authority through the judgment
+ladder. A trivially fixed plan may skip this review when `plan.md` records that judgment.
+
 Before dispatch, ensure the assignment states the complete goal, observable completion
 conditions, exact write ownership, dependencies, and user boundaries in language the
 worker can execute without chat history. Run the tool's preflight and accept its

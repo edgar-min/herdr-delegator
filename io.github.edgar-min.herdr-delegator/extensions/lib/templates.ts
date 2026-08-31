@@ -45,6 +45,7 @@ const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
     "a07b6449a6e335303645b813e494f8aa0c06d6093050e147c042954081941747",
     "d6ab3311f9e00ebd998c90830921d245802713135f4cde785b7f126301c1b2b3",
     "df9d6dffe8247bccc9835fe7568cc804014bd477307a45bc401bec9ebd4a7243",
+    "ebaf0b73d9bea260d0cf1bd889161ea8d3562b6d4b0f6042cf56d5a4524a77a2",
     "ec5abf2dbed74ab294db61332ed31b92c879493cc291c6d346eb673a3e30f79b",
   ],
   "protocol-worker.md": [

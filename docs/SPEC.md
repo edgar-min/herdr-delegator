@@ -301,6 +301,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **RTE-006**: Workers MUST self-resolve from their assignment, plan, canonical project documents/settings, and code before requesting judgment.
 - **RTE-007**: ORCH MUST escalate only plan-marked user decisions, irreversible external actions, shared governance, secrets/account access, or judgment only the user can supply.
 - **RTE-008**: Assignment completion MUST leave the responsibility worker idle and available for follow-up work unless ORCH separately closes the lane or track.
+- **RTE-009**: By default, after drafting `plan.md` with the user and before freezing it, ORCH MUST dispatch a slow-profile lane charged to adversarially review the draft for omissions, unstated assumptions, and vulnerabilities; it MUST answer and disposition evidence-cited findings until a round has no blocking findings or ORCH records acceptance with grounds, and `plan.md` MUST record the review lane and dispositions. Items requiring user authority MUST continue through RTE-007, while a trivially fixed plan MAY skip review when `plan.md` records that proportionality judgment. The adversarial charge is repository-owned, while the review's reasoning depth follows the installation's role mapping for the `slow` profile.
 
 ## 10. Security and privacy
 
