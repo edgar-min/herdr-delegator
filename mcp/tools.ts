@@ -874,6 +874,13 @@ function mandateBullets(values: readonly string[], field: string): string[] {
 // an auditor is never a responsibility lane, so the ORCH cannot address it.
 const AUDIT_RESPONSIBILITY = "budget-audit";
 const AUDIT_PROFILE = "slow";
+// Landing attempts before a verdictless audit is abandoned. Each attempt
+// re-runs the auditor, so this is one observation plus three genuine retries —
+// an explicit policy threshold, deliberately far below the registry validator's
+// 64-retry storage bound, which exists to reject an absurd record and was never
+// a cadence. Silence past this point is a machine failure to escalate to the
+// human, not a verdict to keep waiting for (friction 183b6d4102ddfbfa).
+const MAX_AUDIT_LANDING_ATTEMPTS = 4;
 
 /** The mandate's budget section: a declared estimate plus the cadence it buys. */
 function budgetSection(mandate: Mandate): string {
@@ -1707,25 +1714,30 @@ export class CompositeTools {
     const facts = machineFacts(swept);
     await writeAtomic(auditPath, renderAuditInput(run, ordinal, record, normalized, requested, metering, facts));
     try {
-      const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: auditWorkerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeout(input) });
-      const agentName = stringField(ensured.worker, ["agent_name"]);
-      if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
-      await this.adapter.prompt(agentName, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. You are a clean auditor: do not contact the orchestrator, do not call any herdr_* tool, and change nothing else in this run.`, ["idle", "done"], timeout(input));
+      await this.runAuditor(run, ordinal, auditPath, auditWorkerId, timeout(input));
     } catch (error) {
       // Fail-closed: an audit that cannot run never becomes a grant. The run
       // parks with the reason, the pending record survives for the retry, and
-      // the human sees the marker.
+      // the human sees the marker. The retry re-runs this spawn (see landAudit):
+      // before that, an audit whose session never started was re-READ forever
+      // while nothing ever re-prompted it (friction 183b6d4102ddfbfa).
       const detail = error instanceof Error ? error.message : String(error);
       await this.parkForAudit(store, run, ordinal, `audit ${ordinal} could not run: ${detail}`);
-      throw new McpContractError("budget_audit_unavailable", `Audit ${ordinal} could not be run: ${detail}`, "budget", `The run is parked and audit ${ordinal} stays pending. Retry the identical budget_extend; nothing is granted until a verdict lands in ${auditPath}.`, false, true);
+      throw new McpContractError("budget_audit_unavailable", `Audit ${ordinal} could not be run: ${detail}`, "budget", `The run is parked and audit ${ordinal} stays pending. Retry the identical budget_extend; it re-runs the auditor, and nothing is granted until a verdict lands in ${auditPath}.`, false, true);
     }
     return await this.landAudit(store, run, timeout(input));
   }
 
   /**
    * Lands a pending audit: read the verdict the auditor appended, record it
-   * server-side, and only then move the cap. A missing verdict is retried once
-   * and then parks — the ORCH cannot convert silence into budget.
+   * server-side, and only then move the cap. Silence is never budget — but it is
+   * no longer endless either (friction 183b6d4102ddfbfa). A landing attempt that
+   * finds no verdict re-runs the auditor, because the old retry only re-READ the
+   * document while nothing ever re-prompted a session that had failed to start
+   * or failed to be prompted. After MAX_AUDIT_LANDING_ATTEMPTS the audit is
+   * abandoned explicitly: the run stays parked, the attempt is recorded as
+   * having bought nothing, and the pending blocker is cleared so the ladder can
+   * take its next rung instead of the run waiting on a verdict that never comes.
    */
   private async landAudit(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<McpResult> {
     let registry = await store.read();
@@ -1742,8 +1754,30 @@ export class CompositeTools {
         next.budget = current;
       });
       const retries = retried.budget?.extensions.find((entry) => entry.ordinal === pending.ordinal)?.retries ?? pending.retries + 1;
-      await this.parkForAudit(store, run, pending.ordinal, `audit ${pending.ordinal} has no verdict block yet (attempt ${retries})`);
-      return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries }, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists.` } };
+      if (retries >= MAX_AUDIT_LANDING_ATTEMPTS) {
+        const abandoned = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+          const current = next.budget ?? seedBudget(undefined, next.created_at);
+          const entry = current.extensions.find((candidate) => candidate.ordinal === pending.ordinal);
+          // No `settled_at`: nothing settled and nothing was granted, so the
+          // frequency covenant has no verdict to count from and the next
+          // justification is not made to wait out an interval it never bought.
+          if (entry) entry.state = "abandoned";
+          next.budget = current;
+        });
+        const detail = `audit ${pending.ordinal} abandoned after ${retries} landing attempts without a verdict block in ${pending.audit_path}; nothing was granted`;
+        await appendLedger(store.runPath, `extension ${pending.ordinal} abandoned`, [
+          detail,
+          "recorded server-side; no cap moved and the run stays parked until a later audit lands or the human raises the clamp",
+        ]).catch(() => undefined);
+        const closeWarning = await this.closeAuditor(store, run, pending.ordinal, pending.audit_worker_id, timeoutMs);
+        await this.parkForAudit(store, run, pending.ordinal, detail);
+        return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "confirmed", retryable: false, registry_revision: abandoned.revision, data: { budget: abandoned.budget, audit: { ordinal: pending.ordinal, state: "abandoned", path: pending.audit_path, retries }, ...(closeWarning ? { warnings: [closeWarning] } : {}), next_step: `Audit ${pending.ordinal} produced no verdict in ${retries} attempts and is abandoned; the run stays parked (audit-unavailable). Read ${pending.audit_path} and ${budgetLedgerPath(store.runPath)}: send a fresh budget_extend only if the auditor can plausibly run now, and otherwise escalate to the human, who releases the run by raising ${budgetClampPath(store.runPath)}.` } };
+      }
+      // Re-prompt rung: the document exists, so the auditor only needs to be
+      // running against it. A session that is still working is left alone.
+      const rerun = pending.audit_worker_id ? await this.repromptAuditor(run, pending.ordinal, pending.audit_path, pending.audit_worker_id, timeoutMs) : "the pending audit records no auditor session, so nothing could be re-prompted";
+      await this.parkForAudit(store, run, pending.ordinal, `audit ${pending.ordinal} has no verdict block yet (attempt ${retries}${rerun ? `; ${rerun}` : "; auditor re-prompted"})`);
+      return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries, attempts_before_abandon: MAX_AUDIT_LANDING_ATTEMPTS, ...(rerun ? { auditor: rerun } : { auditor: "re-prompted" }) }, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists, and after ${MAX_AUDIT_LANDING_ATTEMPTS} attempts the audit is abandoned instead of pending forever.` } };
     }
     const granted = verdict.verdict === "deny"
       ? 0
@@ -1863,6 +1897,39 @@ export class CompositeTools {
     };
   }
 
+  /**
+   * Spawns the auditor session and hands it its own audit document. Shared by
+   * the request path and the landing retry, so a session that never started, or
+   * started and was never prompted, is actually re-run instead of being re-read
+   * (friction 183b6d4102ddfbfa). The ORCH never learns this session's pane.
+   */
+  private async runAuditor(run: RunRef, ordinal: number, auditPath: string, workerId: string, timeoutMs: number): Promise<void> {
+    const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeoutMs });
+    const agentName = stringField(ensured.worker, ["agent_name"]);
+    if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
+    await this.adapter.prompt(agentName, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. You are a clean auditor: do not contact the orchestrator, do not call any herdr_* tool, and change nothing else in this run.`, ["idle", "done"], timeoutMs);
+  }
+
+  /**
+   * One bounded re-run of a pending audit's auditor, reported as an observation.
+   * An auditor that is still working is left alone — re-prompting a thinking
+   * session would be the double-prompt this design refuses — and a failed re-run
+   * degrades to text, because the landing attempt itself must still park and
+   * return rather than fail.
+   */
+  private async repromptAuditor(run: RunRef, ordinal: number, auditPath: string, workerId: string, timeoutMs: number): Promise<string | undefined> {
+    try {
+      const observed = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+      if (observed.state === "working" || observed.state === "prompted") return `auditor ${workerId} is still ${observed.state}, so it was not re-prompted`;
+    } catch { /* no live session: the re-run below is exactly the repair */ }
+    try {
+      await this.runAuditor(run, ordinal, auditPath, workerId, timeoutMs);
+      return undefined;
+    } catch (error) {
+      return `auditor ${workerId} could not be re-prompted: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   /** Fail-closed parking for an audit that could not produce a verdict. */
   private async parkForAudit(store: DelegationStore, run: RunRef, ordinal: number, detail: string): Promise<void> {
     const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
@@ -1916,7 +1983,9 @@ export class CompositeTools {
   private async sweepAuditors(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<void> {
     const registry = await store.read();
     for (const extension of registry.budget?.extensions ?? []) {
-      if (extension.state !== "settled" || !extension.audit_worker_id || extension.audit_worker_closed) continue;
+      // A pending audit's session is still working; a settled or abandoned one
+      // must not survive as an orphan pane.
+      if (extension.state === "pending" || !extension.audit_worker_id || extension.audit_worker_closed) continue;
       const warning = await this.closeAuditor(store, run, extension.ordinal, extension.audit_worker_id, timeoutMs);
       if (warning) await appendLedger(store.runPath, `audit ${extension.ordinal} session sweep failed`, [warning]).catch(() => undefined);
     }

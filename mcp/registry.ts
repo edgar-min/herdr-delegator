@@ -140,7 +140,7 @@ function validBudgetExtension(value: unknown, index: number): value is BudgetExt
     typeof value.audit_path === "string" && value.audit_path.length <= 4096 &&
     (value.audit_worker_id === undefined || (typeof value.audit_worker_id === "string" && WORKER_RE.test(value.audit_worker_id))) &&
     (value.audit_worker_closed === undefined || typeof value.audit_worker_closed === "boolean") &&
-    (value.state === "pending" || value.state === "settled") &&
+    (value.state === "pending" || value.state === "settled" || value.state === "abandoned") &&
     (value.verdict === undefined || BUDGET_VERDICTS.includes(value.verdict as BudgetVerdict)) &&
     (value.granted_tokens === undefined || validCount(value.granted_tokens)) &&
     validCount(value.retries, 64) &&

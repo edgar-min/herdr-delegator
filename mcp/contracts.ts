@@ -25,10 +25,13 @@ export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 // SUPPORTED_DELEGATION_VERSIONS; writing always emits the current one. Version 2
 // is version 1 plus the optional `budget` record and a birth's optional
 // `approval_sha256`; version 3 adds the optional `pinned_roles` record, which is
-// no longer written but is still read (221abf10d2280b47). Each
-// upgrade only adds optional fields, so no existing field changes meaning.
-export const DELEGATION_VERSION = 3 as const;
-export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3] as const;
+// no longer written but is still read (221abf10d2280b47); version 4 adds the
+// `abandoned` budget-extension state (183b6d4102ddfbfa) — an existing field
+// gaining a value, which is exactly the growth an older reader must refuse
+// loudly instead of calling malformed. Each upgrade only adds, so no existing
+// field changes meaning.
+export const DELEGATION_VERSION = 4 as const;
+export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3, 4] as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
 // Inter-run conversation (identity/comms redesign, decisions 10-12). A doorbell
@@ -307,8 +310,11 @@ export type BudgetJustification = {
 /**
  * One trip up the escalation ladder. `pending` means the auditor session was
  * spawned and its verdict has not landed yet; the next `budget_extend` with the
- * identical justification lands it. The ORCH never writes this record and never
- * speaks to the auditor.
+ * identical justification lands it. `abandoned` is the explicit end of an audit
+ * that never produced a verdict: the landing attempts ran out, so the attempt is
+ * closed as bought-nothing rather than left pending forever (friction
+ * 183b6d4102ddfbfa). Only `settled` ever moved a cap. The ORCH never writes this
+ * record and never speaks to the auditor.
  */
 export type BudgetExtension = {
   ordinal: number;
@@ -316,7 +322,7 @@ export type BudgetExtension = {
   justification_sha256: string;
   audit_path: string;
   audit_worker_id?: string;
-  state: "pending" | "settled";
+  state: "pending" | "settled" | "abandoned";
   verdict?: BudgetVerdict;
   granted_tokens?: number;
   /** True once the server proved the auditor session was closed and its tab gone. */
