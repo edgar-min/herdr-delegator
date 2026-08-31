@@ -9,6 +9,8 @@ export const WORKER_RE = /^w[1-9][0-9]*$/;
 export const SHA256_RE = /^[a-f0-9]{64}$/;
 export const ROLE_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const BOUNDED_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/+~-]*$/;
+// Server-issued wait cursor: `v1.r<revision>.s<lane sequence>.b<report bytes>.t<epoch ms>`.
+export const WAIT_CURSOR_RE = /^v1\.r\d{1,12}\.s\d{1,12}\.b\d{1,15}\.t\d{13}$/;
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 300_000;
@@ -438,9 +440,18 @@ const coordinate = z.string().regex(COORDINATE_RE);
 const assignmentId = z.string().regex(ASSIGNMENT_RE);
 const workerId = z.string().regex(WORKER_RE);
 const hash = z.string().regex(SHA256_RE);
+// A wait cursor is an observation coordinate, never a session token or a
+// promise: registry revision, lane state sequence, report bytes, and the moment
+// the observation was taken. Handing it back changes the next call's arguments —
+// which is what keeps a legitimate repeated bounded wait from reading as a loop
+// to the host (friction 3b7947a6750ee7db) — and lets the server say whether
+// anything actually moved since then. The server owns the format; a caller only
+// echoes it.
+const waitCursor = z.string().max(80).regex(WAIT_CURSOR_RE);
 const wait = z.object({
   until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional().describe("Agent states that satisfy the wait; an already-current state satisfies it immediately. Name the states that actually answer what you are waiting for — a blocked lane answers a readiness question but not a completion one."),
   timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested wait budget. Size it to how long the awaited boundary plausibly needs: short for a state probe, longer only when awaiting a settlement you expect imminently, and repeat bounded waits instead of asking for the maximum. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms; a longer logical wait is achieved by repeating bounded wait calls.`),
+  cursor: waitCursor.optional().describe("The cursor the previous wait on this assignment returned (data.wait_cursor). Feeding it back makes the next call's arguments genuinely different from the last one's — a repeated bounded wait is a legitimate poll, but an identical repeated call looks like a loop to the host — and the result then reports whether anything moved since that observation. Omit it on the first wait."),
 }).strict().optional();
 const run = { track_id: coordinate, run_id: coordinate };
 const separation = z.object({
@@ -492,6 +503,7 @@ export const herdrWorkerInputShape = {
   responsibility_key: coordinate.optional(),
   worker_id: workerId.optional(),
   output_lines: z.number().int().min(1).max(200).optional().describe("Trailing lines of the worker's captured output to return. Ask for the fewest that answer the question you have; 200 is the ceiling, not the reading size."),
+  compact: z.boolean().optional().describe("Omit the lane's invariant identity and configuration metadata — coordinates, agent name, profile, model, config sources — and return only what can change: state, sequence, verified session, captured output, and staleness. Use it for a supervision probe on a lane you have already inspected once; the full form is the default."),
   expected_session_id: z.string().min(1).max(256).optional(),
   expected_state_change_seq: z.number().int().nonnegative().optional(),
 };
@@ -534,7 +546,7 @@ export const herdrAssignmentSchema = z.discriminatedUnion("action", [
 ]);
 export const herdrWorkerSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("list"), responsibility_key: coordinate.optional() }).strict(),
-  z.object({ ...run, action: z.literal("inspect"), worker_id: workerId, output_lines: z.number().int().min(1).max(200).optional() }).strict(),
+  z.object({ ...run, action: z.literal("inspect"), worker_id: workerId, output_lines: z.number().int().min(1).max(200).optional(), compact: z.boolean().optional() }).strict(),
   z.object({ ...run, action: z.literal("resume"), worker_id: workerId, expected_session_id: z.string().min(1).max(256) }).strict(),
   z.object({ ...run, action: z.literal("close"), worker_id: workerId, expected_session_id: z.string().min(1).max(256), expected_state_change_seq: z.number().int().nonnegative() }).strict(),
 ]);

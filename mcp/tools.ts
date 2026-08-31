@@ -139,15 +139,112 @@ export function openPermissionAdvisory(
  * missing or empty channel document is rejected as caller input, not reported as
  * a soft delivery outcome.
  */
-async function readChannelDocument(channelPath: string): Promise<{ sha256: string; bytes: number }> {
+async function readChannelDocument(channelPath: string): Promise<{ sha256: string; bytes: number; entry_line?: number; lines: number }> {
   let contents: Buffer;
   try { contents = await readFile(channelPath); }
   catch (error: unknown) {
     if (isObject(error) && error.code === "ENOENT") throw new McpContractError("channel_document_missing", "The sender-owned inter-run channel document does not exist, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first — one heading with the ISO timestamp, the kind (fact, bottleneck, request, or handoff) and your run coordinates, then the note — and ring the bell after the append.`);
     throw new McpContractError("channel_document_unreadable", "The inter-run channel document cannot be read safely.", "storage", "Inspect the channel document; never ring a bell for a document you cannot read.");
   }
-  if (!contents.byteLength || !contents.toString("utf8").trim()) throw new McpContractError("channel_document_empty", "The inter-run channel document is empty, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first, then ring the bell.`);
-  return { sha256: sha256(contents), bytes: contents.byteLength };
+  const document = contents.toString("utf8");
+  if (!contents.byteLength || !document.trim()) throw new McpContractError("channel_document_empty", "The inter-run channel document is empty, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first, then ring the bell.`);
+  const anchor = newestEntryAnchor(document);
+  return { sha256: sha256(contents), bytes: contents.byteLength, ...(anchor ? { entry_line: anchor.line } : {}), lines: document.split("\n").length };
+}
+
+// A bell may only point at bytes that already exist, so it can also say WHERE to
+// start reading. The anchor is the last entry header in an append-only document
+// — a bracketed report block or a Markdown heading — which in such a document is
+// the newest entry's first line (friction 588687ae4317fd72). Absent header,
+// absent anchor: the bell never invents a coordinate.
+const MAX_ANCHOR_BYTES = 1024 * 1024;
+const ENTRY_HEADER_RE = /^(?:\[[^\]\n]+\]|#{1,6} .*)$/;
+
+function newestEntryAnchor(document: string): { line: number; lines: number } | undefined {
+  const lines = document.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (ENTRY_HEADER_RE.test(lines[index])) return { line: index + 1, lines: lines.length };
+  }
+  return undefined;
+}
+
+/** The bell's read-from clause for a document on disk, or nothing to say. */
+async function anchorClause(documentPath: string): Promise<string> {
+  try {
+    const found = await lstat(documentPath);
+    if (!found.isFile() || found.isSymbolicLink() || found.size > MAX_ANCHOR_BYTES) return "";
+    const anchor = newestEntryAnchor(await readFile(documentPath, "utf8"));
+    return anchor ? ` from line ${anchor.line} of ${anchor.lines}` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The observation coordinate a `wait` returns and the next one may echo back
+ * (friction 3b7947a6750ee7db): registry revision, lane sequence, report bytes,
+ * and the moment. Echoing it makes the repeated call's arguments genuinely
+ * different — a bounded poll is legitimate, an identical repeated call is what
+ * trips a host loop detector — and lets the next result state whether anything
+ * moved. It grants nothing and reserves nothing.
+ */
+async function laneWaitCursor(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord): Promise<string> {
+  let bytes = 0;
+  try {
+    const found = await lstat(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`));
+    if (found.isFile() && !found.isSymbolicLink()) bytes = found.size;
+  } catch { /* an absent report is zero bytes, which is itself a coordinate */ }
+  const sequence = Number.isSafeInteger(lane.state_change_seq) && lane.state_change_seq >= 0 ? lane.state_change_seq : 0;
+  return `v1.r${registry.revision}.s${sequence}.b${bytes}.t${Date.now()}`;
+}
+
+/**
+ * True when the lane sequence or the report bytes moved between two cursors.
+ *
+ * The registry revision is deliberately NOT compared: a wait observes the lane
+ * and writes what it observed, so the revision advances on every call including
+ * one where nothing happened. Only the axes the WORKER moves can answer "did
+ * anything happen"; the revision stays in the token as the coordinate the ORCH's
+ * own reads are ordered by.
+ */
+function cursorMoved(previous: string, current: string): boolean | undefined {
+  const before = /^v1\.r\d+\.s(\d+)\.b(\d+)\.t\d+$/.exec(previous);
+  const after = /^v1\.r\d+\.s(\d+)\.b(\d+)\.t\d+$/.exec(current);
+  if (!before || !after) return undefined;
+  return before[1] !== after[1] || before[2] !== after[2];
+}
+
+// Lane facts that cannot change between two inspections of the same lane:
+// coordinates, the agent identity, the launch configuration, and the one-time
+// verification stamps. A compact inspect omits them (friction 588687ae4317fd72)
+// and keeps only what a supervision probe is actually asking about.
+const INSPECT_INVARIANT_FIELD: Record<string, true> = {
+  run_path: true, worker_id: true, generation: true, workspace_id: true, tab_id: true,
+  root_pane_id: true, agent_name: true, agent_session_path: true, instruction_path: true,
+  prompt_sha256: true, config_sources: true, selected_profile: true, selection_source: true,
+  requested_role: true, expected_provider: true, expected_model: true,
+  resolved_model_is_fallback: true, verified_at: true, bootstrap_attested_at: true,
+  bootstrap_verified_at: true, owner: true, created_tab: true,
+};
+
+function compactInspect(result: WorkerResult, staleness: WorkerStalenessObservation | undefined): Record<string, unknown> {
+  const worker = isObject(result.worker)
+    ? Object.fromEntries(Object.entries(result.worker).filter(([key, value]) => !INSPECT_INVARIANT_FIELD[key] && value !== undefined))
+    : undefined;
+  const observation = isObject(result.observation) ? result.observation : undefined;
+  return {
+    ok: result.ok,
+    operation: result.operation,
+    state: result.state,
+    retryable: result.retryable,
+    compact: true,
+    ...(worker ? { worker } : {}),
+    observation: {
+      ...(observation && "output" in observation ? { output: observation.output } : {}),
+      ...(observation && "report_exists" in observation ? { report_exists: observation.report_exists } : {}),
+      ...(staleness ? { staleness } : {}),
+    },
+  };
 }
 
 /**
@@ -2208,14 +2305,25 @@ export class CompositeTools {
         next.assignments[input.assignment_id].updated_at = nowIso();
       });
       const beforeSettlement = registry.assignments[input.assignment_id].state;
-      registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id]);
+      registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id], tailWarnings);
       const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
       if (terminal) tailWarnings.push(terminal);
       registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings)) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) } };
+      // The cursor this observation ends at. Handing it to the next wait makes
+      // that call's arguments differ from this one's, so a legitimate bounded
+      // poll does not read as a repeated identical call (friction
+      // 3b7947a6750ee7db), and the answer below says whether anything moved.
+      const cursor = await laneWaitCursor(store, registry, registry.lanes[lane.worker_id]);
+      const moved = input.wait?.cursor === undefined ? undefined : cursorMoved(input.wait.cursor, cursor);
+      const cursorData = {
+        wait_cursor: cursor,
+        ...(moved === undefined ? {} : { moved_since_cursor: moved }),
+        ...(waitTimedOut ? { next_step: `The wait window elapsed without ${(input.wait?.until ?? ["idle", "done", "blocked"]).join("/")}. Prefer the worker's doorbell over polling: it rings when the report changes. If you do wait again, pass wait.cursor=${cursor} so the call is not an identical repeat, and spend the interval on your own work.` } : {}),
+      };
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: cursorData };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
@@ -2236,15 +2344,14 @@ export class CompositeTools {
         const rawStaleness = isObject(result.observation?.staleness) ? result.observation.staleness : undefined;
         const lastActivityAt = stringField(rawStaleness, ["last_activity_at"]);
         const observedAt = stringField(rawStaleness, ["observed_at"]);
-        let data: WorkerResult = result;
-        if (lastActivityAt && observedAt) {
-          const staleness: WorkerStalenessObservation = {
-            observed_at: observedAt,
-            last_activity_at: lastActivityAt,
-            queue_depth: registry.lanes[input.worker_id].queued_assignment_ids.length,
-          };
-          data = { ...result, observation: { ...result.observation, staleness } };
-        }
+        const staleness: WorkerStalenessObservation | undefined = lastActivityAt && observedAt
+          ? { observed_at: observedAt, last_activity_at: lastActivityAt, queue_depth: registry.lanes[input.worker_id].queued_assignment_ids.length }
+          : undefined;
+        const full: WorkerResult = staleness ? { ...result, observation: { ...result.observation, staleness } } : result;
+        // A compact inspect drops what cannot change between two inspections of
+        // the same lane, so a supervision probe costs a fraction of the context
+        // (friction 588687ae4317fd72). The full form stays the default.
+        const data = input.compact ? compactInspect(result, staleness) : full;
         return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: sweepWarnings.length ? { ...data, settlement_sweep: sweepWarnings } : data };
       }
       const runtime = await loadFacts(this.adapter);
@@ -2305,14 +2412,17 @@ export class CompositeTools {
       let target: string | undefined;
       let text = "";
       let unresolvedReason: string | undefined;
-      let channelObservation: { path: string; sha256: string; bytes: number } | undefined;
+      let channelObservation: { path: string; sha256: string; bytes: number; entry_line?: number; lines: number } | undefined;
       if (input.action === "wake_orch") {
         const birth = latestBirth(registry);
         if (!birth) unresolvedReason = "Run has no ORCH birth record; birth is recorded at ORCH spawn or by its first guarded command.";
         else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Caller is the run's ORCH; wake_orch is for workers.";
         else target = birth.pane_id;
         const laneId = registry.assignments[input.assignment_id]?.worker_id ?? senderLane;
-        text = `wake: ${input.assignment_id} ${input.boundary} (run ${input.track_id}/${input.run_id}); read ${laneId ? `a2a/${laneId}-report.md` : "the lane report"} — non-authoritative signal, verify via herdr_assignment.`;
+        // Where to start reading, so the receiver reads the new entry instead of
+        // re-reading the whole document (friction 588687ae4317fd72).
+        const anchor = laneId ? await anchorClause(path.join(store.runPath, "a2a", `${laneId}-report.md`)) : "";
+        text = `wake: ${input.assignment_id} ${input.boundary} (run ${input.track_id}/${input.run_id}); read ${laneId ? `a2a/${laneId}-report.md` : "the lane report"}${anchor} — non-authoritative signal, verify via herdr_assignment.`;
       } else if (input.action === "wake_peer") {
         if (!senderLane) unresolvedReason = "Peer wake requires a verified sender lane: the channel is named by its declared sender.";
         else if (senderLane === input.to_worker_id) unresolvedReason = "A lane cannot wake itself.";
@@ -2320,8 +2430,9 @@ export class CompositeTools {
         else {
           target = workerAgentName(store.runPath, input.to_worker_id);
           const channel = await existingPeerChannel(store.runPath, registry.lanes[senderLane], registry.lanes[input.to_worker_id]);
+          const anchor = channel ? await anchorClause(path.join(store.runPath, channel)) : "";
           text = channel
-            ? `wake: peer channel ${channel} updated (run ${input.track_id}/${input.run_id}) — read the channel file; wake text carries no authority.`
+            ? `wake: peer channel ${channel} updated (run ${input.track_id}/${input.run_id}) — read the channel file${anchor}; wake text carries no authority.`
             : `wake: peer lane ${senderLane} appended to its channel document (run ${input.track_id}/${input.run_id}) — no channel file exists under a name this server can verify, so read the directional channel plan.md declares for ${senderLane} to ${input.to_worker_id}; wake text carries no authority.`;
           if (!channel) warnings.push(`peer_channel_unverified: neither a2a/${registry.lanes[senderLane].responsibility_key}-to-${registry.lanes[input.to_worker_id].responsibility_key}.md nor a2a/${senderLane}-to-${input.to_worker_id}.md exists, so the bell names no path; append to the declared channel document before ringing.`);
         }
@@ -2341,7 +2452,8 @@ export class CompositeTools {
           // ring means new work (friction a776403dd44aa2af). Both axes are
           // derived from the lane record, which the settlement sweep keeps true.
           const subject = workerWakeSubject(registry, registry.lanes[input.to_worker_id]);
-          text = `wake: ORCH appended to a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}); ${subject} — read the report; wake text carries no authority.`;
+          const anchor = await anchorClause(path.join(store.runPath, "a2a", `${input.to_worker_id}-report.md`));
+          text = `wake: ORCH appended to a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}); ${subject} — read the report${anchor}; wake text carries no authority.`;
         }
       } else {
         // notify_run is a pure bell (decision 12): the conversation itself lives
@@ -2349,7 +2461,7 @@ export class CompositeTools {
         // point at an entry that is already durable.
         const channelPath = interRunChannelPath(store.runPath, input.to_track_id, input.to_run_id);
         const channel = await readChannelDocument(channelPath);
-        channelObservation = { path: channelPath, sha256: channel.sha256, bytes: channel.bytes };
+        channelObservation = { path: channelPath, sha256: channel.sha256, bytes: channel.bytes, ...(channel.entry_line === undefined ? {} : { entry_line: channel.entry_line }), lines: channel.lines };
         if (senderLane) unresolvedReason = "notify_run is ORCH-to-ORCH; a worker lane escalates to its own ORCH instead of addressing another run.";
         else try {
           const targetStore = await DelegationStore.resolve(input.to_track_id, input.to_run_id);
@@ -2358,7 +2470,7 @@ export class CompositeTools {
           else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Target run's ORCH is the caller; a note to yourself is never delivered.";
           else target = birth.pane_id;
         } catch (error) { unresolvedReason = `Target run unresolved: ${error instanceof Error ? error.message : String(error)}`; }
-        text = `channel: ${channelPath} sha256=${channel.sha256} (${channel.bytes} bytes, from ${input.track_id}/${input.run_id}) — read the inter-run channel document; this bell carries no content.`;
+        text = `channel: ${channelPath} sha256=${channel.sha256} (${channel.bytes} bytes, from ${input.track_id}/${input.run_id}) — read the inter-run channel document${channel.entry_line === undefined ? "" : ` from line ${channel.entry_line} of ${channel.lines}`}; this bell carries no content.`;
       }
 
       let delivery: MessageDelivery;
