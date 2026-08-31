@@ -477,16 +477,47 @@ export class DelegationStore {
   }
 
   /**
+   * The next worker ordinal nothing in this run has taken. Shared by every path
+   * that needs one, so a predicted coordinate and the coordinate a later `add`
+   * actually binds cannot drift apart.
+   */
+  private async nextWorkerId(registry: DelegationRegistry): Promise<string> {
+    const reserved = await this.reservedWorkerOrdinals(registry);
+    let ordinal = 1;
+    while (reserved.has(ordinal)) ordinal += 1;
+    return `w${ordinal}`;
+  }
+
+  /**
    * Next free worker ordinal for a server-spawned budget auditor. The auditor is
    * not a responsibility lane — it never appears in `lanes`, so the ORCH cannot
    * address it — but it must not collide with one, and its ordinal is never
    * reused after the audit closes.
    */
   async nextAuditWorkerId(registry: DelegationRegistry): Promise<string> {
-    const reserved = await this.reservedWorkerOrdinals(registry);
-    let ordinal = 1;
-    while (reserved.has(ordinal)) ordinal += 1;
-    return `w${ordinal}`;
+    return this.nextWorkerId(registry);
+  }
+
+  /**
+   * The lane coordinate an unseparated `add` for this responsibility would bind,
+   * decided by the same rule `select` uses: reuse the responsibility's live
+   * unseparated lane, otherwise take the next free ordinal. It binds nothing.
+   *
+   * This exists so an assignment can be AUTHORED against the report path its
+   * worker will actually own (friction 20b26d0a60e14ab6): before it, the lane
+   * coordinate was knowable only after dispatch, so an assignment that had to
+   * name its own report surface named it by guess. A prediction stays a
+   * prediction — an intervening `add` on another responsibility can take the
+   * predicted ordinal — so `lane_reuse` reports which branch produced it.
+   */
+  async predictLane(registry: DelegationRegistry, responsibility: string): Promise<{ worker_id: string; report_path: string; lane_reuse: boolean }> {
+    if (!RESPONSIBILITY_RE.test(responsibility)) throw new McpContractError("invalid_assignment", "Responsibility key is invalid.", "validate", "Use a canonical responsibility key.");
+    const live = (registry.responsibilities[responsibility]?.worker_ids ?? [])
+      .map((id) => registry.lanes[id])
+      .filter((lane): lane is WorkerLaneRecord => !!lane && lane.state !== "closed" && lane.state !== "failed");
+    const reused = live.find((candidate) => candidate.separation === undefined);
+    const workerId = reused?.worker_id ?? await this.nextWorkerId(registry);
+    return { worker_id: workerId, report_path: path.join(this.runPath, "a2a", `${workerId}-report.md`), lane_reuse: reused !== undefined };
   }
 
   async select(assignmentId: string, responsibility: string, instructionsHash: string, separation: Separation | undefined, timeoutMs: number): Promise<LaneSelection> {
@@ -527,10 +558,7 @@ export class DelegationStore {
         : live.find((candidate) => candidate.separation === undefined);
       if (separation && (!live.some((candidate) => candidate.worker_id === separation.conflicts_with_worker_id) || !separation.reason.trim())) throw new McpContractError("invalid_separation", "Separation must bind a short reason to an existing conflicting worker.", "select", "Use direction, ownership, or dependency with an existing worker ID.");
       if (!lane) {
-        const reserved = await this.reservedWorkerOrdinals(registry);
-        let ordinal = 1;
-        while (reserved.has(ordinal)) ordinal += 1;
-        const workerId = `w${ordinal}`;
+        const workerId = await this.nextWorkerId(registry);
         lane = { worker_id: workerId, responsibility_key: responsibility, lane_generation: 1, ...(separation ? { separation } : {}), queued_assignment_ids: [], state: "starting", state_change_seq: 0, created_at: now, updated_at: now };
         registry.lanes[workerId] = lane;
         responsibilityRecord.worker_ids.push(workerId);

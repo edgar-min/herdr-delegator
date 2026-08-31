@@ -2019,11 +2019,16 @@ export class CompositeTools {
         const registry = await store.read();
         const existing = registry.assignments[input.assignment_id];
         const routes = await advisorySkillRoutes(store.runPath, store.cwd, ["authoring"], "orch");
+        // The lane coordinate the assignment will run on, at authoring time
+        // (friction 20b26d0a60e14ab6): an assignment that must name its own
+        // report surface should read it here instead of guessing it.
         if (existing) {
-          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256 } };
+          const bound = { worker_id: existing.worker_id, report_path: path.join(store.runPath, "a2a", `${existing.worker_id}-report.md`), lane_reuse: true };
+          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length } };
+        const predicted = await store.predictLane(registry, input.responsibility_key);
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted } };
       }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
