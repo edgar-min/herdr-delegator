@@ -149,6 +149,46 @@ async function readChannelDocument(channelPath: string): Promise<{ sha256: strin
   if (!contents.byteLength || !contents.toString("utf8").trim()) throw new McpContractError("channel_document_empty", "The inter-run channel document is empty, so this bell would point at nothing.", "validate", `Append your entry to ${channelPath} first, then ring the bell.`);
   return { sha256: sha256(contents), bytes: contents.byteLength };
 }
+
+/**
+ * The peer channel document a `wake_peer` bell may name (friction
+ * ad32fc202a939bf7). The server never parses plan.md, so it cannot know which
+ * channel a plan declared; it can only check the two deterministic names against
+ * disk — responsibility-named first, lane-named second — and name nothing when
+ * neither exists. A bell pointing at a path that does not exist sends the
+ * receiver to look for a document nobody wrote, which is worse than a bell that
+ * admits it has no verified path.
+ */
+async function existingPeerChannel(runPath: string, sender: WorkerLaneRecord, receiver: WorkerLaneRecord): Promise<string | undefined> {
+  const candidates = [
+    `${sender.responsibility_key}-to-${receiver.responsibility_key}.md`,
+    `${sender.worker_id}-to-${receiver.worker_id}.md`,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const found = await lstat(path.join(runPath, "a2a", candidate));
+      if (found.isFile() && !found.isSymbolicLink()) return `a2a/${candidate}`;
+    } catch { /* try the next deterministic candidate */ }
+  }
+  return undefined;
+}
+
+/**
+ * What a `wake_worker` bell is about, in the bell text itself (friction
+ * a776403dd44aa2af): the assignment axis plus one reason token, so a worker can
+ * tell a queue notice from an answer to a decision request without inferring it
+ * from the fact that it was woken. Every axis is derived from the lane record —
+ * the bell reports, it never decides.
+ */
+function workerWakeSubject(registry: DelegationRegistry, lane: WorkerLaneRecord): string {
+  const active = lane.active_assignment_id;
+  if (active) {
+    const reason = registry.assignments[active]?.state === "queued" ? "queued" : "orch-response";
+    return `assignment ${active} reason=${reason}`;
+  }
+  if (lane.last_completed_assignment_id) return `assignment ${lane.last_completed_assignment_id} reason=completion`;
+  return "no assignment is recorded on this lane reason=orch-response";
+}
 function field(value: unknown, names: readonly string[]): unknown {
   if (!value || typeof value !== "object") return undefined;
   if (Array.isArray(value)) { for (const child of value) { const found = field(child, names); if (found !== undefined) return found; } return undefined; }
@@ -2205,7 +2245,11 @@ export class CompositeTools {
         else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
         else {
           target = workerAgentName(store.runPath, input.to_worker_id);
-          text = `wake: peer channel a2a/${senderLane}-to-${input.to_worker_id}.md updated (run ${input.track_id}/${input.run_id}) — read the channel file; wake text carries no authority.`;
+          const channel = await existingPeerChannel(store.runPath, registry.lanes[senderLane], registry.lanes[input.to_worker_id]);
+          text = channel
+            ? `wake: peer channel ${channel} updated (run ${input.track_id}/${input.run_id}) — read the channel file; wake text carries no authority.`
+            : `wake: peer lane ${senderLane} appended to its channel document (run ${input.track_id}/${input.run_id}) — no channel file exists under a name this server can verify, so read the directional channel plan.md declares for ${senderLane} to ${input.to_worker_id}; wake text carries no authority.`;
+          if (!channel) warnings.push(`peer_channel_unverified: neither a2a/${registry.lanes[senderLane].responsibility_key}-to-${registry.lanes[input.to_worker_id].responsibility_key}.md nor a2a/${senderLane}-to-${input.to_worker_id}.md exists, so the bell names no path; append to the declared channel document before ringing.`);
         }
       } else if (input.action === "wake_worker") {
         // ORCH-to-own-worker doorbell (dogfooded contract gap): a worker that
@@ -2218,7 +2262,12 @@ export class CompositeTools {
         else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
         else {
           target = workerAgentName(store.runPath, input.to_worker_id);
-          text = `wake: ORCH appended a response in a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}) — read the report; wake text carries no authority.`;
+          // The bell names WHICH assignment it concerns and WHY, so the worker
+          // can tell a queue notice from an answer instead of guessing that any
+          // ring means new work (friction a776403dd44aa2af). Both axes are
+          // derived from the lane record, which the settlement sweep keeps true.
+          const subject = workerWakeSubject(registry, registry.lanes[input.to_worker_id]);
+          text = `wake: ORCH appended to a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}); ${subject} — read the report; wake text carries no authority.`;
         }
       } else {
         // notify_run is a pure bell (decision 12): the conversation itself lives
