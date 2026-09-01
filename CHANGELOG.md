@@ -13,6 +13,33 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.2] - 2026-09-01
+
+### Added
+
+- Runs now discover durable inter-run channel documents that were addressed to
+  them before their ORCH existed. The bounded, content-free observation appears
+  in `herdr_track inspect` and, for at most eight documents, the newborn ORCH's
+  first prompt. Failed `notify_run` calls now preserve the original delivery
+  result while naming the durable document and explicitly declining a redelivery
+  guarantee. No queue, persistent state, registry field, or delivery value was
+  added. (ef27dbff9f8d30ac)
+
+### Changed
+
+- Architecture documentation now distinguishes the root `plugin.json` manifest
+  from the reverse-domain OMP extension directory and its matching
+  `plugin.json` extension key.
+- Worker and handoff documentation now describe the live identity verification
+  gates rather than stale provider/model/thinking checks, and friction evidence
+  guidance asks for the full error message needed to identify its boundary.
+
+### Removed
+
+- Removed the uncalled `promptWait` path, its obsolete `prompt_wait` operation,
+  and the instruction-path field and imports that only supported it. The live
+  prompt-and-verify path remains unchanged. (7c8ee1442073b02c)
+
 ## [3.5.1] - 2026-09-01
 
 A worker spawned under the default `inherit` thinking profile could not be
@@ -553,6 +580,7 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.5.2]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.1...v3.5.2
 [3.5.1]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.3.0...v3.4.0
