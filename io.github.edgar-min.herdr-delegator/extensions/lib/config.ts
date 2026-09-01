@@ -929,7 +929,7 @@ export async function canonicalInstruction(
   return canonical;
 }
 
-type RunIndexRow = {
+export type RunIndexRow = {
   track_id: string;
   run_id: string;
   run_path: string;
@@ -1158,4 +1158,80 @@ export async function inboundChannelEntries(
   }
 
   return { entries, truncated, ...(warnings.length ? { observation_warning: warnings.join(" | ") } : {}) };
+}
+
+/**
+ * One `Write ownership` bullet, lowered to what a machine can compare.
+ *
+ * The bullets are authored prose in a Markdown artifact, so most of the corpus
+ * is not a path at all — and the audit that compares them silently treated every
+ * bullet as one (friction 588687ae4317fd72). Classification makes that split
+ * visible instead: a bullet is a path, a prefix, or honestly unclassified.
+ *
+ * The grammar is deliberately strict and lexical. It never guesses a path out of
+ * a sentence, never touches the filesystem, and never resolves a symlink, so a
+ * declaration means the same thing on every machine that reads the artifact.
+ */
+export type OwnershipDeclarationClass =
+  | { kind: "path"; value: string }
+  | { kind: "prefix"; value: string }
+  | { kind: "unclassified" };
+
+const MAX_OWNERSHIP_DECLARATION_BYTES = 4_096;
+/** A lexical Git path: no absolute root, no glob, no separator but `/`. */
+const OWNERSHIP_PATH_RE = /^(?:\.\/)?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\/?$/;
+/** `Yours:` and friends label a list; the label is not part of any path. */
+const OWNERSHIP_LABEL_RE = /^Yours:[ \t]+(.+)$/;
+const OWNERSHIP_PAREN_TRAILER_RE = /^(.*) \(([^`]+)\)$/;
+const OWNERSHIP_DASH_TRAILER_RE = /^(.*) — ([^`]+)$/;
+const OWNERSHIP_BACKTICK_TOKEN_RE = /^`([^`]+)`$/;
+
+function classifyOwnershipToken(raw: string): OwnershipDeclarationClass | undefined {
+  const prefix = raw.endsWith("/**");
+  const token = prefix ? raw.slice(0, -3) : raw;
+  if (!token || !OWNERSHIP_PATH_RE.test(token)) return undefined;
+  const value = (token.startsWith("./") ? token.slice(2) : token).replace(/\/$/, "");
+  // `[A-Za-z0-9._-]+` admits `.` and `..` as whole segments, which are the two
+  // spellings that would let a declaration mean a different directory than it
+  // reads as. Reject them here rather than normalizing them away.
+  if (!value || value.split("/").some((segment) => !segment || segment === "." || segment === "..")) return undefined;
+  return prefix ? { kind: "prefix", value } : { kind: "path", value };
+}
+
+/**
+ * Accepted bullet forms, and nothing else: a bare token; one backticked token;
+ * or an optional `Yours:` label plus comma-separated backticked tokens. A
+ * backticked form may carry one trailing ` — note` or ` (note)`. Anything else —
+ * a sentence that happens to contain a path, an absolute path, `..`, a glob
+ * other than a terminal `/**` — is one `unclassified`, which is a reportable
+ * fact rather than a silent miss.
+ */
+export function classifyOwnershipDeclarations(declaration: string): OwnershipDeclarationClass[] {
+  const unclassified: OwnershipDeclarationClass[] = [{ kind: "unclassified" }];
+  if (Buffer.byteLength(declaration) > MAX_OWNERSHIP_DECLARATION_BYTES) return unclassified;
+  const bullet = declaration.trim();
+  if (!bullet) return unclassified;
+  if (!bullet.includes("`")) {
+    const bare = classifyOwnershipToken(bullet);
+    return bare ? [bare] : unclassified;
+  }
+  const paren = OWNERSHIP_PAREN_TRAILER_RE.exec(bullet);
+  const dash = paren ? undefined : OWNERSHIP_DASH_TRAILER_RE.exec(bullet);
+  const trailer = paren ?? dash;
+  const labelled = (trailer && trailer[2].trim() ? trailer[1] : bullet).trim();
+  const label = OWNERSHIP_LABEL_RE.exec(labelled);
+  const listed = (label ? label[1] : labelled).trim();
+  const classes: OwnershipDeclarationClass[] = [];
+  const seen = new Set<string>();
+  for (const part of listed.split(",")) {
+    const quoted = OWNERSHIP_BACKTICK_TOKEN_RE.exec(part.trim());
+    if (!quoted) return unclassified;
+    const classified = classifyOwnershipToken(quoted[1]);
+    if (!classified) return unclassified;
+    const key = `${classified.kind}:${classified.kind === "unclassified" ? "" : classified.value}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    classes.push(classified);
+  }
+  return classes.length ? classes : unclassified;
 }

@@ -146,6 +146,30 @@ export type AdvisoryUnownedChanges = {
   truncated: boolean;
 };
 
+/**
+ * Read-only preflight observation of the ownership other runs in the same
+ * project directory have already declared. It is output, never persisted state
+ * and never a verdict: an overlap is a fact two orchestrators negotiate in their
+ * channel documents (NG-012), not something the server arbitrates or refuses.
+ */
+export type InterRunOwnershipOverlap = {
+  track_id: string;
+  run_id: string;
+  assignment_id: string;
+  state: AssignmentState;
+  /** The requesting artifact's own declared values that the peer also covers. */
+  paths: string[];
+};
+
+export type InterRunOwnershipReport = {
+  peer_runs_scanned: number;
+  cwd_shared_by: number;
+  overlaps: InterRunOwnershipOverlap[];
+  unclassified_declarations: number;
+  truncated: boolean;
+  observation_warning?: string;
+};
+
 export type AssignmentSettlementObservation = {
   elapsed_ms?: number;
   token_usage?: TokenUsageObservation;

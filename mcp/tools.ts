@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { MAX_ANCHOR_BYTES, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -13,7 +13,7 @@ import { ContractError as LegacyContractError, type WorkerResult } from "../io.g
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, healClampTokens, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 
@@ -396,28 +396,88 @@ async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Pr
   }
 }
 
-async function declaredActiveOwnership(store: DelegationStore, registry: DelegationRegistry): Promise<string[] | undefined> {
-  const owned: string[] = [];
-  try {
-    for (const assignment of Object.values(registry.assignments)) {
-      if (!ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
-      const artifact = await store.assignmentFile(assignment.assignment_id, assignment.responsibility_key, assignment.instructions_sha256);
-      for (const declaration of artifact.assignment.write_ownership) {
-        if (declaration.includes("\0") || Buffer.byteLength(declaration) > 4_096) return undefined;
-        owned.push(path.resolve(store.cwd, declaration));
-      }
-    }
-    return owned;
-  } catch {
-    return undefined;
-  }
+/** A bounded single-line reason, safe to join into the capped response field. */
+function auditDetail(error: unknown): string {
+  return singleLine(error instanceof Error ? error.message : String(error)).slice(0, 160);
 }
 
-async function observeAdvisoryUnownedChanges(store: DelegationStore, registry: DelegationRegistry): Promise<AdvisoryUnownedChanges | undefined> {
-  const ownership = await declaredActiveOwnership(store, registry);
+/**
+ * The comparable half of what the active assignments declare they own, plus an
+ * honest count of the half that is not comparable at all.
+ *
+ * Every declaration used to be resolved as if it were a path, so a sentence
+ * resolved to a directory name and silently widened the owned set. Only
+ * classified declarations are compared now, and both classes keep the audit's
+ * long-standing prefix semantics: a declared path covers what lives under it.
+ */
+type DeclaredOwnership = { prefixes: string[]; classified: number; unclassified: number };
+
+async function declaredActiveOwnership(
+  store: DelegationStore,
+  registry: DelegationRegistry,
+  warnings?: string[],
+): Promise<DeclaredOwnership | undefined> {
+  const prefixes: string[] = [];
+  let classified = 0;
+  let unclassified = 0;
+  for (const assignment of Object.values(registry.assignments)) {
+    if (!ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
+    let declarations: readonly string[];
+    try {
+      declarations = (await store.assignmentFile(assignment.assignment_id, assignment.responsibility_key, assignment.instructions_sha256)).assignment.write_ownership;
+    } catch (error) {
+      // Ownership cannot be enumerated, so an audit would compare against a
+      // window it cannot see. Skip it, and say so.
+      warnings?.push(`ownership_artifacts_unreadable: assignment ${assignment.assignment_id} ownership could not be read, so no unowned-change audit was made: ${auditDetail(error)}`);
+      return undefined;
+    }
+    for (const declaration of declarations) {
+      for (const declared of classifyOwnershipDeclarations(declaration)) {
+        if (declared.kind === "unclassified") {
+          unclassified += 1;
+          continue;
+        }
+        const absolute = path.resolve(store.cwd, declared.value);
+        const relative = path.relative(store.cwd, absolute);
+        if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+          // Lexically outside the project directory the audit observes: it
+          // cannot be compared, so it counts as unreadable rather than as
+          // ownership of something this audit never looks at.
+          unclassified += 1;
+          continue;
+        }
+        classified += 1;
+        if (!prefixes.includes(absolute)) prefixes.push(absolute);
+      }
+    }
+  }
+  if (unclassified) {
+    warnings?.push(`ownership_declarations_unclassified: ${unclassified} of ${classified + unclassified} active ownership declarations are not machine-readable paths, so the audit covered only the other ${classified}.`);
+  }
+  return { prefixes, classified, unclassified };
+}
+
+/**
+ * The audit is fail-open by contract, and every one of its exits used to return
+ * `undefined` — so a settlement that observed nothing was indistinguishable from
+ * a settlement that observed a clean tree (friction 588687ae4317fd72). Each exit
+ * now names itself in `warnings`, which the settling response carries and
+ * nothing persists. Fail-open is unchanged: a named skip never blocks
+ * settlement, changes terminal state, or attributes a path to anyone.
+ */
+async function observeAdvisoryUnownedChanges(store: DelegationStore, registry: DelegationRegistry, warnings?: string[]): Promise<AdvisoryUnownedChanges | undefined> {
+  const skip = (code: string, detail: string): undefined => {
+    warnings?.push(`${code}: ${detail}`);
+    return undefined;
+  };
+  const ownership = await declaredActiveOwnership(store, registry, warnings);
   if (!ownership) return undefined;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GIT_AUDIT_TIMEOUT_MS);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, GIT_AUDIT_TIMEOUT_MS);
   try {
     const process = Bun.spawn(["git", "status", "--porcelain=v1", "-z", "--untracked-files=normal"], {
       cwd: store.cwd,
@@ -427,29 +487,35 @@ async function observeAdvisoryUnownedChanges(store: DelegationStore, registry: D
       signal: controller.signal,
     });
     const [stdout, exitCode] = await Promise.all([new Response(process.stdout).arrayBuffer(), process.exited]);
-    if (exitCode !== 0 || stdout.byteLength > MAX_GIT_OUTPUT_BYTES) return undefined;
+    if (timedOut) return skip("git_audit_timeout", `git status did not finish within the ${GIT_AUDIT_TIMEOUT_MS} ms abort boundary.`);
+    if (exitCode !== 0) return skip("git_audit_command_failed", `git status exited ${exitCode} in the run's project directory, which is also what a directory outside any Git work tree reports.`);
+    if (stdout.byteLength > MAX_GIT_OUTPUT_BYTES) return skip("git_audit_output_oversized", `git status produced ${stdout.byteLength} bytes, above the ${MAX_GIT_OUTPUT_BYTES}-byte acceptance bound.`);
     const bytes = Buffer.from(stdout);
-    if (!isUtf8(bytes)) return undefined;
+    if (!isUtf8(bytes)) return skip("git_audit_output_non_utf8", "git status output is not valid UTF-8, so no path could be read safely.");
     const entries = bytes.toString("utf8").split("\0");
-    if (entries.at(-1) !== "") return undefined;
+    if (entries.at(-1) !== "") return skip("git_audit_output_unterminated", "git status output does not end at a NUL boundary, so the final record may be partial.");
     entries.pop();
     const modified: string[] = [];
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
-      if (entry.length < 4 || entry[2] !== " ") return undefined;
+      if (entry.length < 4 || entry[2] !== " ") return skip("git_audit_porcelain_invalid", `git status record ${index + 1} is not porcelain v1 XY-space-path.`);
       const candidates = [entry.slice(3)];
       if (entry[0] === "R" || entry[1] === "R" || entry[0] === "C" || entry[1] === "C") {
         const original = entries[index + 1];
-        if (!original) return undefined;
+        if (!original) return skip("git_audit_rename_invalid", `git status record ${index + 1} is a rename or copy with no source path.`);
         candidates.push(original);
         index += 1;
       }
       for (const candidate of candidates) {
-        if (!candidate || candidate.includes("\0") || path.isAbsolute(candidate) || Buffer.byteLength(candidate) > 4_096) return undefined;
+        if (!candidate || candidate.includes("\0") || path.isAbsolute(candidate) || Buffer.byteLength(candidate) > 4_096) {
+          return skip("git_audit_path_invalid", `git status record ${index + 1} names an empty, absolute, or oversized path.`);
+        }
         const absolute = path.resolve(store.cwd, candidate);
         const relative = path.relative(store.cwd, absolute);
-        if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`)) return undefined;
-        const covered = ownership.some((owned) => absolute === owned || absolute.startsWith(`${owned}${path.sep}`));
+        if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+          return skip("git_audit_path_outside_cwd", `git status record ${index + 1} resolves outside the run's project directory.`);
+        }
+        const covered = ownership.prefixes.some((owned) => absolute === owned || absolute.startsWith(`${owned}${path.sep}`));
         if (!covered && !modified.includes(relative)) modified.push(relative);
       }
     }
@@ -464,11 +530,141 @@ async function observeAdvisoryUnownedChanges(store: DelegationStore, registry: D
       boundedPaths.push(modifiedPath);
     }
     return { advisory: true, paths: boundedPaths, truncated };
-  } catch {
-    return undefined;
+  } catch (error) {
+    return timedOut
+      ? skip("git_audit_timeout", `git status was aborted at the ${GIT_AUDIT_TIMEOUT_MS} ms boundary.`)
+      : skip("git_audit_exception", auditDetail(error));
   } finally {
     clearTimeout(timer);
   }
+}
+
+const INTER_RUN_MAX_PEER_RUNS = 128;
+const INTER_RUN_MAX_OVERLAPS = 64;
+
+/**
+ * Read-only overlap report for an assignment being authored: which other runs in
+ * the same project directory already declare ownership this draft also claims.
+ *
+ * This is the round trip friction 588687ae4317fd72 asked for — the notify /
+ * acknowledge / begin exchange collapses when the author can see the overlap
+ * before writing the notice — and it is a report, nothing else. Preflight is
+ * non-mutating by contract (ASN-014a), so an overlap is never a refusal, a
+ * reservation, or a lease; two orchestrators still settle it in their channel
+ * documents (NG-012). It also does not prevent an accident: the units differ,
+ * because a declaration names a file and a collision happens inside one.
+ *
+ * Bounded, deterministic, and loud: newest peers first with the coordinate as
+ * tie-break so a capped scan is the same scan every time, and every partial
+ * failure names itself instead of shrinking the report silently.
+ */
+async function observeInterRunOwnership(
+  store: DelegationStore,
+  requestedDeclarations: readonly string[],
+  limits?: { maxPeerRuns?: number; maxOverlaps?: number },
+): Promise<InterRunOwnershipReport> {
+  const maxPeerRuns = limits?.maxPeerRuns ?? INTER_RUN_MAX_PEER_RUNS;
+  const maxOverlaps = limits?.maxOverlaps ?? INTER_RUN_MAX_OVERLAPS;
+  const requested: { kind: "path" | "prefix"; value: string }[] = [];
+  let unclassified = 0;
+  for (const declaration of requestedDeclarations) {
+    for (const declared of classifyOwnershipDeclarations(declaration)) {
+      if (declared.kind === "unclassified") unclassified += 1;
+      else requested.push(declared);
+    }
+  }
+
+  let index: { runs: Record<string, RunIndexRow> };
+  try {
+    const loaded = await loadDelegatorConfig(store.runPath, store.cwd);
+    index = await readRunIndex(path.join(await storageRootFromConfig(loaded.config, false), "index.json"));
+  } catch (error) {
+    return { peer_runs_scanned: 0, cwd_shared_by: 0, overlaps: [], unclassified_declarations: unclassified, truncated: false, observation_warning: `inter_run_scan_unavailable: the storage-root index could not be read, so no peer run was examined: ${auditDetail(error)}` };
+  }
+
+  const sharing = Object.values(index.runs).filter((row) => row.cwd === store.cwd);
+  const peers = sharing
+    .filter((row) => row.run_path !== store.runPath)
+    .sort((left, right) => {
+      if (left.created_at !== right.created_at) return left.created_at < right.created_at ? 1 : -1;
+      const leftKey = `${left.track_id}/${left.run_id}`;
+      const rightKey = `${right.track_id}/${right.run_id}`;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  const scanned = peers.slice(0, maxPeerRuns);
+
+  const warnings: string[] = [];
+  const overlaps: InterRunOwnershipOverlap[] = [];
+  let overlapsTruncated = false;
+  for (const row of scanned) {
+    const coordinate = `${row.track_id}/${row.run_id}`;
+    let peerStore: DelegationStore;
+    let peerRegistry: DelegationRegistry;
+    try {
+      peerStore = await DelegationStore.resolve(row.track_id, row.run_id);
+      peerRegistry = await peerStore.read();
+    } catch (error) {
+      warnings.push(`inter_run_peer_unreadable: peer run ${coordinate} could not be read: ${auditDetail(error)}`);
+      continue;
+    }
+    for (const assignment of Object.values(peerRegistry.assignments)) {
+      // Queued work has not been prompted, so nobody is writing under it yet;
+      // counting it as held ownership would report a conflict that does not
+      // exist. The active states are the same ones the settlement audit uses.
+      if (!ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
+      let declarations: readonly string[];
+      try {
+        declarations = (await peerStore.assignmentFile(assignment.assignment_id, assignment.responsibility_key, assignment.instructions_sha256)).assignment.write_ownership;
+      } catch (error) {
+        warnings.push(`inter_run_peer_unreadable: assignment ${assignment.assignment_id} of peer run ${coordinate} could not be read: ${auditDetail(error)}`);
+        continue;
+      }
+      const matched: string[] = [];
+      for (const declaration of declarations) {
+        for (const declared of classifyOwnershipDeclarations(declaration)) {
+          // A peer's prose declaration is the same invisibility on this side of
+          // the comparison as on the settling side, so it is counted here too:
+          // an empty overlap list means "no overlap among what could be read",
+          // and the count is what says how much could not be.
+          if (declared.kind === "unclassified") {
+            unclassified += 1;
+            continue;
+          }
+          for (const request of requested) {
+            // Containment either way: a declared directory covers the file the
+            // other side named, and a declared file sits under the other side's
+            // directory. Both are the same collision.
+            const overlapping = request.value === declared.value
+              || request.value.startsWith(`${declared.value}/`)
+              || declared.value.startsWith(`${request.value}/`);
+            if (overlapping && !matched.includes(request.value)) matched.push(request.value);
+          }
+        }
+      }
+      if (!matched.length) continue;
+      if (overlaps.length >= maxOverlaps) {
+        overlapsTruncated = true;
+        continue;
+      }
+      overlaps.push({ track_id: row.track_id, run_id: row.run_id, assignment_id: assignment.assignment_id, state: assignment.state, paths: matched.sort() });
+    }
+  }
+  overlaps.sort((left, right) => {
+    const leftKey = `${left.track_id}/${left.run_id}/${left.assignment_id}`;
+    const rightKey = `${right.track_id}/${right.run_id}/${right.assignment_id}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+
+  if (peers.length > scanned.length) warnings.push(`inter_run_scan_truncated: ${peers.length} peer runs share this project directory and only the ${maxPeerRuns} most recent were scanned.`);
+  if (overlapsTruncated) warnings.push(`inter_run_overlaps_truncated: the report stopped at the ${maxOverlaps}-overlap limit, so this list may be incomplete.`);
+  return {
+    peer_runs_scanned: scanned.length,
+    cwd_shared_by: sharing.length,
+    overlaps,
+    unclassified_declarations: unclassified,
+    truncated: peers.length > scanned.length || overlapsTruncated,
+    ...(warnings.length ? { observation_warning: warnings.join(" | ") } : {}),
+  };
 }
 
 function settlementObservation(assignment: AssignmentRecord, warning?: string): AssignmentSettlementObservation | undefined {
@@ -817,7 +1013,7 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
   const settledAt = nowIso();
   const [tokenUsage, advisoryUnownedChanges] = await Promise.all([
     observeTokenUsage(lane, settledAt),
-    observeAdvisoryUnownedChanges(store, registry),
+    observeAdvisoryUnownedChanges(store, registry, warnings),
   ]);
   const promptedAt = assignment.prompted_at === undefined ? undefined : Date.parse(assignment.prompted_at);
   const settledAtMs = Date.parse(settledAt);
@@ -2167,7 +2363,7 @@ export class CompositeTools {
       const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
       if (progress) warnings.push(progress);
       const beforeSettlement = registry.assignments[assignmentId].state;
-      registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId]);
+      registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId], warnings);
       const terminal = await reportTerminalObservation(this.adapter, registry, assignmentId, beforeSettlement, paneId);
       if (terminal) warnings.push(terminal);
       return registry;
@@ -2224,7 +2420,11 @@ export class CompositeTools {
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
         const predicted = await store.predictLane(registry, input.responsibility_key);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted } };
+        // Authoring-time overlap, read from the artifact just validated. It is
+        // an observation appended to a non-mutating result: preflight still
+        // decides nothing (ASN-014a).
+        const interRunOwnership = await observeInterRunOwnership(store, artifact.assignment.write_ownership);
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, inter_run_ownership: interRunOwnership } };
       }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
