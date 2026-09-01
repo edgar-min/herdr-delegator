@@ -19,14 +19,18 @@ const ACTION_RE = /^[a-z_]{1,32}$/;
  * SDK turned that escape into a bare text result carrying no code, no phase and
  * no recovery — the shape that made a refused assignment ID read as a naming
  * problem instead of a grammar one, so it was renamed rather than corrected
- * (friction 87ef22382241e18f). Every tool now refuses through the same
- * `McpResult` its handlers return.
+ * (friction 87ef22382241e18f).
  *
- * The published input shape is the first gate and now states every field's
- * grammar itself; this is the second, for what a per-field shape cannot
- * express — the fields one action requires, keys no action accepts, and the
- * discriminator. Recovery is authored contract text: a zod message is never
- * reused as guidance, only its stable issue codes are reported.
+ * Two gates now share the refusal work, and only one of them is ours. The
+ * published input shape is validated by the SDK before any handler runs, so a
+ * per-field grammar violation (an `A-R1`) is refused there as the SDK's plain
+ * `isError` text — carrying the same authored sentence the schema publishes,
+ * but not an `McpResult`, because no handler exists yet to build one. This
+ * function is the second gate, for what a per-field shape cannot express — the
+ * fields one action requires, keys no action accepts, and the discriminator —
+ * and everything it refuses is an ordinary `McpResult`. Recovery is authored
+ * contract text: a zod message is never reused as guidance, only its stable
+ * issue codes are reported.
  */
 function invalidToolInput(tool: ToolName, input: unknown, error: ZodError): McpResult {
   const raw = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>;
@@ -61,8 +65,10 @@ async function main(): Promise<void> {
     structuredContent: { ...value },
     isError: !value.ok,
   });
-  // Every tool is registered through the same gate, so no handler can reach a
-  // caller with an unvalidated input or a rejection that is not an McpResult.
+  // Every tool is registered through the same gate: no handler sees an
+  // unvalidated input, and every rejection the gate itself issues is an
+  // McpResult. (A published-shape violation never gets here — the SDK refuses
+  // it before the handler, as authored plain text; see invalidToolInput.)
   const guarded = <T>(tool: ToolName, schema: ZodType<T>, handler: (input: T) => Promise<McpResult>) => async (input: unknown): Promise<CallToolResult> => {
     const parsed = schema.safeParse(input);
     return response(parsed.success ? await handler(parsed.data) : invalidToolInput(tool, input, parsed.error));

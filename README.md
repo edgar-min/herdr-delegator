@@ -176,6 +176,8 @@ The strict Markdown contains `assignment_id`, `responsibility_key`, and `profile
 
 `assignment_id` is `A-` plus three or more digits that are not all zero, and the published tool schema enforces exactly that. The ID is ORCH-chosen and carries no meaning. A human-readable name goes in `label`: 1 to 48 characters of letters, digits, `-` or `_`, beginning and ending with a letter or digit — so `id-grammar` is a label and `_draft` is not. It is shown on the dispatch pointer, the `preflight` result, and the worker pane title, and two runs that both hold `A-001` are told apart by `<track_id>/<run_id>/<assignment_id>`. A label is never copied into `delegation.json`, never queued on, and never part of settlement, and nothing enforces that labels are unique — the coordinate disambiguates, the label only reads well.
 
+One compatibility note: the artifact grammar is not versioned, so a server older than the `label` field rejects a label-bearing artifact as invalid. Reload mounted servers (`/reload-plugins`) before first using `label` on a working tree that older server processes may still read.
+
 Workers append results to `a2a/w<N>-report.md` and settle an assignment with an exact completion block:
 
 ```text
