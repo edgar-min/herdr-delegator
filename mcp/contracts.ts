@@ -101,6 +101,14 @@ export const MAX_JUSTIFICATION_ITEM = 500;
 export const BUDGET_POLICIES = ["full", "notify"] as const;
 export const BUDGET_VERDICTS = ["grant", "partial", "deny"] as const;
 export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unreadable", "approval-required", "denied"] as const;
+// The emergency carve-out's own audit vocabulary (BUD-016, friction
+// 8917760a9545c642). It is deliberately disjoint from BUDGET_VERDICTS: the two
+// audits judge different questions, are written to different documents, and
+// dispose differently — a budget verdict moves a cap, an emergency verdict can
+// only decide whether the carve-out stays open, because a registration that
+// already dispatched cannot be recalled. There is no partial verdict: an add
+// either was the repair of a run-blocking failure or was not.
+export const EMERGENCY_VERDICTS = ["justified", "unjustified"] as const;
 
 // Succession claim grammar (M5 Phase A, friction a421acd8c19127be). A reset or
 // handoff copies planning context, not truth (LIFE-008), and the measured
@@ -370,12 +378,30 @@ export type Mandate = {
 export type BudgetPolicy = (typeof BUDGET_POLICIES)[number];
 export type BudgetVerdict = (typeof BUDGET_VERDICTS)[number];
 export type BudgetParkReason = (typeof BUDGET_PARK_REASONS)[number];
+export type EmergencyVerdict = (typeof EMERGENCY_VERDICTS)[number];
 
 /** Bounded self-justification for one extension: done, remaining, why more. */
 export type BudgetJustification = {
   done: string;
   remaining: string;
   why_more: string;
+};
+
+/**
+ * The bounded claim an `add` carries to pass a budget park once (BUD-016): what
+ * operational failure blocks the run, and why registering the repair cannot wait
+ * for the ordinary extension ladder. These two lines are the whole subject of
+ * the post-hoc audit, so they are rendered verbatim into its document.
+ */
+export type EmergencyClaim = {
+  failure: string;
+  why_now: string;
+};
+
+/** One admitted emergency registration: the claim plus the assignment it was made for. */
+export type EmergencyRequest = {
+  assignment_id: string;
+  claim: EmergencyClaim;
 };
 
 /**
@@ -552,6 +578,16 @@ const justification = z.object({
   remaining: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What concretely remains before the shape of success is met. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
   why_more: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why the remaining work needs more budget than the current cap. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
 }).strict().describe("Bounded self-justification. It is appended verbatim to the append-only budget ledger and handed to a clean auditor session that never talks to you.");
+// The emergency carve-out's input (BUD-016). It is a call-time field, never
+// artifact frontmatter and never encoded in an identity: whether a registration
+// was an emergency is a fact about the moment it was made, not about the
+// immutable document (ASN-003a, ASN-007). Published and enforced share this
+// object, so an older server that predates the field refuses it by name at its
+// own strict boundary instead of persisting anything it cannot judge.
+const emergency = z.object({
+  failure: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`The operational failure that blocks this run itself — what is broken right now, in observable terms, not what work you want to continue. A clean auditor judges this line after the fact, and a claim it cannot recognize as a run-blocking failure is what closes the carve-out for the whole run. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
+  why_now: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why registering this repair cannot wait for the ordinary ladder — budget_extend, or the human raising the clamp. The ladder is the default path out of a park; this field must say what makes it insufficient here. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
+}).strict().optional().describe("Emergency carve-out for ONE registration while the run is budget-parked on the cadence reason `over-cap`. It buys registration only: nothing is granted, the park stands, and a queued assignment still is not promoted. It creates a post-hoc audit debt — the server writes `emergency-audit-<n>.md`, a clean auditor judges these two lines, and no second emergency add is admissible until that verdict lands. The verdict cannot recall what was already dispatched: `unjustified` closes the carve-out for this run permanently and routes the run's budget decisions to the human. Omit it unless this add repairs a failure that blocks the run itself; on an unparked run it asserts no authority and is recorded as unused.");
 
 export const herdrTrackInputShape = {
   ...run,
@@ -572,6 +608,7 @@ export const herdrAssignmentInputShape = {
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
   separation: separation.optional(),
+  emergency,
   wait,
 };
 export const herdrWorkerInputShape = {
@@ -586,7 +623,7 @@ export const herdrWorkerInputShape = {
 };
 export const herdrMessageInputShape = {
   ...run,
-  action: z.enum(["wake_orch", "wake_peer", "wake_worker", "notify_run"]),
+  action: z.enum(["wake_orch", "wake_orch_audit", "wake_peer", "wake_worker", "notify_run"]),
   assignment_id: assignmentId.optional(),
   boundary: z.enum(MESSAGE_BOUNDARIES).optional(),
   to_worker_id: workerId.optional(),
@@ -617,7 +654,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [
-  z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), wait }).strict(),
+  z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), emergency, wait }).strict(),
   z.object({ ...run, action: z.literal("preflight"), assignment_id: assignmentId, responsibility_key: coordinate }).strict(),
   z.object({ ...run, action: z.literal("wait"), assignment_id: assignmentId, wait }).strict(),
 ]);
@@ -629,6 +666,12 @@ export const herdrWorkerSchema = z.discriminatedUnion("action", [
 ]);
 export const herdrMessageSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("wake_orch"), assignment_id: assignmentId, boundary: z.enum(MESSAGE_BOUNDARIES) }).strict(),
+  // The clean auditor's own bell. It carries no assignment and no boundary
+  // because an audit is not an assignment: the run coordinate is the whole
+  // input, and the audit document it points at stays the sole authority for the
+  // verdict. A separate action rather than relaxed `wake_orch` fields, so the
+  // worker bell keeps its published requirement to name both.
+  z.object({ ...run, action: z.literal("wake_orch_audit") }).strict(),
   z.object({ ...run, action: z.literal("wake_peer"), to_worker_id: workerId }).strict(),
   z.object({ ...run, action: z.literal("wake_worker"), to_worker_id: workerId }).strict(),
   z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate }).strict(),

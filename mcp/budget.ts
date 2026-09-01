@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { appendFile, lstat, readFile, writeFile } from "node:fs/promises";
+import { appendFile, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
@@ -18,9 +18,12 @@ import {
   sha256,
   type BudgetJustification,
   type BudgetMetering,
+  type BudgetParkReason,
   type BudgetRecord,
   type BudgetVerdict,
   type DelegationRegistry,
+  type EmergencyClaim,
+  type EmergencyVerdict,
   type Mandate,
   type RunRef,
 } from "./contracts";
@@ -42,6 +45,7 @@ export type ClampReading = { clamp?: BudgetClamp; unreadable?: string };
 export function budgetLedgerPath(runPath: string): string { return path.join(runPath, "budget-ledger.md"); }
 export function budgetClampPath(runPath: string): string { return path.join(runPath, "budget-clamp.json"); }
 export function budgetAuditPath(runPath: string, ordinal: number): string { return path.join(runPath, `budget-audit-${ordinal}.md`); }
+export function emergencyAuditPath(runPath: string, ordinal: number): string { return path.join(runPath, `emergency-audit-${ordinal}.md`); }
 
 // Both notes carry the real contract, including the retype exception: a human
 // who cannot read the pin rule off the file they own has no way to know that
@@ -89,6 +93,16 @@ export function normalizeJustification(justification: BudgetJustification): { no
     why_more: boundedLine(justification.why_more, "why_more"),
   };
   return { normalized, sha256: sha256(`${normalized.done}\n${normalized.remaining}\n${normalized.why_more}`) };
+}
+
+/**
+ * Same bounded-line discipline as the justification above, and for the same
+ * reason: these two lines are rendered verbatim into a document a clean auditor
+ * has to read, so the published 500-character single-line limit is enforced here
+ * rather than left to the transport ceiling.
+ */
+export function normalizeEmergencyClaim(claim: EmergencyClaim): EmergencyClaim {
+  return { failure: boundedLine(claim.failure, "emergency.failure"), why_now: boundedLine(claim.why_now, "emergency.why_now") };
 }
 
 /** The seed is a declared estimate; a run that declares none still gets a bounded default. */
@@ -546,8 +560,15 @@ verdict: grant
 
 Use \`grant\`, \`partial\`, or \`deny\` on that line. For \`partial\`, add one
 more line \`granted_tokens: <integer>\` no greater than the requested increase.
-Do not call any herdr_* tool, do not contact the orchestrator, and do not edit
-anything else in this run.
+
+Then ring the orchestrator once, and only after the block is written:
+\`herdr_message {action: "wake_orch_audit", track_id: "${run.track_id}", run_id: "${run.run_id}"}\`.
+That bell carries no content and no authority — THIS document stays the sole
+authority for your verdict, and the server reads the verdict from this file and
+never from the bell. It exists so the orchestrator learns the verdict landed
+instead of polling for it; a bell rung before the block, or rung twice, tells it
+something untrue. Make no other herdr_* call, do not otherwise contact the
+orchestrator, and do not edit anything else in this run.
 `;
 }
 
@@ -575,6 +596,214 @@ export async function readAuditDocument(auditPath: string): Promise<{ document: 
   } catch {
     return undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The emergency carve-out (BUD-016, friction 8917760a9545c642). A run parked on
+// the cadence reason `over-cap` still has to be able to register the repair of
+// the failure that parked it; the alternative the machine offered was a human
+// raising the clamp, or opening a whole second track (NG-013).
+//
+// The obligation this creates is persisted as a DOCUMENT, not as a registry
+// field. That is the load-bearing choice: `emergency-audit-<n>.md` existing
+// without a verdict block IS the open debt, so nothing widens the registry's key
+// set, no schema version moves, and a server built before this feature reads the
+// same registry unchanged and simply refuses the add as it always did. A derived
+// predicate over existing keys was tried first and rejected: `parked_at` is
+// re-stamped whenever the park reason changes, so one `over-cap` ->
+// `audit-unavailable` -> `over-cap` round trip would have silently erased the
+// debt.
+//
+// What the audit can and cannot do is fixed by what the machine can do at all.
+// There is no cancel action, no forced close of a working lane, and no way to
+// un-spend tokens, so an `unjustified` verdict recalls nothing. Its whole
+// sanction is prospective: the carve-out closes for this run and the next budget
+// decision belongs to the human. Every surface says so, because a safeguard that
+// only reads like one is worse than none.
+// ---------------------------------------------------------------------------
+
+export type EmergencyAudit = { ordinal: number; path: string; verdict?: EmergencyVerdict };
+export type EmergencyDebt = { ordinal: number; path: string };
+
+// Bounded on both ends: the ordinal is server-allocated, and a run that somehow
+// accumulated four digits of emergency audits has a problem no scan should try
+// to enumerate.
+const EMERGENCY_AUDIT_NAME = /^emergency-audit-([1-9][0-9]{0,3})\.md$/;
+export const EMERGENCY_VERDICT_BLOCK = /\[Emergency Audit Verdict:\s*(\d+)\]\s*\n\s*\nverdict:\s*(justified|unjustified)[ \t]*\s*$/;
+
+/**
+ * Same grammar discipline as `parseVerdict`, and deliberately a different
+ * vocabulary: a `grant` line in an emergency document parses as nothing, so the
+ * two audits can never be read into each other's disposition.
+ */
+export function parseEmergencyVerdict(document: string, ordinal: number): EmergencyVerdict | undefined {
+  const match = EMERGENCY_VERDICT_BLOCK.exec(document.replace(/```\s*$/, "").trimEnd());
+  if (!match || Number(match[1]) !== ordinal) return undefined;
+  return match[2] === "justified" ? "justified" : "unjustified";
+}
+
+/** Every emergency audit document in the run, ascending, each with its verdict if one landed. */
+export async function scanEmergencyAudits(runPath: string): Promise<EmergencyAudit[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(runPath);
+  } catch {
+    return [];
+  }
+  const audits: EmergencyAudit[] = [];
+  for (const name of entries) {
+    const match = EMERGENCY_AUDIT_NAME.exec(name);
+    if (!match) continue;
+    const ordinal = Number(match[1]);
+    const auditPath = path.join(runPath, name);
+    const read = await readAuditDocument(auditPath);
+    const verdict = read ? parseEmergencyVerdict(read.document, ordinal) : undefined;
+    audits.push({ ordinal, path: auditPath, ...(verdict ? { verdict } : {}) });
+  }
+  return audits.sort((left, right) => left.ordinal - right.ordinal);
+}
+
+/**
+ * The open obligation, or nothing. Both this and `carveOutClosed` accept an
+ * already-taken scan so a single judgment does not re-read the same documents
+ * three times; called with a path alone, each is self-contained.
+ */
+export async function scanEmergencyDebt(runPath: string, scanned?: readonly EmergencyAudit[]): Promise<EmergencyDebt | undefined> {
+  const audits = scanned ?? await scanEmergencyAudits(runPath);
+  const open = audits.find((audit) => audit.verdict === undefined);
+  return open ? { ordinal: open.ordinal, path: open.path } : undefined;
+}
+
+/**
+ * Whether the carve-out is permanently closed for this run. There is no persisted
+ * flag: the `unjustified` verdict written in the document is itself the ground,
+ * and returning that document lets every refusal name the judgment it obeys
+ * instead of asserting a state the reader cannot check.
+ */
+export async function carveOutClosed(runPath: string, scanned?: readonly EmergencyAudit[]): Promise<EmergencyDebt | undefined> {
+  const audits = scanned ?? await scanEmergencyAudits(runPath);
+  const closing = audits.find((audit) => audit.verdict === "unjustified");
+  return closing ? { ordinal: closing.ordinal, path: closing.path } : undefined;
+}
+
+/**
+ * The whole admissibility judgment, pure so it can be read as one sentence: a
+ * claim was made, no earlier claim is still unjudged, no earlier claim was
+ * refused, and the park is the cadence park a machine ladder is allowed to judge.
+ * Every other park reason is a human's decision or a broken machine, and passing
+ * through one of those would route around the kill switch rather than around a
+ * cadence.
+ */
+export function admitEmergencyAdd(
+  parkReason: BudgetParkReason,
+  claim: EmergencyClaim | undefined,
+  debt: EmergencyDebt | undefined,
+  closed: boolean,
+): boolean {
+  return claim !== undefined && debt === undefined && !closed && parkReason === "over-cap";
+}
+
+/**
+ * Creates the audit document, create-exclusive. This is also the concurrency
+ * arbiter: the registry lock covers `delegation.json` alone, so two adds can both
+ * pass the scan, and the one whose `wx` write fails is the one that lost.
+ */
+export async function createEmergencyAudit(runPath: string, ordinal: number, body: string): Promise<boolean> {
+  try {
+    await writeFile(emergencyAuditPath(runPath, ordinal), body, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The emergency auditor's input document. Same shape as the budget audit: the
+ * server writes the request and the machine facts, the auditor appends its
+ * reasoning and verdict to the same file, and the ORCH neither writes nor reads
+ * it as authority.
+ */
+export function renderEmergencyAuditInput(
+  run: RunRef,
+  ordinal: number,
+  assignmentId: string,
+  claim: EmergencyClaim,
+  record: BudgetRecord,
+  metering: BudgetMetering,
+  machineFacts: readonly string[],
+): string {
+  return `---
+version: 1
+track_id: ${run.track_id}
+run_id: ${run.run_id}
+emergency_audit: ${ordinal}
+assignment_id: ${assignmentId}
+---
+
+# Emergency audit ${ordinal} — ${run.track_id}/${run.run_id}
+
+You are a clean auditor session. You have no history with this run and you never
+speak to its orchestrator except for the single bell named at the end of this
+document.
+
+This run was budget-parked when assignment ${assignmentId} was registered. The
+orchestrator claimed an emergency carve-out, and the registration went through
+BEFORE you judged it. You are judging it after the fact.
+
+Your verdict recalls nothing. There is no cancel action, no forced close of a
+working lane, and no way to un-spend what was spent. What your verdict decides is
+prospective, and it is the entire sanction available:
+
+- \`justified\` — the carve-out stays open, so a later emergency in this run can
+  use it once more.
+- \`unjustified\` — the carve-out closes permanently for this run: no further
+  emergency registration is admissible, and this run's budget decisions belong to
+  the human from here.
+
+## The claim
+
+- failure: ${claim.failure}
+- why now: ${claim.why_now}
+
+## Machine facts
+
+- ${meteringLedgerLine(metering)}
+- park at registration: ${record.state}${record.park_reason ? ` (${record.park_reason})` : ""}${record.park_detail ? ` — ${record.park_detail}` : ""}
+- cap: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes}); extensions recorded: ${record.extensions.length}
+${machineFacts.map((fact) => `- ${fact}`).join("\n")}
+
+## What to judge
+
+Read this run's \`orchestrator-instructions.md\` (the mandate), \`plan.md\`,
+\`budget-ledger.md\`, and every \`a2a/w<N>-report.md\`. Then decide:
+
+1. Does \`failure\` name an operational failure that blocks the run itself —
+   something broken — rather than work the run simply wants to continue? Wanting
+   to keep going is what the extension ladder is for, and it is not an emergency.
+2. Does \`why_now\` follow from that failure? Registering this assignment while
+   parked has to have been the repair; if \`budget_extend\` or the human raising
+   the clamp would have served, the claim was not admissible.
+3. Do the run documents match the machine facts, or is the narrative stale?
+
+## Your verdict
+
+Append your bounded reasoning, then exactly this block as the last thing in this
+file, with nothing after it:
+
+[Emergency Audit Verdict: ${ordinal}]
+
+verdict: justified
+
+Use \`justified\` or \`unjustified\` on that line; there is no partial verdict,
+because a registration either was that repair or was not.
+
+Then ring the orchestrator once, and only after the block is written:
+\`herdr_message {action: "wake_orch_audit", track_id: "${run.track_id}", run_id: "${run.run_id}"}\`.
+That bell carries no content and no authority — THIS document stays the sole
+authority for your verdict, and the server reads the verdict from this file and
+never from the bell. Make no other herdr_* call, do not otherwise contact the
+orchestrator, and do not edit anything else in this run.
+`;
 }
 
 /** Pane status marker for the supervision surface (decision 4). */

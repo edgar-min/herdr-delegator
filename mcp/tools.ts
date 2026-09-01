@@ -13,8 +13,8 @@ import { ContractError as LegacyContractError, type WorkerResult } from "../io.g
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
-import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, healClampTokens, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
+import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, renderEmergencyAuditInput, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
 
@@ -1768,8 +1768,13 @@ export class CompositeTools {
    * runs: `wait` may settle work already in flight and `close` may clean up,
    * while `add` and `resume` (new or restarted work) are refused. Nothing here
    * ever kills a session: a parked run waits, and phase 6 revives it.
+   *
+   * One conditional exception passes an `add` (BUD-016): a claimed emergency,
+   * on the cadence park reason alone, with no earlier claim unjudged and none
+   * ever refused. It buys registration and nothing else — the park stands, so
+   * the caller must still consume `parked` and leave a queued head undispatched.
    */
-  private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close"): Promise<{ metering: BudgetMetering; parked: boolean; warning?: string }> {
+  private async judgeBudget(store: DelegationStore, run: RunRef, action: "add" | "wait" | "resume" | "close", emergency?: EmergencyRequest): Promise<{ metering: BudgetMetering; parked: boolean; warning?: string; emergency?: { ordinal: number; audit_path: string; park_reason: BudgetParkReason } }> {
     const registry = await store.read();
     const notify = (registry.budget ?? seedBudget(undefined, registry.created_at)).doorbell_policy === "notify";
     const warnings: string[] = [];
@@ -1888,11 +1893,25 @@ export class CompositeTools {
           next.budget = current;
         });
       }
+      // D3: a claim on an unparked run asserts no authority. Refusing it here
+      // would reproduce the very symptom — a repair sent back around the loop
+      // while it races a clamp raise or an automatic resume — so the add
+      // proceeds and the ledger records that the claim bought nothing.
+      if (emergency !== undefined) {
+        await appendLedger(store.runPath, "emergency claim unused", [
+          `emergency claim on ${emergency.assignment_id} asserted no authority: the run was not parked (${meteringLedgerLine(metering)}), so the add proceeded as an ordinary registration and no post-hoc audit debt was created`,
+        ]).catch(() => undefined);
+      }
       return { metering, parked: false, ...(warnings.length ? { warning: warnings.join(" | ") } : {}) };
     }
     if (action === "wait" || action === "close") {
       const parkWarnings = [clampScaffold?.warning, ...warnings].filter((value): value is string => typeof value === "string");
       return { metering, parked: true, ...(parkWarnings.length ? { warning: parkWarnings.join(" | ") } : {}) };
+    }
+    if (action === "add" && emergency !== undefined) {
+      const admitted = await this.admitEmergency(store, run, reason, emergency, metering);
+      const parkWarnings = [clampScaffold?.warning, ...warnings].filter((value): value is string => typeof value === "string");
+      return { metering, parked: true, emergency: { ...admitted, park_reason: reason }, ...(parkWarnings.length ? { warning: parkWarnings.join(" | ") } : {}) };
     }
     const recovery = reason === "clamp-unreadable"
       ? `Ask the human to repair ${budgetClampPath(store.runPath)}; the run resumes on the next guarded op once the clamp parses.`
@@ -1905,14 +1924,79 @@ export class CompositeTools {
           : pinPresent && !minutesExceptionOpen
             ? `${pinDetail} ${humanRoute}${zeroMoveClause}`
             : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.${minutesExceptionOpen ? ` The wall clock, not the token cap, is what is over: a grant raises granted_minutes, and the human's token pin in ${budgetClampPath(store.runPath)} does not govern the time dimension.` : ""}`
+    // The one sentence a parked `add` needs and could not read anywhere: the
+    // carve-out exists, what it costs, and what it is not for. Only on the
+    // cadence park, because every other reason refuses an emergency too, and
+    // only when no claim was made, because a refused claim already said more.
+    const carveOutClause = action === "add" && reason === "over-cap" && emergency === undefined
+      ? ` If this registration is itself the repair of an operational failure that blocks the run — not work you want to continue — re-send the identical add with \`emergency: {failure, why_now}\`: it passes this park once and buys registration only, and it creates a post-hoc audit debt at ${path.join(store.runPath, "emergency-audit-<n>.md")} that a clean auditor judges. No second emergency add is admissible until that verdict lands, an \`unjustified\` verdict closes the carve-out for this run permanently, and nothing already dispatched can be recalled.`
+      : "";
     throw new McpContractError(
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
       "budget",
-      `${recovery} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
+      `${recovery}${carveOutClause} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
       false,
       true,
     );
+  }
+
+  /**
+   * Admits or refuses one emergency registration through a park, and — when it
+   * admits — writes the obligation that admission creates.
+   *
+   * The obligation is a document, never a registry field (BUD-016): the file
+   * existing without a verdict block IS the open debt. That keeps the registry's
+   * key set and schema version untouched, so a server built before this feature
+   * reads the same registry and simply refuses the add as it always did, and it
+   * survives the park-reason round trips that would have erased a derived
+   * predicate over `parked_at`.
+   *
+   * The create-exclusive write is also the concurrency arbiter: the lock covers
+   * `delegation.json` alone, so two adds can both pass the scan and the loser is
+   * refused by the file that already exists.
+   */
+  private async admitEmergency(store: DelegationStore, run: RunRef, reason: BudgetParkReason, request: EmergencyRequest, metering: BudgetMetering): Promise<{ ordinal: number; audit_path: string }> {
+    const audits = await scanEmergencyAudits(store.runPath);
+    const debt = await scanEmergencyDebt(store.runPath, audits);
+    const closed = await carveOutClosed(store.runPath, audits);
+    if (!admitEmergencyAdd(reason, request.claim, debt, closed !== undefined)) {
+      const detail = closed !== undefined
+        ? `emergency audit ${closed.ordinal} judged an earlier emergency registration \`unjustified\`, which closes the carve-out for this run permanently (${closed.path})`
+        : debt !== undefined
+          ? `emergency audit ${debt.ordinal} carries no verdict yet, and the carve-out admits one unjudged registration at a time (${debt.path})`
+          : `the run is parked for \`${reason}\`, which is not the cadence park a machine ladder may judge`;
+      const recovery = closed !== undefined
+        ? `Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${closed.path}; from here only they release this run, by raising ${budgetClampPath(store.runPath)}. ${clampSchemaGuidance(store.runPath)}`
+        : debt !== undefined
+          ? `Land the open verdict first: herdr_track {action:"budget_extend"} runs the emergency auditor as its leading step and reads the verdict from ${debt.path}. Read that document to see what the auditor has written so far.`
+          : `An emergency passes the cadence park \`over-cap\` only. \`denied\`, \`approval-required\`, and \`clamp-unreadable\` are the human's decision and \`audit-unavailable\` is a broken machine, so passing through one of them would route around the kill switch rather than around a cadence. Escalate to the human with ${budgetLedgerPath(store.runPath)}; only they change ${budgetClampPath(store.runPath)}. ${clampSchemaGuidance(store.runPath)}`;
+      throw new McpContractError("emergency_not_admissible", `The emergency carve-out is not admissible here: ${detail}.`, "budget", recovery, false, false);
+    }
+    const ordinal = (audits[audits.length - 1]?.ordinal ?? 0) + 1;
+    const auditPath = emergencyAuditPath(store.runPath, ordinal);
+    const registry = await store.read();
+    const record = registry.budget ?? seedBudget(undefined, registry.created_at);
+    const created = await createEmergencyAudit(store.runPath, ordinal, renderEmergencyAuditInput(run, ordinal, request.assignment_id, request.claim, record, metering, machineFacts(registry)));
+    if (!created) {
+      throw new McpContractError(
+        "emergency_not_admissible",
+        `Emergency audit ${ordinal} already exists: a concurrent registration won the carve-out.`,
+        "budget",
+        `Read ${auditPath} and land its verdict with herdr_track {action:"budget_extend"}; the carve-out admits one unjudged registration at a time.`,
+        false,
+        false,
+      );
+    }
+    await appendLedger(store.runPath, "emergency add admitted", [
+      `assignment ${request.assignment_id} registered through the budget park (${reason}); registration only — the park stands, nothing was granted, and a queued head stays undispatched`,
+      `failure: ${request.claim.failure}`,
+      `why now: ${request.claim.why_now}`,
+      meteringLedgerLine(metering),
+      `post-hoc audit: ${auditPath} — a clean auditor judges this claim, and no further emergency registration is admissible until that verdict lands`,
+      "recall is not possible: no tool op cancels a dispatched assignment, closes a working lane, or un-spends tokens, so an `unjustified` verdict closes the carve-out for this run and routes the next budget decision to the human — that is the whole sanction",
+    ]);
+    return { ordinal, audit_path: auditPath };
   }
 
   /**
@@ -1945,6 +2029,11 @@ export class CompositeTools {
     // must not survive as an orphan pane, and this is the one op that is already
     // talking to Herdr (friction fa85b380).
     await this.sweepAuditors(store, run, timeout(input));
+    // Leading step (BUD-016): an emergency registration owes a post-hoc audit,
+    // and this is where it is paid. It runs BEFORE this extension is judged so
+    // the run's own ledger already carries the verdict the auditor of THIS
+    // extension will read, and it can neither grant nor refuse anything.
+    const emergencyNotes = await this.landEmergencyAudit(store, run, timeout(input));
     const { normalized, sha256: justificationHash } = normalizeJustification(input.justification);
     let registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
@@ -1955,7 +2044,25 @@ export class CompositeTools {
       if (pending.justification_sha256 !== justificationHash) {
         throw new McpContractError("budget_audit_in_flight", `Audit ${pending.ordinal} is still open for a different justification.`, "budget", `Re-send the identical justification to land audit ${pending.ordinal}, or read ${pending.audit_path} to see what the auditor has written so far. A second request would let one ORCH shop for a verdict.`, false, true);
       }
-      return await this.landAudit(store, run, timeout(input));
+      return await this.landAudit(store, run, timeout(input), emergencyNotes);
+    }
+    // The emergency carve-out's whole sanction, and the half a ledger line
+    // cannot deliver (BUD-016): an `unjustified` verdict ends this run's
+    // escalation ladder at the human, exactly as a `deny` does. It sits AFTER
+    // the pending-landing branch for the same reason the pin refusal does — a
+    // pending audit always lands and its auditor session is still closed — and
+    // the release is the human's clamp file, which lifts the park directly
+    // rather than through another verdict.
+    const carveOutClosure = await carveOutClosed(store.runPath);
+    if (carveOutClosure) {
+      throw new McpContractError(
+        "emergency_carve_out_closed",
+        `Emergency audit ${carveOutClosure.ordinal} judged an emergency registration in this run \`unjustified\`.`,
+        "budget",
+        `That verdict ends this run's escalation ladder at the human: no further extension is audited and no further emergency registration is admissible. Escalate with ${budgetLedgerPath(store.runPath)} and ${carveOutClosure.path}; raising max_tokens above the judged spend in ${budgetClampPath(store.runPath)} releases the park directly, which is the human's own surface and the only one left. ${clampSchemaGuidance(store.runPath)}`,
+        false,
+        false,
+      );
     }
     // A human pin on the token ceiling makes almost every extension pointless
     // before it costs an auditor session: under a pin `cap_tokens` can never
@@ -2042,7 +2149,7 @@ export class CompositeTools {
       await this.parkForAudit(store, run, ordinal, `audit ${ordinal} could not run: ${detail}`);
       throw new McpContractError("budget_audit_unavailable", `Audit ${ordinal} could not be run: ${detail}`, "budget", `The run is parked and audit ${ordinal} stays pending. Retry the identical budget_extend; it re-runs the auditor, and nothing is granted until a verdict lands in ${auditPath}.`, false, true);
     }
-    return await this.landAudit(store, run, timeout(input));
+    return await this.landAudit(store, run, timeout(input), emergencyNotes);
   }
 
   /**
@@ -2056,7 +2163,8 @@ export class CompositeTools {
    * having bought nothing, and the pending blocker is cleared so the ladder can
    * take its next rung instead of the run waiting on a verdict that never comes.
    */
-  private async landAudit(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<McpResult> {
+  private async landAudit(store: DelegationStore, run: RunRef, timeoutMs: number, emergencyAudit: readonly string[] = []): Promise<McpResult> {
+    const emergencyObservation = emergencyAudit.length ? { emergency_audit: [...emergencyAudit] } : {};
     let registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
     const pending = record.extensions.find((entry) => entry.state === "pending");
@@ -2088,13 +2196,13 @@ export class CompositeTools {
         ]).catch(() => undefined);
         const closeWarning = await this.closeAuditor(store, run, pending.ordinal, pending.audit_worker_id, timeoutMs);
         await this.parkForAudit(store, run, pending.ordinal, detail);
-        return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "confirmed", retryable: false, registry_revision: abandoned.revision, data: { budget: abandoned.budget, audit: { ordinal: pending.ordinal, state: "abandoned", path: pending.audit_path, retries }, ...(closeWarning ? { warnings: [closeWarning] } : {}), next_step: `Audit ${pending.ordinal} produced no verdict in ${retries} attempts and is abandoned; the run stays parked (audit-unavailable). Read ${pending.audit_path} and ${budgetLedgerPath(store.runPath)}: send a fresh budget_extend only if the auditor can plausibly run now, and otherwise escalate to the human, who releases the run by raising ${budgetClampPath(store.runPath)}.` } };
+        return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "confirmed", retryable: false, registry_revision: abandoned.revision, data: { budget: abandoned.budget, audit: { ordinal: pending.ordinal, state: "abandoned", path: pending.audit_path, retries }, ...emergencyObservation, ...(closeWarning ? { warnings: [closeWarning] } : {}), next_step: `Audit ${pending.ordinal} produced no verdict in ${retries} attempts and is abandoned; the run stays parked (audit-unavailable). Read ${pending.audit_path} and ${budgetLedgerPath(store.runPath)}: send a fresh budget_extend only if the auditor can plausibly run now, and otherwise escalate to the human, who releases the run by raising ${budgetClampPath(store.runPath)}.` } };
       }
       // Re-prompt rung: the document exists, so the auditor only needs to be
       // running against it. A session that is still working is left alone.
       const rerun = pending.audit_worker_id ? await this.repromptAuditor(run, pending.ordinal, pending.audit_path, pending.audit_worker_id, timeoutMs) : "the pending audit records no auditor session, so nothing could be re-prompted";
       await this.parkForAudit(store, run, pending.ordinal, `audit ${pending.ordinal} has no verdict block yet (attempt ${retries}${rerun ? `; ${rerun}` : "; auditor re-prompted"})`);
-      return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries, attempts_before_abandon: MAX_AUDIT_LANDING_ATTEMPTS, ...(rerun ? { auditor: rerun } : { auditor: "re-prompted" }) }, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists, and after ${MAX_AUDIT_LANDING_ATTEMPTS} attempts the audit is abandoned instead of pending forever.` } };
+      return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries, attempts_before_abandon: MAX_AUDIT_LANDING_ATTEMPTS, ...(rerun ? { auditor: rerun } : { auditor: "re-prompted" }) }, ...emergencyObservation, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists, and after ${MAX_AUDIT_LANDING_ATTEMPTS} attempts the audit is abandoned instead of pending forever.` } };
     }
     const granted = verdict.verdict === "deny"
       ? 0
@@ -2202,6 +2310,7 @@ export class CompositeTools {
         metering: judged.metering,
         audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted },
         ledger_path: budgetLedgerPath(store.runPath),
+        ...emergencyObservation,
         ...((closeWarning || judged.warning || denyScaffold?.warning || clampWarnings.length) ? { warnings: [closeWarning, judged.warning, denyScaffold?.warning, ...clampWarnings].filter((value): value is string => typeof value === "string") } : {}),
         next_step: verdict.verdict === "deny"
           ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here. ${clampSchemaGuidance(store.runPath)}`
@@ -2215,16 +2324,104 @@ export class CompositeTools {
   }
 
   /**
+   * Spawns one clean auditor session and hands it a document to judge. Both
+   * audits share this machine deliberately: it is "start one clean session,
+   * point it at one file, close it", and nothing in it depends on which question
+   * the file asks. Two copies would split the leak sweep in two (friction
+   * fa85b380). Only the prompt sentence differs, and it is the caller's.
+   */
+  private async spawnAuditor(run: RunRef, workerId: string, prompt: string, timeoutMs: number): Promise<void> {
+    const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeoutMs });
+    const agentName = stringField(ensured.worker, ["agent_name"]);
+    if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
+    await this.adapter.prompt(agentName, prompt, ["idle", "done"], timeoutMs);
+  }
+
+  /**
    * Spawns the auditor session and hands it its own audit document. Shared by
    * the request path and the landing retry, so a session that never started, or
    * started and was never prompted, is actually re-run instead of being re-read
    * (friction 183b6d4102ddfbfa). The ORCH never learns this session's pane.
    */
   private async runAuditor(run: RunRef, ordinal: number, auditPath: string, workerId: string, timeoutMs: number): Promise<void> {
-    const ensured = await ensureWorker({ operation: "ensure_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, responsibility_key: AUDIT_RESPONSIBILITY, profile: AUDIT_PROFILE, timeout_ms: timeoutMs });
-    const agentName = stringField(ensured.worker, ["agent_name"]);
-    if (!agentName) throw new McpContractError("budget_audit_unavailable", "The auditor session started without a canonical agent name.", "budget", "Retry the identical budget_extend; the audit is not granted until a verdict lands.");
-    await this.adapter.prompt(agentName, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. You are a clean auditor: do not contact the orchestrator, do not call any herdr_* tool, and change nothing else in this run.`, ["idle", "done"], timeoutMs);
+    await this.spawnAuditor(run, workerId, `Budget audit ${ordinal} for run ${run.track_id}/${run.run_id}. Read ${auditPath} and follow it exactly: judge the orchestrator's narrative against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file. Then ring the orchestrator exactly once, and only after that block is written, with herdr_message {action:"wake_orch_audit", track_id:"${run.track_id}", run_id:"${run.run_id}"} — the bell carries no content and no authority, and the document you appended stays the sole authority for your verdict. You are a clean auditor: make no other herdr_* call, do not otherwise contact the orchestrator, and change nothing else in this run.`, timeoutMs);
+  }
+
+  /**
+   * The emergency carve-out's post-hoc audit, run as the leading step of the next
+   * `budget_extend` (BUD-016). It judges a registration that already happened, so
+   * it can never grant or refuse anything here: the whole result is a ledger
+   * entry and, on `unjustified`, a carve-out that stays closed for this run.
+   *
+   * Nothing in it is allowed to fail the extension it precedes. A failure to
+   * spawn, a session that appends nothing, and a close that does not land all
+   * degrade to observations: the debt simply stays open, which keeps refusing
+   * further emergency registrations, which is the fail-closed side.
+   */
+  private async landEmergencyAudit(store: DelegationStore, run: RunRef, timeoutMs: number): Promise<string[]> {
+    const notes: string[] = [];
+    const debt = await scanEmergencyDebt(store.runPath);
+    if (debt) {
+      try {
+        const workerId = await store.nextAuditWorkerId(await store.read());
+        await this.spawnAuditor(run, workerId, `Emergency audit ${debt.ordinal} for run ${run.track_id}/${run.run_id}. Read ${debt.path} and follow it exactly: judge the emergency claim it records against the machine facts it contains, then append your bounded reasoning and the exact verdict block to that same file, and ring the orchestrator once as that document instructs. You are a clean auditor: make no other herdr_* call, do not otherwise contact the orchestrator, and change nothing else in this run.`, timeoutMs);
+        const closeWarning = await this.closeEmergencyAuditor(run, workerId, timeoutMs);
+        if (closeWarning) notes.push(closeWarning);
+      } catch (error) {
+        const detail = `emergency audit ${debt.ordinal} could not be run: ${error instanceof Error ? error.message : String(error)}`;
+        await appendLedger(store.runPath, `emergency audit ${debt.ordinal} unavailable`, [
+          detail,
+          `the debt stays open in ${debt.path}, so no further emergency registration is admissible until a verdict lands there`,
+        ]).catch(() => undefined);
+        return [detail];
+      }
+    }
+    // Announce whatever the newest document now says, whether this call's auditor
+    // wrote it or an earlier one did out of band: an `unjustified` verdict that
+    // reached no ledger would leave the human's trail (BUD-014) missing the one
+    // judgment that closed the carve-out. The ledger read below decides only
+    // whether this narrative line was already written — never a judgment, and
+    // never machine state, which stays in the document itself.
+    const newest = (await scanEmergencyAudits(store.runPath)).at(-1);
+    if (!newest) return notes;
+    if (!newest.verdict) {
+      const detail = `emergency audit ${newest.ordinal} still carries no verdict block in ${newest.path}; the debt stays open and no further emergency registration is admissible`;
+      await appendLedger(store.runPath, `emergency audit ${newest.ordinal} pending`, [detail]).catch(() => undefined);
+      return [...notes, detail];
+    }
+    const heading = `emergency audit ${newest.ordinal} verdict ${newest.verdict}`;
+    const ledger = await readFile(budgetLedgerPath(store.runPath), "utf8").catch(() => "");
+    if (ledger.includes(heading)) return notes;
+    const disposition = newest.verdict === "justified"
+      ? "the carve-out stays open, so a later emergency in this run may use it once more; nothing else changes"
+      : `the carve-out is CLOSED for this run: no further emergency registration is admissible, and the next budget decision belongs to the human with ${budgetLedgerPath(store.runPath)} and this verdict. Nothing dispatched is recalled — no tool op can — so this is the whole sanction`;
+    await appendLedger(store.runPath, heading, [
+      `verdict read from ${newest.path}`,
+      disposition,
+      "recorded server-side; the orchestrator never wrote this entry",
+    ]).catch(() => undefined);
+    return [...notes, `emergency audit ${newest.ordinal}: ${newest.verdict} — ${disposition}`];
+  }
+
+  /**
+   * Closes an emergency auditor once it has settled. It touches no registry
+   * record, because the emergency audit deliberately persists nothing there
+   * (BUD-016); a close that does not land is reported by worker ID in the ledger
+   * so a human can see the pane rather than having it disappear silently.
+   */
+  private async closeEmergencyAuditor(run: RunRef, workerId: string, timeoutMs: number): Promise<string | undefined> {
+    try {
+      const observed = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+      const agentName = stringField(observed.worker, ["agent_name"]);
+      if (agentName) await this.adapter.wait(agentName, ["idle", "done"], Math.min(timeoutMs, MAX_EFFECTIVE_WAIT_MS)).catch(() => undefined);
+      const settled = await inspectWorker({ operation: "inspect_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId });
+      const sequence = numberField(settled.worker, ["state_change_seq"]);
+      if (sequence === undefined) return `Emergency auditor ${workerId} has no live state sequence; it stays open for a human to close.`;
+      await closeWorker({ operation: "close_worker", track_id: run.track_id, run_id: run.run_id, worker_id: workerId, expected_state_change_seq: sequence });
+      return undefined;
+    } catch (error) {
+      return `Emergency auditor ${workerId} stayed open: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   /**
@@ -2467,13 +2664,16 @@ export class CompositeTools {
         // carries the canonical claims section, refuses on presentation and sha
         // freshness only, executes nothing, and persists nothing.
         const succession = await assertSuccessionClaims(store.runPath, store.cwd);
-        await this.judgeBudget(store, run, "add");
+        // The claim is normalized before it is judged, so the two lines a clean
+        // auditor reads are the bounded single lines the schema published — the
+        // transport ceiling above is not the contract.
+        const budgetJudgment = await this.judgeBudget(store, run, "add", input.emergency ? { assignment_id: input.assignment_id, claim: normalizeEmergencyClaim(input.emergency) } : undefined);
         // FIFO placement is judged from the lane record, so the sweep runs
         // first: a lane that finished while nobody asked must not queue this
         // assignment behind a completed one (friction bbc360a158e3a3bf).
         const sweepWarnings: string[] = [];
         await sweepSettlements(store, run, await store.read(), sweepWarnings);
-        const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}) };
+        const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
         const sweptData = Object.keys(gateData).length ? { data: gateData } : {};
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...sweptData };
@@ -2517,7 +2717,10 @@ export class CompositeTools {
         const warnings: string[] = [...sweepWarnings];
         const until = input.wait?.until ?? ["idle", "done", "blocked"];
         registry = await this.promptAssignment(store, run, lane.worker_id, input.assignment_id, agentName, paneId, until, timeout(input), warnings);
-        registry = await this.dispatchPromotedHead(store, run, lane.worker_id, until, timeout(input), warnings) ?? registry;
+        // BUD-004 stands through the carve-out: an admitted emergency buys THIS
+        // registration and nothing more, so a promoted head — which is new work
+        // nobody claimed an emergency for — stays queued while the run is parked.
+        registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, until, timeout(input), warnings)) ?? registry;
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
         const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
@@ -2667,7 +2870,10 @@ export class CompositeTools {
       try { senderSession = (await loadFacts(this.adapter)).facts.session_id; }
       catch (error) { warnings.push(`Sender attestation unavailable: ${error instanceof Error ? error.message : String(error)}`); }
       const senderLane = senderSession ? Object.values(registry.lanes).find((lane) => lane.official_session_id === senderSession)?.worker_id : undefined;
-      const sender = senderLane ?? (senderSession ? "orch" : "unverified");
+      // The audit bell's sender is neither a lane nor the ORCH — the branch below
+      // refuses the ORCH outright — so it is named for what it is rather than
+      // falling through to the ORCH label the journal would otherwise record.
+      const sender = senderLane ?? (senderSession ? (input.action === "wake_orch_audit" ? "auditor" : "orch") : "unverified");
 
       let target: string | undefined;
       let text = "";
@@ -2683,6 +2889,29 @@ export class CompositeTools {
         // re-reading the whole document (friction 588687ae4317fd72).
         const anchor = laneId ? await anchorClause(path.join(store.runPath, "a2a", `${laneId}-report.md`)) : "";
         text = `wake: ${input.assignment_id} ${input.boundary} (run ${input.track_id}/${input.run_id}); read ${laneId ? `a2a/${laneId}-report.md` : "the lane report"}${anchor} — non-authoritative signal, verify via herdr_assignment.`;
+      } else if (input.action === "wake_orch_audit") {
+        // The clean auditor's bell (gate-2 decision D1, option B). Exactly one
+        // invariant is relaxed — the auditor's silence toward the ORCH — and it
+        // is relaxed in one direction only: the auditor may point at the document
+        // it just appended, and nothing more. BUD-009's other three properties
+        // hold: the auditor is not a lane, the ORCH cannot address it, and it is
+        // closed once settled. Enforcement here is prose, not a gate, and the
+        // design says so: the bell carries no verdict, so a bell that lies about
+        // one costs the run nothing — the server reads verdicts from documents.
+        const birth = latestBirth(registry);
+        const pendingAudit = registry.budget?.extensions.find((entry) => entry.state === "pending")?.audit_path;
+        // The bell is rung AFTER the verdict block lands, so the newest emergency
+        // audit is named whether or not it still reads as an open debt; a pending
+        // budget audit outranks it because that is the one a landing consumes.
+        const emergencyAudits = await scanEmergencyAudits(store.runPath);
+        const extensions = registry.budget?.extensions ?? [];
+        const document = pendingAudit ?? emergencyAudits[emergencyAudits.length - 1]?.path ?? extensions[extensions.length - 1]?.audit_path;
+        if (!birth) unresolvedReason = "Run has no ORCH birth record; birth is recorded at ORCH spawn or by its first guarded command.";
+        else if (senderSession && birth.official_session_id === senderSession) unresolvedReason = "Caller is the run's ORCH; wake_orch_audit is the auditor's bell.";
+        else if (senderLane) unresolvedReason = "wake_orch_audit is the auditor's bell; a responsibility lane wakes its ORCH through wake_orch, naming its assignment and boundary.";
+        else target = birth.pane_id;
+        const anchor = document ? await anchorClause(document) : "";
+        text = `wake: an audit document was appended (run ${input.track_id}/${input.run_id}); read ${document ?? "this run's budget and emergency audit documents"}${anchor} and land it with herdr_track budget_extend — non-authoritative signal carrying no verdict: the audit document alone holds it.`;
       } else if (input.action === "wake_peer") {
         if (!senderLane) unresolvedReason = "Peer wake requires a verified sender lane: the channel is named by its declared sender.";
         else if (senderLane === input.to_worker_id) unresolvedReason = "A lane cannot wake itself.";
