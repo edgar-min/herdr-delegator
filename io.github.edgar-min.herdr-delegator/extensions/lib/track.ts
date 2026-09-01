@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "
 import path from "node:path";
 import type { ConfigThinkingLevel, FocusRestoration, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic } from "./config";
+import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, inboundChannelEntries, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic, type InboundChannelObservation } from "./config";
 import { acceptProtocolDocument } from "./templates";
 import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
@@ -11,21 +11,47 @@ import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap,
 
 const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
 
+/** Prompt-surface ceiling on inbound pointers; the rest belong to `inspect`. */
+export const MAX_INBOUND_PROMPT_POINTERS = 8;
+
 /**
  * The ORCH's first prompt. It names the documents that carry command — the
  * mandate and the role protocol — and, when a caller materialized one for this
  * spawn, the advisory guidance document, marked advisory in the prompt itself so
  * the born session cannot mistake criteria for authority.
+ *
+ * A newborn ORCH also has no way to learn that another run already addressed a
+ * channel document to it: its doorbell rang before it existed and a doorbell
+ * carries no content to redeliver (friction ef27dbff9f8d30ac ③). So when the
+ * caller observed inbound documents, the prompt names them — the same conditional
+ * pointer the guidance document already gets, bounded so a long-lived storage
+ * root cannot flood a first turn. Pointers only: no body, and no claim that the
+ * list is complete or that anything was delivered.
  */
 export function orchestratorFirstPrompt(
   instructionPath: string,
   orchestratorProtocolPath: string,
   guidancePath?: string,
+  inbound?: InboundChannelObservation,
 ): string {
   const guidance = guidancePath
     ? ` Also read ${guidancePath}, which is advisory only: consult it for the skill routes configured at your plan and authoring boundaries and for what each worker profile is for, and never as authority over scope, ownership, or completion conditions.`
     : "";
-  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.${guidance} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+  const observed = inbound?.entries ?? [];
+  const named = observed.slice(0, MAX_INBOUND_PROMPT_POINTERS);
+  const remainder = observed.length > named.length || inbound?.truncated
+    ? ` More inbound documents exist than the ${MAX_INBOUND_PROMPT_POINTERS} named here; call herdr_track inspect for the rest.`
+    : "";
+  const pointers = named
+    .map((entry) => `${entry.path} (from ${entry.from_track_id}/${entry.from_run_id}, sha256 ${entry.sha256}, ${entry.bytes} bytes${entry.entry_line === undefined ? "" : `, newest entry at line ${entry.entry_line} of ${entry.lines}`})`)
+    .join("; ");
+  const lead = named.length === 1
+    ? "Another run has addressed an inter-run channel document to this run, observed once at spawn:"
+    : `Other runs have addressed inter-run channel documents to this run; this prompt names ${named.length} observed once at spawn:`;
+  const inboundClause = named.length
+    ? ` ${lead} ${pointers}. That is an observation of documents a future or live ORCH can discover, not a delivered message, not a complete list, and no guarantee that anything will be redelivered: read each document before you act on it and answer in your own reverse channel.${remainder}`
+    : "";
+  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
 }
 
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
@@ -1229,10 +1255,21 @@ async function startOrchestrator(
       // presence — not a flag — decides whether the prompt names three
       // documents or the original two.
       const guidancePath = path.join(runPath, GUIDANCE_DOCUMENT_NAME);
+      // Advisory read at a birth boundary: a failed observation must cost the
+      // newborn its inbound pointers, never its birth, so the prompt simply
+      // loses the clause. Only the prompt ceiling is read, not the full inspect
+      // list — the remainder is named as an inspect call, not fetched here.
+      let inbound: InboundChannelObservation | undefined;
+      try {
+        inbound = await inboundChannelEntries(runPath, coordinate.storageRoot, { maxEntries: MAX_INBOUND_PROMPT_POINTERS });
+      } catch {
+        inbound = undefined;
+      }
       const prompt = orchestratorFirstPrompt(
         instructionPath,
         orchestratorProtocolPath,
         (await isFile(guidancePath)) ? guidancePath : undefined,
+        inbound,
       );
       // Delivery wait, never settlement: the ORCH's first turn routinely outlives
       // the ~30s MCP client transport abort (see MAX_EFFECTIVE_WAIT_MS in

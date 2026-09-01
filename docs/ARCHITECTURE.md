@@ -122,6 +122,8 @@ Communication is uniform across every relationship: the document append carries 
 
 A doorbell to a currently focused target is deferred in the server process: wait 60 seconds, re-probe once, then send immediately if focus moved or the probe failed, otherwise wait a final 90 seconds and send exactly once. The call returns `delivery: "deferred"` without waiting. `a2a/messages.jsonl` records the scheduled row immediately and a final delivered/failed row after the background send. Server shutdown may lose that soft send because the named document already carries the authoritative content; the absent final row makes the loss observable.
 
+A doorbell that never reached its target is not queued for later: it carries no content, so there is nothing to redeliver. The ORCH↔ORCH row is instead readable from the receiving side — `herdr_track inspect` returns `data.inbound_channels`, and a newborn ORCH's first prompt names at most eight of the channel documents other runs addressed to it. Both are bounded, content-free, read-time observations of documents already on disk: paths and byte facts, never a delivery guarantee. A non-delivered `notify_run` says the same thing to the sender — the document remains durable, a future or live target ORCH can discover it, redelivery is not promised, and escalation is the caller's decision.
+
 Terminal output is a bounded observation, not a durable result.
 
 ## Deterministic storage

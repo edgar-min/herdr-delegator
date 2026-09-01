@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { loadDelegatorConfig, resolveSkillRoutes, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { MAX_ANCHOR_BYTES, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -152,21 +152,9 @@ async function readChannelDocument(channelPath: string): Promise<{ sha256: strin
   return { sha256: sha256(contents), bytes: contents.byteLength, ...(anchor ? { entry_line: anchor.line } : {}), lines: document.split("\n").length };
 }
 
-// A bell may only point at bytes that already exist, so it can also say WHERE to
-// start reading. The anchor is the last entry header in an append-only document
-// — a bracketed report block or a Markdown heading — which in such a document is
-// the newest entry's first line (friction 588687ae4317fd72). Absent header,
-// absent anchor: the bell never invents a coordinate.
-const MAX_ANCHOR_BYTES = 1024 * 1024;
-const ENTRY_HEADER_RE = /^(?:\[[^\]\n]+\]|#{1,6} .*)$/;
-
-function newestEntryAnchor(document: string): { line: number; lines: number } | undefined {
-  const lines = document.split("\n");
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (ENTRY_HEADER_RE.test(lines[index])) return { line: index + 1, lines: lines.length };
-  }
-  return undefined;
-}
+// The anchor parse and its byte ceiling are the shared append-only-document
+// logic in extensions/lib/config.ts; the bell and the inbound observation must
+// name the same line of the same document, so there is one implementation.
 
 /** The bell's read-from clause for a document on disk, or nothing to say. */
 async function anchorClause(documentPath: string): Promise<string> {
@@ -177,6 +165,22 @@ async function anchorClause(documentPath: string): Promise<string> {
     return anchor ? ` from line ${anchor.line} of ${anchor.lines}` : "";
   } catch {
     return "";
+  }
+}
+
+/**
+ * The read surface for the channel documents other runs addressed to this one.
+ * `inspect` is what a live or recovering ORCH already calls, so it is where a
+ * missed doorbell is recovered — as an observation, never as a delivery. The
+ * storage root is resolved here because the observation itself takes it as an
+ * argument, which is what makes it exercisable without any configuration layer.
+ */
+async function observeInboundChannels(store: DelegationStore): Promise<InboundChannelObservation> {
+  try {
+    const loaded = await loadDelegatorConfig(store.runPath, store.cwd);
+    return await inboundChannelEntries(store.runPath, await storageRootFromConfig(loaded.config, false));
+  } catch (error) {
+    return { entries: [], truncated: false, observation_warning: `inbound_scan_unavailable: ${singleLine(error instanceof Error ? error.message : String(error)).slice(0, 200)}` };
   }
 }
 
@@ -1095,7 +1099,8 @@ export class CompositeTools {
         let orchestrator: unknown;
         try { await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
         const budget = await this.observeBudget(store, registry);
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget } };
+        const inboundChannels = await observeInboundChannels(store);
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget, inbound_channels: inboundChannels } };
       }
       if (input.action === "budget_extend") return await this.extendBudget(input, run, store);
       const runtime = await loadFacts(this.adapter);
@@ -2521,6 +2526,15 @@ export class CompositeTools {
           delivery = /agent_blocked/i.test(detail) ? "rejected_blocked" : /not.?found|missing/i.test(detail) ? "target_unresolved" : "failed";
           warnings.push(`Delivery ${delivery}: ${singleLine(detail).slice(0, 300)}`);
         }
+      }
+      // A non-delivered bell said only what failed, never what is still true, so
+      // the sending ORCH stopped there (friction ef27dbff9f8d30ac ③). The
+      // channel document is durable either way; naming that, its coordinates,
+      // and the honest limit of this tool turns a dead end into a decision. Only
+      // notify_run has a channel document, so the observation this branch tests
+      // is also what confines the clause to it — the wake_* bells are untouched.
+      if (channelObservation && (delivery === "target_unresolved" || delivery === "rejected_blocked" || delivery === "failed")) {
+        warnings.push(`Channel document remains durable at ${channelObservation.path} (sha256=${channelObservation.sha256}, ${channelObservation.bytes} bytes). A future or live target ORCH can discover it from its first prompt or herdr_track inspect; this tool does not guarantee redelivery. Decide whether to escalate now.`);
       }
       await appendMessageLog(store.runPath, {
         at: nowIso(),

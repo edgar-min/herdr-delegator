@@ -1,7 +1,7 @@
 // Config responsibilities for the Herdr delegator extension.
 import { randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { copyFile, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { copyFile, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1006,4 +1006,156 @@ export async function readRunIndex(indexPath: string): Promise<{ version: 1; run
     }
   }
   return parsed as { version: 1; runs: Record<string, RunIndexRow> };
+}
+
+// A bell may only point at bytes that already exist, so it can also say WHERE to
+// start reading. The anchor is the last entry header in an append-only document
+// — a bracketed report block or a Markdown heading — which in such a document is
+// the newest entry's first line (friction 588687ae4317fd72). Absent header,
+// absent anchor: no surface ever invents a coordinate. This lives here, beside
+// the run index, because both the bell in mcp/tools.ts and the inbound
+// observation below anchor the same class of append-only document, and a second
+// implementation of the same parse would be a second contract.
+export const MAX_ANCHOR_BYTES = 1024 * 1024;
+const ENTRY_HEADER_RE = /^(?:\[[^\]\n]+\]|#{1,6} .*)$/;
+
+export function newestEntryAnchor(document: string): { line: number; lines: number } | undefined {
+  const lines = document.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (ENTRY_HEADER_RE.test(lines[index])) return { line: index + 1, lines: lines.length };
+  }
+  return undefined;
+}
+
+/**
+ * One inbound inter-run channel document, observed from the receiving side.
+ * Content-free by construction: a path, the sender's coordinates, and the same
+ * byte observations the outbound bell already carries — never a line of body.
+ */
+export type InboundChannelEntry = {
+  from_track_id: string;
+  from_run_id: string;
+  path: string;
+  sha256: string;
+  bytes: number;
+  lines: number;
+  entry_line?: number;
+};
+
+export type InboundChannelObservation = {
+  entries: InboundChannelEntry[];
+  truncated: boolean;
+  observation_warning?: string;
+};
+
+export const INBOUND_MAX_CANDIDATES = 256;
+export const INBOUND_MAX_ENTRIES = 32;
+
+/**
+ * Read-time discovery of the channel documents other runs addressed to this
+ * one (friction ef27dbff9f8d30ac ③). A doorbell carries no content, so there is
+ * nothing to redeliver later; what a missed bell loses is the receiver's
+ * knowledge that a durable document is waiting for it. This recovers exactly
+ * that, and only by observation: no persistent state, no registry field, no
+ * delivery outcome, no write of any kind.
+ *
+ * Enumeration is the storage-root index, never a filesystem walk, and each
+ * candidate contributes exactly one deterministic path — the sender-owned
+ * `a2a/orch-to-<targetTrack>_<targetRun>.md`. Ordering (newest run first, ties
+ * by coordinate) is applied before the caps, so a truncated scan is still the
+ * same scan every time. Failure degrades loudly and never throws: a caller at a
+ * spawn or an inspect boundary must not be broken by an advisory read, but it
+ * must also never be handed a silent empty list, which is the reporting defect
+ * this deliberately does not repeat.
+ */
+export async function inboundChannelEntries(
+  targetRunPath: string,
+  storageRoot: string,
+  limits?: { maxCandidates?: number; maxEntries?: number },
+): Promise<InboundChannelObservation> {
+  const maxCandidates = limits?.maxCandidates ?? INBOUND_MAX_CANDIDATES;
+  const maxEntries = limits?.maxEntries ?? INBOUND_MAX_ENTRIES;
+  const failed = (clause: string): InboundChannelObservation => ({ entries: [], truncated: false, observation_warning: clause });
+  const detail = (error: unknown): string =>
+    (isObject(error) && typeof error.message === "string" ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200);
+
+  let manifest: RunManifest;
+  try {
+    manifest = await readRunManifest(targetRunPath);
+  } catch (error: unknown) {
+    return failed(`inbound_scan_unavailable: this run's own coordinates are unreadable (${detail(error)}), so no inbound channel document was looked for.`);
+  }
+  const selfKey = `${manifest.track_id}/${manifest.run_id}`;
+  const channelName = `orch-to-${manifest.track_id}_${manifest.run_id}.md`;
+
+  let index: { version: 1; runs: Record<string, RunIndexRow> };
+  try {
+    index = await readRunIndex(path.join(storageRoot, "index.json"));
+  } catch (error: unknown) {
+    return failed(`inbound_scan_unavailable: the storage-root index is unusable (${detail(error)}), so no inbound channel document was looked for.`);
+  }
+  if (!index.runs[selfKey]) {
+    return failed(`inbound_scan_unavailable: the storage-root index does not list ${selfKey}, so its sender candidates cannot be enumerated.`);
+  }
+
+  const warnings: string[] = [];
+  let truncated = false;
+  const candidates = Object.entries(index.runs)
+    .filter(([key]) => key !== selfKey)
+    .sort(([leftKey, left], [rightKey, right]) => {
+      if (left.created_at !== right.created_at) return left.created_at < right.created_at ? 1 : -1;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  if (candidates.length > maxCandidates) {
+    truncated = true;
+    warnings.push(`inbound_scan_truncated: ${candidates.length} sender candidates exist and only the ${maxCandidates} most recent were scanned.`);
+  }
+
+  const entries: InboundChannelEntry[] = [];
+  for (const [, row] of candidates.slice(0, maxCandidates)) {
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      warnings.push(`inbound_entries_truncated: the scan stopped at the ${maxEntries}-document limit, so this list may be incomplete.`);
+      break;
+    }
+    const channelPath = path.join(row.run_path, "a2a", channelName);
+    let found: Stats;
+    try {
+      found = await lstat(channelPath);
+    } catch (error: unknown) {
+      // No document from this candidate is the normal case, not a degradation.
+      if (isObject(error) && error.code === "ENOENT") continue;
+      warnings.push(`inbound_entry_unreadable: ${channelPath} could not be examined (${detail(error)}).`);
+      continue;
+    }
+    if (!found.isFile() || found.isSymbolicLink()) {
+      warnings.push(`inbound_entry_unreadable: ${channelPath} is not a regular file, so it was skipped.`);
+      continue;
+    }
+    if (found.size > MAX_ANCHOR_BYTES) {
+      truncated = true;
+      warnings.push(`inbound_entry_oversized: ${channelPath} is ${found.size} bytes, above the ${MAX_ANCHOR_BYTES}-byte observation limit, so it was skipped.`);
+      continue;
+    }
+    let contents: Buffer;
+    try {
+      contents = await readFile(channelPath);
+    } catch (error: unknown) {
+      warnings.push(`inbound_entry_unreadable: ${channelPath} could not be read (${detail(error)}).`);
+      continue;
+    }
+    const document = contents.toString("utf8");
+    const anchor = newestEntryAnchor(document);
+    entries.push({
+      from_track_id: row.track_id,
+      from_run_id: row.run_id,
+      path: channelPath,
+      sha256: sha256(contents),
+      bytes: contents.byteLength,
+      lines: document.split("\n").length,
+      ...(anchor ? { entry_line: anchor.line } : {}),
+    });
+  }
+
+  return { entries, truncated, ...(warnings.length ? { observation_warning: warnings.join(" | ") } : {}) };
 }
