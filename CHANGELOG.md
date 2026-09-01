@@ -13,6 +13,39 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.1] - 2026-09-01
+
+A worker spawned under the default `inherit` thinking profile could not be
+verified at all, and the dispatch that failed on it reported having done
+nothing. Both were found by dogfooding one run — resume-verify-false-block/2026-09-01
+— whose own first assignment was delivered through the very defect it then fixed.
+
+### Fixed
+
+- Session verification no longer requires a `thinking_level_change` record
+  before the first user message. OMP defers that record whenever the session's
+  thinking selector is `auto` — the normal shape of a lane spawned under the
+  default `inherit` profile — so the predicate was unsatisfiable and every such
+  worker failed `session_verification_incomplete` permanently. `thinking` is now
+  an optional observation, and its absence is reported as absence rather than
+  filled with a default. (4c4c29eba567dfac)
+- `herdr_assignment add` no longer reports a delivered prompt as
+  `effect: "none"`. Only the prompt call itself was guarded, so a failure in the
+  post-prompt verification surfaced a fully dispatched assignment as a no-effect
+  error while the registry kept `prompting` with `prompted_at` set — inviting a
+  duplicate re-add. That boundary now marks the assignment `ambiguous` with
+  `ambiguous_operation: "prompt"` and reports `effect: "ambiguous"`, the shape
+  the resume path already had. (66d45887c8bfec74)
+
+### Changed
+
+- SPEC MOD-002, its release checklist item, the README safety gates, and the
+  architecture's verification steps described the post-prompt JSONL gate as an
+  exact match on provider/model and thinking. It never matched provider/model,
+  and it must not require thinking; all four now state the semantics the source
+  implements — session identity is verified, while provider/model, fallback, and
+  thinking are returned as observations.
+
 ## [3.5.0] - 2026-09-01
 
 Settlement now reaches the registry at the machine's own observation points, so

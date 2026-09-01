@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "herdr-delegator",
-  "version": "3.5.0",
+  "version": "3.5.1",
   "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
   "author": {
     "name": "edgar-min"
