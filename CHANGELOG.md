@@ -13,6 +13,42 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.6.0] - 2026-09-01
+
+### Added
+
+- Emergency registrations can now cross a cadence budget park. `herdr_assignment
+  add` accepts an optional `emergency` claim (`failure`, `why_now` — bounded
+  single lines); on an `over-cap` park it admits the registration, records the
+  claim in the ledger, and opens a post-hoc audit debt as a run document
+  (`emergency-audit-<n>.md`) that a clean auditor judges at the next
+  `budget_extend`. One unjudged registration at a time; every other park reason
+  still refuses (`emergency_not_admissible`). An `unjustified` verdict closes
+  the carve-out for the run permanently (`emergency_carve_out_closed`) and
+  routes the next budget decision to the human. The sanction is prospective
+  only — nothing recalls a dispatched assignment, closes a working lane, or
+  un-spends tokens — and an admitted registration queued behind an active lane
+  is not promoted while parked (preemption is out of scope for this release).
+  No registry schema change: old servers read the new state untouched and keep
+  refusing parked adds. (SPEC BUD-016; friction 8917760a9545c642 items ① and ③)
+- Audit verdicts now arrive by doorbell instead of polling. A budget or
+  emergency auditor may ring the ORCH pane once through the new
+  `herdr_message` action `wake_orch_audit` after appending its verdict; the
+  bell carries no content and no authority — the audit document alone holds
+  the verdict, and the ORCH still lands it with the ordinary `budget_extend`
+  call. (SPEC BUD-009)
+- `skill-retro`, a bundled skill: a run-close worker retrospective where the
+  ORCH judges each lane (and itself) against expectation, questions
+  underperforming workers through their lane report plus a `wake_worker`
+  doorbell, and the questioned workers file their own failure evidence in a
+  fixed `skill-review` grammar — success stays silent.
+
+### Fixed
+
+- Doorbell sender attribution: a bell rung by a non-lane session (an auditor)
+  is now recorded as `auditor` in `messages.jsonl` instead of being
+  mislabelled `orch`.
+
 ## [3.5.5] - 2026-09-01
 
 ### Added
