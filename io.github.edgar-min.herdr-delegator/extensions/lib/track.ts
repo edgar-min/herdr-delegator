@@ -816,7 +816,7 @@ async function verifyTargetOrchestratorSession(
   );
   assertTargetAgentBelongs(run, target, converged.observation);
   const beforePath = converged.canonicalPath;
-  const verification = await readSessionVerification(beforePath, target);
+  const verification = await readSessionVerification(beforePath);
   if (target.session_id && target.session_id !== verification.session_id) {
     throw new ContractError(
       "session_identity_mismatch",

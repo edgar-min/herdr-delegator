@@ -2139,23 +2139,45 @@ export class CompositeTools {
       });
       throw error;
     }
-    const verified = await verifyPromptedWorker({ track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
-    registry = await updateLaneFromWorker(store, workerId, verified);
-    const observedState = laneState(verified.state);
-    const seq = numberField(verified.worker, ["state_change_seq"]) ?? registry.lanes[workerId].state_change_seq;
-    registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-      next.lanes[workerId].state = observedState;
-      next.lanes[workerId].state_change_seq = seq;
-      next.assignments[assignmentId].state = observedState === "blocked" ? "blocked" : "working";
-      next.assignments[assignmentId].updated_at = nowIso();
-    });
-    const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
-    if (progress) warnings.push(progress);
-    const beforeSettlement = registry.assignments[assignmentId].state;
-    registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId]);
-    const terminal = await reportTerminalObservation(this.adapter, registry, assignmentId, beforeSettlement, paneId);
-    if (terminal) warnings.push(terminal);
-    return registry;
+    // Everything below runs AFTER the prompt was delivered, so no failure here
+    // may report `effect: "none"`: the worker already holds the assignment
+    // pointer and the registry already carries `prompting` + `prompted_at`. The
+    // pre-prompt catch above marks that ambiguity, but this boundary was left
+    // unguarded, so a post-prompt verification failure reported a fully
+    // dispatched assignment as a no-effect error and invited a duplicate
+    // re-add (friction 66d45887c8bfec74). `verifyPromptedWorker` throws the
+    // extension's `ContractError`, which is why both error types are
+    // recognized here — the same asymmetry the resume path never had.
+    try {
+      const verified = await verifyPromptedWorker({ track_id: run.track_id, run_id: run.run_id, worker_id: workerId, timeout_ms: timeoutMs });
+      registry = await updateLaneFromWorker(store, workerId, verified);
+      const observedState = laneState(verified.state);
+      const seq = numberField(verified.worker, ["state_change_seq"]) ?? registry.lanes[workerId].state_change_seq;
+      registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        next.lanes[workerId].state = observedState;
+        next.lanes[workerId].state_change_seq = seq;
+        next.assignments[assignmentId].state = observedState === "blocked" ? "blocked" : "working";
+        next.assignments[assignmentId].updated_at = nowIso();
+      });
+      const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (progress) warnings.push(progress);
+      const beforeSettlement = registry.assignments[assignmentId].state;
+      registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId]);
+      const terminal = await reportTerminalObservation(this.adapter, registry, assignmentId, beforeSettlement, paneId);
+      if (terminal) warnings.push(terminal);
+      return registry;
+    } catch (error) {
+      await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.assignments[assignmentId];
+        current.state = "ambiguous";
+        current.ambiguous_operation = "prompt";
+        current.updated_at = nowIso();
+      });
+      const recovery = "The assignment prompt was already delivered; inspect_worker to observe the lane's real state instead of re-adding or re-prompting the assignment.";
+      if (error instanceof McpContractError) throw new McpContractError(error.code, error.message, error.phase, recovery, true, false);
+      if (error instanceof LegacyContractError) throw new McpContractError(error.code, error.message, normalizeLegacyPhase(error.phase), recovery, true, false);
+      throw new McpContractError("prompt_verification_failed", error instanceof Error ? error.message : String(error), "prompt", recovery, true, false);
+    }
   }
 
   /**

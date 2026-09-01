@@ -254,7 +254,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 7. Model, session, workspace, and focus safety
 
 - **MOD-001**: Before prompt, bridge facts and Herdr bootstrap metadata MUST exact-match official session and pane identity, any reported official session path, the session and attestation tokens, nonce, and freshness; provider, model, and thinking MUST NOT participate in either pre-prompt verifier.
-- **MOD-002**: After the first prompt boundary, canonical OMP JSONL MUST exact-match session, provider/model, thinking, and fallback before success or later resume.
+- **MOD-002**: After the first prompt boundary, canonical OMP JSONL MUST be read before success or later resume, and its session identity MUST exact-match the attested and persisted session. Provider, model, fallback, and thinking are OBSERVATIONS returned from that read and persisted as reported, never matched against a caller-held expectation (MOD-007). The session header, the initial model change, and the fallback flag MUST all be found before the first user message; a `thinking_level_change` record MUST NOT be required there, because OMP defers it whenever the session's thinking selector is `auto`, and its absence MUST be reported as absence rather than filled with a default (friction 4c4c29eba567dfac, 66d45887c8bfec74).
 - **MOD-003**: A bootstrap-reported path MAY precede JSONL creation and MUST NOT become resume authority until persisted verification succeeds.
 - **MOD-004**: A synthetic prompt MUST NOT be sent solely to create JSONL.
 - **MOD-005**: Missing, stale, unsafe, corrupt, mismatched, concurrently resumed, known-duplicate, or credibly duplicate session evidence MUST fail closed.
@@ -384,7 +384,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.
 - [ ] Exact responsibility reuse, one active assignment, FIFO queueing, ordinal reservation, and simple separation match routing source.
 - [ ] Bridge fact derivation, exact identity-only fact fields, exact session/attestation pane tokens, and both pre-prompt identity verifiers match bridge, runtime, and MCP source.
-- [ ] MOD-001 preserves identity-only pre-prompt attestation; MOD-002 independently preserves exact post-prompt JSONL session/provider/model/thinking/fallback verification.
+- [ ] MOD-001 preserves identity-only pre-prompt attestation; MOD-002 independently preserves exact post-prompt JSONL session-identity verification with provider/model/fallback/thinking returned as observations and absent thinking tolerated.
 - [ ] Prompt/resume ambiguity prohibits replay and converges on the single public `ambiguous` state.
 - [ ] Root `plugin.json`/`mcp.json`, executable plugin-relative launcher, namespaced extension path, publish allowlist, and direct runtime dependencies match Agent Plugins and compatibility metadata.
 - [ ] Documents, MCP control, and Herdr observation carry only their assigned authority.

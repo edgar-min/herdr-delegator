@@ -843,10 +843,7 @@ function splitModelIdentity(entry: Record<string, unknown>): { provider: string;
   return { provider: model.slice(0, separator), model: model.slice(separator + 1) };
 }
 
-export async function readSessionVerification(
-  sessionPath: string,
-  record: Pick<RegistryRecord, "expected_provider" | "expected_model" | "effective_thinking">,
-): Promise<SessionVerification> {
+export async function readSessionVerification(sessionPath: string): Promise<SessionVerification> {
   let handle: FileHandle | undefined;
   try {
     handle = await open(sessionPath, "r");
@@ -880,21 +877,24 @@ export async function readSessionVerification(
         if (isThinkingLevel(candidate)) thinking = candidate;
       }
     }
-    if (!sessionId || !modelIdentityValue || fallback === undefined || !thinking) {
+    if (!sessionId || !modelIdentityValue || fallback === undefined) {
       throw new ContractError(
         "session_verification_incomplete",
-        "The session header, initial model change, fallback flag, and thinking change were not all found before the first user message within 1 MiB.",
+        "The session header, initial model change, and fallback flag were not all found before the first user message within 1 MiB.",
         "session_verify",
         { recovery: "Preserve the worker and inspect its official OMP session initialization; do not prompt it." },
       );
     }
     // The session's reported model is RETURNED, not judged: it is the
-    // observation that gets persisted (friction 221abf10d2280b47).
+    // observation that gets persisted (friction 221abf10d2280b47). The same
+    // holds for thinking, which additionally may legitimately have no record at
+    // all before the first user message (contracts.ts SessionVerification):
+    // absence is reported as absence rather than filled with a default.
     return {
       session_id: sessionId,
       provider: modelIdentityValue.provider,
       model: modelIdentityValue.model,
-      thinking,
+      ...(thinking ? { thinking } : {}),
       resolved_model_is_fallback: fallback,
     };
   } finally {
@@ -991,7 +991,7 @@ export async function verifyWorkerSession(
   );
   assertAgentBelongsToRecord(record, converged.observation);
   const beforePath = converged.canonicalPath;
-  const verification = await readSessionVerification(beforePath, record);
+  const verification = await readSessionVerification(beforePath);
   if (record.verified_session_id && record.verified_session_id !== verification.session_id) {
     throw new ContractError(
       "session_identity_mismatch",

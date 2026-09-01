@@ -252,7 +252,7 @@ The OMP bridge writes a session-scoped, owner-only runtime fact. MCP derives its
 Launch pinning has two gates:
 
 1. bridge facts and Herdr bootstrap metadata exact-match session, pane, provider/model, thinking, nonce, and freshness before prompt;
-2. official JSONL exact-matches session, provider/model, thinking, and fallback after the first prompt boundary and before resume.
+2. official JSONL exact-matches session identity after the first prompt boundary and before resume; the provider/model, fallback, and thinking it reports are recorded as observations rather than matched against a caller expectation, and a session whose thinking selector resolves on its first turn simply reports no thinking level.
 
 Resume rejects missing, unsafe, mismatched, or credibly duplicated sessions. A wait timeout has no effect and returns a `timed_out` observation. A mutating timeout may have had an effect and must be inspected before retry.
 

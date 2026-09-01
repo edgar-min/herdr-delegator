@@ -285,7 +285,16 @@ export type SessionVerification = {
   session_id: string;
   provider: string;
   model: string;
-  thinking: ThinkingLevel;
+  // OBSERVATION, and an absent one is a valid observation. OMP defers the
+  // `thinking_level_change` record whenever the new session's selector is
+  // `auto`, because auto classification resolves on the first real turn; the
+  // record then lands AFTER the first user message, or never, and it may carry
+  // a null level. OMP itself treats that absence as normal and falls back to
+  // the global default. Requiring the record before the first user message
+  // therefore made a whole class of legitimately-spawned sessions permanently
+  // unverifiable (friction 4c4c29eba567dfac, 66d45887c8bfec74). Absence is
+  // returned as absence; no default is fabricated.
+  thinking?: ThinkingLevel;
   resolved_model_is_fallback: boolean;
 };
 
