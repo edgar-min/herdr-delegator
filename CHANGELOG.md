@@ -13,6 +13,18 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.3] - 2026-09-01
+
+### Added
+
+- Assignment preflight now reports bounded path overlap with active assignments
+  from other live runs sharing the repository. Ownership declarations use a
+  strict path/backtick grammar; declarations that cannot be classified surface
+  as response-scoped warnings instead of disappearing silently. The advisory
+  does not refuse work, persist warnings, or serialize sub-file hunks.
+  (588687ae4317fd72)
+
+
 ## [3.5.2] - 2026-09-01
 
 ### Added
@@ -580,6 +592,7 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.5.3]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.2...v3.5.3
 [3.5.2]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.1...v3.5.2
 [3.5.1]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.0...v3.5.1
 [3.5.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.4.0...v3.5.0
