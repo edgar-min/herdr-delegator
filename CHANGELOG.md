@@ -13,6 +13,27 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.4] - 2026-09-01
+
+### Added
+
+- The published `assignment_id` schema now IS the enforced grammar
+  (`A-` plus three or more digits, not all zero), with the full judgment
+  criteria in its `describe`, so the advertised contract can no longer accept
+  an ID the handler refuses. Schema rejections that reach a tool handler
+  return a stable-coded structured result with authored recovery instead of a
+  raw validator dump; grammar violations are refused at the published boundary
+  itself, carrying the same authored sentence as plain text.
+  (87ef22382241e18f)
+- Assignment artifacts may carry one optional display-only `label` frontmatter
+  field: 1–48 characters, shown on the dispatch pointer, `preflight` result,
+  and worker pane title. A label is never persisted, queued on, or read by
+  settlement, priority, or completion. The artifact grammar is unversioned, so
+  servers older than this release reject label-bearing artifacts — reload
+  mounted servers before first using `label` on a shared working tree
+  (ASN-003b; 9facc09bdd08e951).
+
+
 ## [3.5.3] - 2026-09-01
 
 ### Added
@@ -592,6 +613,7 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.5.4]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.3...v3.5.4
 [3.5.3]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.2...v3.5.3
 [3.5.2]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.1...v3.5.2
 [3.5.1]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.0...v3.5.1
