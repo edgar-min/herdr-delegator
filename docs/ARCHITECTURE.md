@@ -65,7 +65,7 @@ The plugin does not:
 - writes that fact atomically to an owner-only session-scoped file under the active OMP agent directory;
 - reports exactly the matching session and attestation tokens to the verified Herdr caller pane.
 
-The reverse-domain directory and matching `plugin.json#extensions` member contain client-specific OMP data. Current OMP loads the entry through `package.json#omp.extensions`. The bridge is not a model-visible tool and does not execute worker lifecycle.
+The reverse-domain directory and matching `plugin.json#extensions` member contain client-specific OMP data. `io.github.edgar-min.herdr-delegator` therefore names two paired things — a directory holding the OMP-only extension code, and a JSON key inside the root manifest — and neither is itself a manifest location: the repository's only plugin manifest is the root `plugin.json` (SPEC PKG-001), and there is no `plugin.json` under the reverse-domain directory. Current OMP loads the entry through `package.json#omp.extensions`; the manifest's reverse-domain member declares the same entry for Agent Plugins-conformant clients. The bridge is not a model-visible tool and does not execute worker lifecycle.
 
 ### MCP server
 
