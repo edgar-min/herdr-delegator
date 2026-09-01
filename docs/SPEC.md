@@ -111,7 +111,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 - **ASN-001**: One assignment MUST be represented by exactly one ORCH-owned `<run>/a2a/assignments/<assignment_id>.md`.
 - **ASN-002**: The assignment file MUST be bounded UTF-8 with LF line endings, a regular non-symlink file, and at most 64 KiB.
-- **ASN-003**: Frontmatter MUST contain exactly and in order `assignment_id`, `responsibility_key`, and `profile`.
+- **ASN-003**: Frontmatter MUST contain exactly and in order `assignment_id`, `responsibility_key`, and `profile`, and MAY carry exactly one further field `label` as the fourth and last. Any other count, key, order, or repetition MUST be rejected as `assignment_artifact_invalid` in phase `validate` at `preflight` and `add`, before any routing or mutation.
+- **ASN-003a**: `label` MUST match `/^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,46}[A-Za-z0-9])?$/` (1 to 48 characters). It MUST be display only: it MUST NOT be persisted in `delegation.json`, MUST NOT appear in any assignment record key set, and MUST NOT be an input to queue order, settlement, completion parsing, inter-run ownership, priority, or emergency. Its presence or absence MUST NOT change any lifecycle outcome. Uniqueness MUST NOT be required or enforced, because a label is not identity; the `<track_id>/<run_id>/<assignment_id>` coordinate is what distinguishes assignments that share an ID.
 - **ASN-004**: The body MUST contain exactly and in order `Goal`, `Completion conditions`, `Write ownership`, `Dependencies`, and `User boundaries`.
 - **ASN-005**: The final four sections MUST contain one or more bounded Markdown bullets.
 - **ASN-006**: The requested assignment ID and responsibility MUST equal the file frontmatter.
@@ -175,6 +176,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ASN-023**: A prompt or active-assignment resume whose effect cannot be proved MUST converge on assignment state `ambiguous` with bounded replay facts.
 - **ASN-024**: Assignment state MUST be exactly `queued`, `prompting`, `working`, `blocked`, `completed`, `failed`, or `ambiguous`.
 - **ASN-025**: Internal lifecycle phases MUST NOT expand the public or persisted assignment state vocabulary.
+- **ASN-026**: `assignment_id` MUST be `/^A-(?!0+$)[0-9]{3,}$/`, MUST be supplied by the caller rather than allocated by the server, and the published input shape of `herdr_assignment` and `herdr_message` MUST enforce that exact schema, not a looser one; the published `describe` MUST state the grammar and name the display-only `label` and the `<track_id>/<run_id>/<assignment_id>` coordinate as the alternatives to encoding meaning in an ID. A schema rejection reaching a tool handler MUST be returned as an `McpResult` with `ok: false`, a stable `error.code`, `error.phase` `validate`, `ambiguous_effect` false, `retryable` false, and authored recovery text; a raw validator message MUST NOT be reused as recovery. Valid calls to each of the five tools named in ID-004 MUST be unaffected.
 
 ### 5.4 `herdr_worker`
 
@@ -409,6 +411,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Every schema `describe` text states its constants as facts and carries the judgment criterion for the field it documents (JDG-001).
 - [ ] Inbound channel observation is read-time only, content-free, index-enumerated, deterministically ordered, bounded at 256 candidates / 32 entries / 8 prompt pointers, loud on failure, and surfaced at `herdr_track inspect` plus the ORCH first prompt with the non-delivered `notify_run` disposition warning (INB-001 through INB-008).
 - [ ] Ownership declarations are classified by the strict lexical grammar with unclassified bullets counted rather than guessed, every audit skip names one of the OBS-004 codes in the triggering response only, and `preflight` reports bounded inter-run overlaps without preventing, refusing, or guarding anything (OBS-003, OBS-004, ASN-014b).
+- [ ] The published `assignment_id` shape is the enforced schema itself, its `describe` names the grammar plus the `label` and coordinate alternatives, a handler-level schema rejection returns a stable-coded `McpResult` with authored recovery, and the optional display-only `label` is parsed from the artifact yet absent from every registry key set (ASN-003, ASN-003a, ASN-026).
 
 ### Live behavior to verify
 

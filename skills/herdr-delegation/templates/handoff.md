@@ -81,9 +81,11 @@ State only; routing, separation, reuse, inspection, and lifecycle rules are in `
 
 State only; assignment vocabulary, authoring, dispatch, settlement, and control rules are in `protocol-orch.md`.
 
-| Assignment | Responsibility/worker | Immutable artifact/hash | Goal summary | Dependencies | State | Report hash/status | Next legal action |
-|---|---|---|---|---|---|---|---|
-| `A-NNN` | `<key/wN>` | `<a2a/assignments/A-NNN.md; SHA-256>` | `<summary>` | `<readiness>` | `<state>` | `<hash/pending>` | `<action>` |
+| Assignment | Label | Responsibility/worker | Immutable artifact/hash | Goal summary | Dependencies | State | Report hash/status | Next legal action |
+|---|---|---|---|---|---|---|---|---|
+| `A-NNN` | `<label/none>` | `<key/wN>` | `<a2a/assignments/A-NNN.md; SHA-256>` | `<summary>` | `<readiness>` | `<state>` | `<hash/pending>` | `<action>` |
+
+Label is the artifact's optional display-only frontmatter field, quoted here so a reader can tell apart two assignments whose IDs look alike. It is not identity and is not unique: cite the assignment ID — `A-` plus three or more digits — for every action, and its `<track_id>/<run_id>/<assignment_id>` coordinate when another track holds the same ID.
 
 ## 6. Remaining work
 

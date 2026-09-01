@@ -5,6 +5,15 @@ export const TOOL_NAMES = ["herdr_track", "herdr_assignment", "herdr_worker", "h
 export const COORDINATE_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export const RESPONSIBILITY_RE = COORDINATE_RE;
 export const ASSIGNMENT_RE = /^A-(?!0+$)[0-9]{3,}$/;
+// Display-only assignment label (M2 P2). It is deliberately NOT identity: it
+// lives in the canonical artifact's optional fourth frontmatter field, is read
+// again at every display, and is never persisted, queued, settled, or
+// scheduled on. The grammar widens ASSIGNMENT_RE only where widening is free —
+// letters, digits, `-` and `_` with alphanumeric ends — so a label can never
+// become a path component, split an argv `key=value` token, terminate a
+// `[Assignment Completion: ...]` header, or reach a RegExp as a metacharacter.
+export const MAX_ASSIGNMENT_LABEL = 48;
+export const ASSIGNMENT_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,46}[A-Za-z0-9])?$/;
 export const WORKER_RE = /^w[1-9][0-9]*$/;
 export const SHA256_RE = /^[a-f0-9]{64}$/;
 export const ROLE_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -209,6 +218,13 @@ export type AssignmentArtifact = {
   dependencies: string[];
   user_boundaries: string[];
   profile: string;
+  /**
+   * Optional display-only label read from the artifact's fourth frontmatter
+   * field. It appears here because the parser saw it, never because anything
+   * stored it: AssignmentRecord has no counterpart, so a label cannot reach the
+   * registry, a lane queue, a settlement, or a scheduling decision.
+   */
+  label?: string;
 };
 
 export type AssignmentRecord = {
@@ -461,7 +477,15 @@ export type McpResult<T = unknown> = {
 };
 
 const coordinate = z.string().regex(COORDINATE_RE);
-const assignmentId = z.string().regex(ASSIGNMENT_RE);
+// The published judgment criterion for `assignment_id` (JDG-001). This was the
+// one identity field whose published shape dropped its regex while the enforced
+// schema kept it, so the advertised contract accepted `A-R1` and the handler
+// then refused it as an unnamed zod string — which is how a legal assignment
+// got renamed instead of corrected (friction 87ef22382241e18f). Published and
+// enforced now share this schema object, so the advertised grammar IS the
+// enforced grammar, and the refusal carries the same sentence as the contract.
+export const ASSIGNMENT_ID_GUIDANCE = `Assignment identifier, exactly ${ASSIGNMENT_RE.source}: the literal prefix "A-", then three or more digits that are not all zero — A-001, A-014, A-1207. The grammar is closed rather than conventional, because this single value is at once the registry key, the artifact filename on a case-insensitive filesystem, a literal interpolated into the completion-block pattern, and a pane metadata token value; past that fixed prefix the value admits no further letters, no case variants, no dots and no path separators. You choose the ID — the server never allocates one — and it encodes nothing: a human-readable name belongs in the artifact's optional display-only \`label\` frontmatter field, and two runs that both hold A-001 are told apart by the <track_id>/<run_id>/<assignment_id> coordinate, never by the ID alone.`;
+const assignmentId = z.string().regex(ASSIGNMENT_RE, { error: ASSIGNMENT_ID_GUIDANCE }).describe(ASSIGNMENT_ID_GUIDANCE);
 const workerId = z.string().regex(WORKER_RE);
 const hash = z.string().regex(SHA256_RE);
 // A wait cursor is an observation coordinate, never a session token or a
@@ -515,7 +539,7 @@ export const herdrTrackInputShape = {
 export const herdrAssignmentInputShape = {
   ...run,
   action: z.enum(["add", "preflight", "wait"]),
-  assignment_id: z.string().min(3).max(32),
+  assignment_id: assignmentId,
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
   separation: separation.optional(),
@@ -534,7 +558,7 @@ export const herdrWorkerInputShape = {
 export const herdrMessageInputShape = {
   ...run,
   action: z.enum(["wake_orch", "wake_peer", "wake_worker", "notify_run"]),
-  assignment_id: z.string().min(3).max(32).optional(),
+  assignment_id: assignmentId.optional(),
   boundary: z.enum(MESSAGE_BOUNDARIES).optional(),
   to_worker_id: workerId.optional(),
   to_track_id: coordinate.optional(),

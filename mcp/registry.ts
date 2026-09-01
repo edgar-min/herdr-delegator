@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_LABEL_RE, ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, MAX_ASSIGNMENT_LABEL, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -260,16 +260,24 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
   const frontmatterEnd = text.indexOf("\n---\n", 4);
   if (!text.startsWith("---\n") || frontmatterEnd < 0) throw new McpContractError("assignment_artifact_invalid", "Assignment Markdown requires strict frontmatter.", "validate", "Add assignment_id, responsibility_key, and profile frontmatter.");
   const frontmatter = text.slice(4, frontmatterEnd).split("\n");
-  if (frontmatter.length !== 3) throw new McpContractError("assignment_artifact_invalid", "Assignment frontmatter has unexpected fields.", "validate", "Keep only assignment_id, responsibility_key, and profile.");
-  const scalar = (line: string, key: string, pattern: RegExp): string => {
+  // Three canonical fields, optionally followed by a fourth display-only
+  // `label` (ASN-003a). Anything else fails closed: an unknown or repeated
+  // fourth key never reaches `scalar` with the `label: ` prefix, and a fifth
+  // line is rejected outright, so the relaxation widens what is read and
+  // nothing else.
+  if (frontmatter.length !== 3 && frontmatter.length !== 4) throw new McpContractError("assignment_artifact_invalid", "Assignment frontmatter has unexpected fields.", "validate", "Keep assignment_id, responsibility_key, and profile, optionally followed by a display-only label.");
+  const scalar = (line: string, key: string, pattern: RegExp, recovery = "Repair the canonical assignment Markdown."): string => {
     const prefix = `${key}: `;
     const value = line.startsWith(prefix) ? line.slice(prefix.length) : "";
-    if (!pattern.test(value)) throw new McpContractError("assignment_artifact_invalid", `Invalid ${key} frontmatter.`, "validate", "Repair the canonical assignment Markdown.");
+    if (!pattern.test(value)) throw new McpContractError("assignment_artifact_invalid", `Invalid ${key} frontmatter.`, "validate", recovery);
     return value;
   };
   const parsedAssignmentId = scalar(frontmatter[0], "assignment_id", ASSIGNMENT_RE);
   const parsedResponsibility = scalar(frontmatter[1], "responsibility_key", RESPONSIBILITY_RE);
   const profile = scalar(frontmatter[2], "profile", /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+  const label = frontmatter.length === 4
+    ? scalar(frontmatter[3], "label", ASSIGNMENT_LABEL_RE, `The optional fourth frontmatter field is exactly "label: <value>": 1 to ${MAX_ASSIGNMENT_LABEL} characters of letters, digits, "-" or "_", beginning and ending alphanumeric. It is display only — identity, queue order, settlement, and priority all read assignment_id — so drop the line rather than widening it.`)
+    : undefined;
   if (parsedAssignmentId !== assignmentId || parsedResponsibility !== responsibility) throw new McpContractError("assignment_artifact_invalid", "Assignment frontmatter conflicts with requested coordinates.", "validate", "Use the file matching the requested assignment and responsibility.");
 
   const body = text.slice(frontmatterEnd + 5).trim();
@@ -289,6 +297,7 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
     assignment_id: assignmentId,
     responsibility_key: responsibility,
     profile,
+    ...(label ? { label } : {}),
     goal,
     completion_conditions: parseListSection(sectionValues[1], LIST_SECTIONS[0]),
     write_ownership: parseListSection(sectionValues[2], LIST_SECTIONS[1]),

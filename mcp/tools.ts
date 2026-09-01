@@ -1003,7 +1003,11 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
   let report: Buffer;
   try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); }
   catch { return registry; }
-  const completion = new RegExp(`^\\[Assignment Completion: ${assignment.assignment_id}\\]$([\\s\\S]*?)(?=^\\[[^\\n]+\\]$|(?![\\s\\S]))`, "m").exec(report.toString("utf8"));
+  // Defense in depth: `ASSIGNMENT_RE` admits no RegExp metacharacter today, but
+  // this is the one place an assignment ID becomes pattern source rather than
+  // pattern input, so the grammar is not the only thing standing between an ID
+  // and a header a worker could forge or a pattern that silently stops matching.
+  const completion = new RegExp(`^\\[Assignment Completion: ${assignment.assignment_id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]$([\\s\\S]*?)(?=^\\[[^\\n]+\\]$|(?![\\s\\S]))`, "m").exec(report.toString("utf8"));
   const statuses = completion?.[1].match(/^status: (completed|failed)$/gm) ?? [];
   if (completion && statuses.length !== 1) {
     warnings?.push(`completion_block_unparsable: [Assignment Completion: ${assignment.assignment_id}] in a2a/${lane.worker_id}-report.md carries ${statuses.length} recognized status lines; exactly one line reading "status: completed" or "status: failed" settles it, so the assignment stays ${assignment.state}.`);
@@ -1092,7 +1096,6 @@ export async function sweepSettlements(
   return current;
 }
 
-
 /**
  * Terminal observation of an already-committed settlement. It is a display-only
  * side effect, so every failure degrades to a bounded warning: a settled
@@ -1100,6 +1103,7 @@ export async function sweepSettlements(
  */
 export async function reportTerminalObservation(
   adapter: HerdrAdapter,
+  store: DelegationStore,
   registry: DelegationRegistry,
   assignmentId: string,
   previousState: string,
@@ -1109,7 +1113,11 @@ export async function reportTerminalObservation(
   if (assignment.state === previousState || (assignment.state !== "completed" && assignment.state !== "failed")) return undefined;
   if (!paneId) return "Settlement observation skipped: the settled assignment has no canonical worker pane.";
   try {
-    const observed = await adapter.reportObservation(paneId, assignment.responsibility_key, assignmentId, assignment.state, registry.revision, 10_000);
+    // Nothing stores a label (ASN-003a), so the surface that shows one reads it
+    // here; an unreadable artifact simply has none, because a decoration never
+    // gates the settlement it decorates (JDG-003).
+    const label = await store.preflight(assignmentId, assignment.responsibility_key).then((artifact) => artifact.assignment.label).catch(() => undefined);
+    const observed = await adapter.reportObservation(paneId, assignment.responsibility_key, assignmentId, assignment.state, registry.revision, 10_000, label);
     return observed.warning;
   } catch (error) {
     return `Settlement observation failed after the settlement committed: ${error instanceof Error ? error.message : String(error)}`;
@@ -2311,15 +2319,13 @@ export class CompositeTools {
       next.assignments[assignmentId].updated_at = promptedAt;
       next.lanes[workerId].state = "working";
     });
-    // The lane's profile lives in the canonical assignment artifact, so it is
-    // read from there rather than mirrored into the registry. An unreadable
-    // artifact leaves the profile unknown, which delivers only unscoped rules —
-    // an advisory lookup never widens delivery on a failed read, and never
-    // blocks the dispatch it decorates.
-    const laneProfile = await store
-      .preflight(assignmentId, record.responsibility_key)
-      .then((artifact) => artifact.assignment.profile)
-      .catch(() => undefined);
+    // The lane's profile and its display-only label both live in the canonical
+    // assignment artifact rather than mirrored in the registry, so one read
+    // serves both. An unreadable artifact leaves the profile unknown, which
+    // delivers only unscoped rules — an advisory lookup never widens delivery
+    // on a failed read, and never blocks the dispatch it decorates.
+    const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
+    const laneProfile = artifact?.assignment.profile;
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
     // The lane's own advisory document, materialized at dispatch so it carries
     // the configuration current now. Absence stays a no-op: an unknown profile, a
@@ -2327,7 +2333,12 @@ export class CompositeTools {
     // failed render or write all name no path, so the pointer omits the clause.
     const laneGuidance = laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
     if (laneGuidance.warning) warnings.push(laneGuidance.warning);
-    const pointer = `Assignment ${assignmentId}; responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
+    // The pointer is the worker's first display surface, so it names the full
+    // coordinate — A-001 exists in dozens of runs and only <track>/<run>/<id>
+    // tells them apart — and the artifact's label when it has one. Identity
+    // stays numeric where it is parsed: the completion block the worker must
+    // append carries the bare ID, never the coordinate and never the label.
+    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
@@ -2360,11 +2371,11 @@ export class CompositeTools {
         next.assignments[assignmentId].state = observedState === "blocked" ? "blocked" : "working";
         next.assignments[assignmentId].updated_at = nowIso();
       });
-      const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
+      const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000, artifact?.assignment.label).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
       if (progress) warnings.push(progress);
       const beforeSettlement = registry.assignments[assignmentId].state;
       registry = await settleIfReported(store, registry, registry.lanes[workerId], registry.assignments[assignmentId], warnings);
-      const terminal = await reportTerminalObservation(this.adapter, registry, assignmentId, beforeSettlement, paneId);
+      const terminal = await reportTerminalObservation(this.adapter, store, registry, assignmentId, beforeSettlement, paneId);
       if (terminal) warnings.push(terminal);
       return registry;
     } catch (error) {
@@ -2424,7 +2435,10 @@ export class CompositeTools {
         // an observation appended to a non-mutating result: preflight still
         // decides nothing (ASN-014a).
         const interRunOwnership = await observeInterRunOwnership(store, artifact.assignment.write_ownership);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, inter_run_ownership: interRunOwnership } };
+        // Authoring-time display (M2 P2): the coordinate is what disambiguates
+        // an ID that dozens of runs also hold, and the label is echoed back so
+        // the author sees exactly what the artifact declared. Neither is stored.
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, inter_run_ownership: interRunOwnership } };
       }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
@@ -2536,7 +2550,7 @@ export class CompositeTools {
       });
       const beforeSettlement = registry.assignments[input.assignment_id].state;
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id], tailWarnings);
-      const terminal = await reportTerminalObservation(this.adapter, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
+      const terminal = await reportTerminalObservation(this.adapter, store, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
       if (terminal) tailWarnings.push(terminal);
       registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings)) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];

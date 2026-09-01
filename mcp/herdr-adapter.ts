@@ -244,8 +244,13 @@ export class HerdrAdapter {
    * no JSON on success, so the parse is tolerant; callers degrade any residual
    * failure to a warning rather than ambiguating a committed mutation.
    */
-  reportObservation(paneId: string, responsibility: string, assignment: string, state: AssignmentState, sequence: number, timeoutMs: number): Promise<HerdrCommandResult> {
-    const title = `${responsibility} · ${assignment}`.slice(0, 80);
+  reportObservation(paneId: string, responsibility: string, assignment: string, state: AssignmentState, sequence: number, timeoutMs: number, label?: string): Promise<HerdrCommandResult> {
+    // Identity first, decoration last. The title is bounded, so appending the
+    // display-only label lets a long responsibility truncate the label and
+    // never the coordinate that identifies the lane. The `assignment` token
+    // stays the bare ID: a metadata identity token is never a label, and the
+    // label grammar excludes `=` and whitespace so it cannot split one either.
+    const title = `${responsibility} · ${assignment}${label ? ` · ${label}` : ""}`.slice(0, 80);
     const visibleState = state === "completed" || state === "failed" || state === "blocked" || state === "queued" ? state : "working";
     return this.execute(["pane", "report-metadata", paneId, "--source", OBSERVATION_SOURCE, "--title", title, "--seq", String(sequence), "--token", `responsibility=${responsibility}`, "--token", `assignment=${assignment}`, "--token", `assignment-state=${visibleState}`], timeoutMs, true, true);
   }

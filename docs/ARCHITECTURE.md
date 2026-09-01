@@ -169,6 +169,10 @@ It has strict frontmatter:
 2. `responsibility_key`
 3. `profile`
 
+and one optional fourth field:
+
+4. `label` — display only, 1 to 48 characters of letters, digits, `-` or `_`, beginning and ending with a letter or digit. The artifact is its only home: it is never copied into `delegation.json` or any assignment record, so each display surface re-reads it from the immutable file, and the value is stable precisely because the artifact is immutable after dispatch. It reaches the dispatch pointer, the `preflight` result, and the worker pane title, while identity, queue order, settlement, and priority keep reading `assignment_id` alone. Labels are not required to be unique — the `<track_id>/<run_id>/<assignment_id>` coordinate is what disambiguates. Any other fourth key, a repeated key, or a fifth line is rejected as `assignment_artifact_invalid` at `preflight` and `add`, before the artifact is ever routed.
+
 and strict sections:
 
 1. Goal
@@ -179,7 +183,7 @@ and strict sections:
 
 The artifact becomes immutable when its SHA-256 is submitted as `instructions_sha256`. No contract JSON or receipt JSON exists.
 
-Settlement requires an exact `[Assignment Completion: A-NNN]` block with one `status: completed|failed` line in the bound worker report. MCP stores the full report hash and completion timestamp in `delegation.json`.
+Settlement requires an exact `[Assignment Completion: A-NNN]` block with one `status: completed|failed` line in the bound worker report; the block carries the bare ID, never the coordinate and never the label. MCP stores the full report hash and completion timestamp in `delegation.json`.
 
 ## Responsibility routing
 
@@ -220,6 +224,8 @@ There is no fixed number of lanes and no complex scoring policy.
 - `preflight {assignment_id, responsibility_key}` — grammar validation and server-computed hash before immutability; no mutation
 - `add {assignment_id, responsibility_key, instructions_sha256, separation?, wait?}`
 - `wait {assignment_id, wait?}`
+
+`assignment_id` is `/^A-(?!0+$)[0-9]{3,}$/` and the published input shape of `herdr_assignment` and `herdr_message` is that schema itself, so the advertised grammar is the enforced one and the `describe` carries it. IDs are allocated per run and encode nothing: a human-readable name is the artifact's `label`, and two runs that both hold `A-001` are told apart by `<track_id>/<run_id>/<assignment_id>`. A schema rejection that reaches a tool handler comes back as an ordinary failing `McpResult` — stable code, phase `validate`, non-retryable, authored recovery — instead of escaping as a bare validator string.
 
 There is no response action: a worker is answered by an `[ORCH Response]` append to its report plus `herdr_message wake_worker`.
 

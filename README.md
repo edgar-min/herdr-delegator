@@ -172,7 +172,9 @@ ORCH writes one file:
 <run>/a2a/assignments/A-NNN.md
 ```
 
-The strict Markdown contains `assignment_id`, `responsibility_key`, and `profile` frontmatter, followed by `Goal`, `Completion conditions`, `Write ownership`, `Dependencies`, and `User boundaries` sections. After dispatch it is immutable.
+The strict Markdown contains `assignment_id`, `responsibility_key`, and `profile` frontmatter — optionally followed by one more field, `label` — then `Goal`, `Completion conditions`, `Write ownership`, `Dependencies`, and `User boundaries` sections. After dispatch it is immutable.
+
+`assignment_id` is `A-` plus three or more digits that are not all zero, and the published tool schema enforces exactly that. The ID is ORCH-chosen and carries no meaning. A human-readable name goes in `label`: 1 to 48 characters of letters, digits, `-` or `_`, beginning and ending with a letter or digit — so `id-grammar` is a label and `_draft` is not. It is shown on the dispatch pointer, the `preflight` result, and the worker pane title, and two runs that both hold `A-001` are told apart by `<track_id>/<run_id>/<assignment_id>`. A label is never copied into `delegation.json`, never queued on, and never part of settlement, and nothing enforces that labels are unique — the coordinate disambiguates, the label only reads well.
 
 Workers append results to `a2a/w<N>-report.md` and settle an assignment with an exact completion block:
 
