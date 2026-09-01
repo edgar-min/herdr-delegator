@@ -13,6 +13,27 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.5] - 2026-09-01
+
+### Added
+
+- Inherited succession claims are now gated at implementation dispatch. A run
+  whose canonical `handoff.md` carries an `Inherited claims` section must
+  present each claim in a five-column table (`claim | coordinate | command |
+  observed | disposition`); the first `herdr_assignment add` refuses malformed
+  presentation, a closed disposition vocabulary violation, a `measured` claim
+  observed at a commit other than the current HEAD, or an incomplete
+  compatibility-direction pair. The gate executes no commands, persists
+  nothing, and changes nothing for runs without the document — it buys forced
+  disclosure of load-bearing unverified claims, not truth checking.
+  (a421acd8c19127be)
+- Budget seeds now carry their judgment criteria: the `mandate.budget` schema
+  explains that the two axes are independent ceilings whose narrower side
+  parks the run, and a successful `close` appends one `metered:` line to the
+  budget ledger so finished runs leave the same cost record as parked ones
+  (BUD-015). Measured calibration data lives in `docs/ARCHITECTURE.md`.
+
+
 ## [3.5.4] - 2026-09-01
 
 ### Added
@@ -613,6 +634,7 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.5.5]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.4...v3.5.5
 [3.5.4]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.3...v3.5.4
 [3.5.3]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.2...v3.5.3
 [3.5.2]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.1...v3.5.2
