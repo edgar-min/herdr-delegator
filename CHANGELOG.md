@@ -553,6 +553,8 @@ spend; a run whose ORCH pane died is recoverable.
   malformed and told the reader to repair it, which would have had an agent hand-edit a
   tool-owned file (`8c1e0ea5c3e5439b`).
 
+[3.5.1]: https://github.com/edgar-min/herdr-delegator/compare/v3.5.0...v3.5.1
+[3.5.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/edgar-min/herdr-delegator/compare/v3.1.0...v3.2.0

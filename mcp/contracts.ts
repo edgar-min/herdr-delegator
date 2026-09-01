@@ -523,7 +523,7 @@ export const herdrFrictionInputShape = {
   summary: z.string().min(1).max(MAX_FRICTION_SUMMARY).optional().describe("One concrete single-line symptom; normalized for duplicate grouping."),
   tool: boundedTokenSchema.optional().describe("Surface the friction concerns (a herdr_* tool, skill, doc, or CLI name)."),
   error_code: boundedTokenSchema.optional(),
-  evidence: z.string().min(1).max(MAX_FRICTION_EVIDENCE).optional().describe("Bounded verbatim evidence: error output, the exact rejected input, or reproduction notes."),
+  evidence: z.string().min(1).max(MAX_FRICTION_EVIDENCE).optional().describe("Bounded verbatim evidence: error output, the exact rejected input, or reproduction notes. When the friction is an error, include the error message verbatim and not only its code: one code is thrown from several boundaries with different messages, so a later reader who has to reconstruct which boundary failed can do it from the message and otherwise only by eliminating candidates from the surviving state."),
   track_id: coordinate.optional(),
   run_id: coordinate.optional(),
   fingerprint: z.string().regex(FRICTION_FINGERPRINT_RE).optional(),

@@ -56,9 +56,9 @@ Written by the source run's ORCH on <date>. This document transfers state to the
 
 ### Target ORCH identity verification — target-completed after startup
 
-- Caller-resolved provider/model/thinking: `<facts and config hashes>`
+- Configured role alias and thinking opinion: `<alias; explicit level or inherit; config hashes>` — the caller resolves no model on the child's behalf
 - Bootstrap bridge/metadata gate: `<session; pane; nonce; timestamp; exact-match proof>`
-- Persisted JSONL gate: `<path; session/model/thinking/fallback proof>`
+- Persisted JSONL gate: `<path; session identity proof; observed provider/model/fallback, and thinking only when the session recorded one>`
 - Official session ID/path: `<verified coordinate>`
 - Workspace/anchor/root pane: `<IDs and ownership proof>`
 - Latest live state and sequence: `<state; state_change_seq; inspection>`

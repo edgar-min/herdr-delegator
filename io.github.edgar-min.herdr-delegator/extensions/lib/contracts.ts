@@ -1,7 +1,7 @@
 // Contracts responsibilities for the Herdr delegator extension.
 import { createHash } from "node:crypto";
 
-export const OPERATIONS = ["ensure_worker", "prompt_wait", "inspect_worker", "close_worker"] as const;
+export const OPERATIONS = ["ensure_worker", "inspect_worker", "close_worker"] as const;
 
 export const WORKER_RE = /^w[1-9][0-9]*$/i;
 
@@ -443,7 +443,6 @@ export type ToolParams = {
   worker_id?: unknown;
   timeout_ms?: unknown;
   cwd?: unknown;
-  instruction_path?: unknown;
   output_lines?: unknown;
   expected_state_change_seq?: unknown;
   profile?: unknown;
