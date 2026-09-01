@@ -202,12 +202,12 @@ Completion returns the lane to `idle`, promotes its FIFO head, and leaves the wo
 - `revive`: optional `mode` — `resume` reconnects the recorded birth session, `rebirth` starts generation+1 with the user's written approval.
 - `close`: requires a fresh registry revision and safely closes a fully settled track.
 
-Declare the `budget` seed rather than leaving it out: `tokens` and `minutes` are your estimate of what this mandate's scope should take, not a ceiling to wish for, and crossing the estimate parks the run until the ORCH justifies an extension — it never kills a session. An undeclared seed falls back to 500,000 tokens and 30 minutes, which is deliberately tight: the fallback exists so the audit cadence still means something, not so a real track fits inside it, and a nontrivial run that declares nothing will park early.
+Declare the `budget` seed rather than leaving it out: `tokens` and `minutes` are your estimate of what this mandate's scope should take, not a ceiling to wish for, and crossing the estimate parks the run until the ORCH justifies an extension — it never kills a session. An undeclared seed falls back to 500,000 tokens and 30 minutes, which is deliberately tight: the fallback exists so the audit cadence still means something, not so a real track fits inside it, and a nontrivial run that declares nothing will park early. A park is not a dead end for the repair of whatever broke the run: one `add` may carry an `emergency` claim, which passes the park once and buys that one registration — dispatched as usual, which is the point — and nothing else: no cap moves, the park stands, and a queued head already waiting is still not promoted. It owes a post-hoc audit that a clean session judges before the next extension (`docs/SPEC.md` BUD-016).
 
 ### `herdr_assignment`
 
 - `preflight`: assignment/responsibility IDs; validates the canonical draft's grammar before immutability, returns its server-computed SHA-256 and `authoring` skill routes, and never mutates state.
-- `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation and wait.
+- `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation, wait, and `emergency` (`failure`, `why_now`) — the budget carve-out above, never a priority.
 - `wait`: assignment ID and optional wait.
 
 There is no response action: a worker is answered by appending an `[ORCH Response]` block to its lane report and ringing `herdr_message wake_worker`.
@@ -232,6 +232,7 @@ queued | prompting | working | blocked | completed | failed | ambiguous
 ### `herdr_message`
 
 - `wake_orch`: assignment ID and boundary; worker doorbell to the run's born ORCH.
+- `wake_orch_audit`: run coordinates only; the clean auditor's doorbell after it appends a verdict block, refused for this run's ORCH and for any registered lane.
 - `wake_peer`: peer lane ID; doorbell after a plan-authorized channel append.
 - `wake_worker`: own-lane ID; ORCH-to-own-worker doorbell after appending an `[ORCH Response]` to the lane report.
 - `notify_run`: target run coordinates only; ORCH-to-ORCH bell, refused unless this run's inter-run channel document for that target already exists.
@@ -274,8 +275,8 @@ Communication is uniform across every relationship: a document append carries th
 | worker → ORCH | completion, blocked, decision request | report append | `wake_orch` |
 | worker ↔ worker | adjacent coordination (plan-authorized) | `a2a/w<N>-to-w<M>.md` | `wake_peer` |
 | ORCH ↔ ORCH | negotiate, notify, handoff | `a2a/orch-to-<to_track_id>_<to_run_id>.md` | `notify_run` |
-| server ↔ auditor | budget audit | `budget-audit-<n>.md` and the ledger verdict | internal |
-| forbidden | cross-organization worker messaging (escalate instead), ORCH↔auditor contact, shadow channels | — | — |
+| server ↔ auditor | budget audit, emergency post-hoc audit | `budget-audit-<n>.md`, `emergency-audit-<n>.md`, and the ledger verdict | internal spawn; the auditor's own `wake_orch_audit`, once, after its verdict block |
+| forbidden | cross-organization worker messaging (escalate instead), ORCH→auditor contact of any kind, any auditor content beyond that one content-free bell, shadow channels | — | — |
 
 - Documents: contract, ownership, decisions, durable results, completion, evidence, budget trail, and handoff.
 - MCP prompt/control: canonical coordinates and hashes, waits, lifecycle actions, budget justification, revival.
