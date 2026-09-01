@@ -13,6 +13,58 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.5.0] - 2026-09-01
+
+Settlement now reaches the registry at the machine's own observation points, so
+the ORCH no longer has to poll `wait` to make the recorded state true. The whole
+release was cut in one run — orch-context-friction/2026-09-01 — which triaged the
+eleven frictions accumulated on 2026-08-31 and fixed the seven that reduce ORCH
+round trips and restore trust in machine state.
+
+### Added
+
+- `herdr_assignment preflight` returns the lane coordinate `add` will bind —
+  `worker_id`, `report_path`, `lane_reuse` — computed by the same selection rule
+  (`predictLane`/`nextWorkerId`), so an assignment can state exact write
+  ownership before dispatch. (20b26d0a60e14ab6)
+- Shared `wait` input accepts an optional server-issued `cursor` echoed back as
+  `data.wait_cursor` (`v1.r<revision>.s<seq>.b<bytes>.t<ms>`); resending the
+  returned cursor makes each repeated wait a distinct call, so the host's
+  loop-detector no longer forces argument jitter, and a timed-out wait's
+  `next_step` recommends doorbell reliance. (3b7947a6750ee7db)
+- `herdr_worker inspect` accepts `compact: true` to omit invariant lane metadata
+  and return only what changes. Bell texts carry a 1-based line anchor for the
+  newest entry of the append-only document they point at. (588687ae4317fd72)
+- A verdictless budget audit ends visibly instead of pending forever: one
+  auditor re-prompt, then after 4 landing attempts the extension settles as
+  `abandoned` (registry schema v4, additive) with an `audit-unavailable` park,
+  ledger entry, and doorbell; a fresh justification is accepted afterwards.
+  (183b6d4102ddfbfa)
+- Protocol templates teach wait discipline (size waits as short probes, hand the
+  cursor back), incoming-ring interpretation (a ring may announce a queued
+  assignment — read the bell's assignment and reason before judging it a
+  repeat), and an experimental abdication paragraph: a self-judged
+  context-polluted ORCH settles what it can, prepares handoff documents, and
+  asks the user for written rebirth approval. (a421acd8c19127be lineage)
+
+### Fixed
+
+- Tool-recognized settlement lands in `delegation.json` without the ORCH asking:
+  the report-based settle sweep now also runs at the observation and consumption
+  points — `herdr_worker inspect`, budget machine-facts assembly, and `add`'s
+  FIFO decision — with the settle predicate unchanged, FIFO promotion following,
+  and a named `completion_block_unparsable` warning replacing the silent no-op
+  when a completion block carries the wrong number of status lines.
+  (bbc360a158e3a3bf)
+- A bell points only at what the server can verify: `wake_peer` composes the
+  channel path from the two lanes' responsibility keys, falls back to the
+  `w<N>-to-w<M>` form, and omits the path with a named warning when neither
+  file exists, instead of naming a nonexistent document. (ad32fc202a939bf7)
+- `wake_worker` bells carry the target `assignment <ID>` and a reason token
+  (`queued` | `orch-response` | `completion`) derived from the settled registry,
+  so an idle worker can tell a queue-promotion ring from a completion echo.
+  (a776403dd44aa2af)
+
 ## [3.4.0] - 2026-08-31
 
 An approved budget extension now reaches the file the human actually reads, and a
