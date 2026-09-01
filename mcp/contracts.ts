@@ -102,6 +102,35 @@ export const BUDGET_POLICIES = ["full", "notify"] as const;
 export const BUDGET_VERDICTS = ["grant", "partial", "deny"] as const;
 export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unreadable", "approval-required", "denied"] as const;
 
+// Succession claim grammar (M5 Phase A, friction a421acd8c19127be). A reset or
+// handoff copies planning context, not truth (LIFE-008), and the measured
+// failure was not a weak revalidation but an absent one: the reported track had
+// no `reset_of` and no `reset.json`, so nothing on the reset path applied. What
+// every succession did have was a hand-written handoff document under a filename
+// the author chose, which no code could find. So the canonical coordinate is
+// fixed here, and the load-bearing claims inside it must carry the coordinates
+// and commands that make re-measuring them cheap.
+//
+// The truth of a prose claim is undecidable; its presentation is not. The
+// disposition vocabulary is therefore closed at three values, and every value
+// outside it is a parse failure rather than a third state — an unverified claim
+// must say so instead of reading as a checked one.
+export const SUCCESSION_DOCUMENT_NAME = "handoff.md";
+export const SUCCESSION_CLAIMS_HEADING = "Inherited claims";
+export const CLAIM_COLUMNS = ["claim", "coordinate", "command", "observed", "disposition"] as const;
+export const CLAIM_DISPOSITIONS = ["measured", "unverified", "withdrawn"] as const;
+// A Git object name as `git rev-parse HEAD` prints it: the freshness comparison
+// is an equality against that exact 40-hex form, never a prefix match.
+export const CLAIM_SHA_RE = /^[0-9a-f]{40}$/;
+export type ClaimDisposition = (typeof CLAIM_DISPOSITIONS)[number];
+export type InheritedClaim = {
+  claim: string;
+  disposition: ClaimDisposition;
+  coordinate?: string;
+  command?: string;
+  observed?: { sha: string; at: string };
+};
+
 export type ToolName = (typeof TOOL_NAMES)[number];
 export type Effect = "none" | "confirmed" | "ambiguous";
 export type ErrorPhase = "validate" | "storage" | "select" | "model-verify" | "attest" | "prompt" | "wait" | "budget" | "settlement" | "resume" | "close";
@@ -508,10 +537,10 @@ const separation = z.object({
   conflicts_with_worker_id: workerId,
 }).strict();
 const mandateBudget = z.object({
-  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract; crossing it parks the run until the ORCH justifies an extension. Estimate what this mandate's scope should take. Undeclared falls back to ${DEFAULT_BUDGET_TOKENS}, which is deliberately tight.`),
-  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op — the same calibration seed in time, never a contract. Undeclared falls back to ${DEFAULT_BUDGET_MINUTES}, which is deliberately tight.`),
+  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract; crossing it parks the run until the ORCH justifies an extension. Estimate what this mandate's scope should take: a single-lane implementation track spends tokens fast against little wall clock, so its token figure is the axis that binds. Undeclared falls back to ${DEFAULT_BUDGET_TOKENS}, which is a fallback and deliberately tight.`),
+  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op — the same calibration seed in time, never a contract. A track that coordinates several lanes or waits on human gates burns minutes without burning tokens, so its minute figure is the axis that binds. Undeclared falls back to ${DEFAULT_BUDGET_MINUTES}, which is a fallback and deliberately tight.`),
   doorbell_policy: z.enum(BUDGET_POLICIES).optional().describe("Who decides an extension. notify (the fallback): the machine audit decides each one and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap. Choose full when the run's spend needs human authority, notify when the audit is sufficient."),
-}).strict().optional().describe("Budget seed and extension policy. Declare an estimate calibrated to this mandate's scope — the tokens and minutes the work should take, not a ceiling to wish for. An undeclared seed falls back to tight documented defaults that will park a nontrivial run early.");
+}).strict().optional().describe("Budget seed and extension policy. Declare an estimate calibrated to this mandate's scope — the tokens and minutes the work should take, not a ceiling to wish for. The two axes are independent ceilings and the narrower one parks the run, so what you are really declaring is an implicit rate: tokens divided by minutes. Check that rate against runs this mandate resembles — measured rates on this project's own closed runs span roughly 1,000 to 15,000 generative tokens per minute, and a seed rate several times off its run's real rate is what parks a run on the axis nobody was watching. An undeclared seed falls back to tight documented defaults that will park a nontrivial run early.");
 const mandate = z.object({
   intent: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why this track exists and what it must achieve, in the user's terms. WHAT and WHY only — HOW is the born ORCH's to decide. Limit ${MAX_MANDATE_INTENT} characters.`),
   constraints: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).max(MANDATE_TRANSPORT_ITEMS).describe(`Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each; pass an empty array when there are none.`),

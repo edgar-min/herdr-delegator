@@ -95,6 +95,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
 | `mcp/budget.ts` | metering, clamp parsing and token-axis classification, the clamp write helper, covenant math, audit document rendering, verdict parsing |
 | `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates, and the force-close approval reader |
+| `mcp/succession.ts` | canonical succession coordinate, inherited-claim grammar and parser, sha-freshness gate, read-only HEAD observation |
 
 Public calls terminate at the five MCP composite tools. Internal lifecycle functions are implementation detail, not an alternate public surface.
 
@@ -291,6 +292,20 @@ The clamp file stays human-owned, and a present bound is the effective ceiling �
 
 Revival reads the same birth chain: `resume` reconnects the recorded birth session with no new generation, and `rebirth` starts generation+1 only behind the user's written approval, sufficient run documents, an ambiguity-free run, and a dead predecessor. When the recorded ORCH agent is gone but its canonical session path and identity-sound workspace survive, revival may recreate only the dead anchor tab/pane, atomically update the recorded coordinates, and resume that session; a live agent or dead/mismatched workspace keeps the strict prior behavior. A reborn generation inherits the metered spend it did not spend. A run whose recorded ORCH is provably gone is closed by an attested session against a human-owned close-approval.json, never by agent consensus.
 
+### Budget seed calibration
+
+The seed is two independent ceilings and the over-cap judgment is a disjunction, so whichever axis is crossed first parks the run. A seed is therefore a declaration of an implicit rate — seeded tokens divided by seeded minutes — and its characteristic failure is not being too small but being the wrong shape.
+
+Across the 14 runs whose ledgers carry a metered line, judged generative throughput spanned roughly 1,000 to 15,000 tokens per minute — a 14.6x spread, with a median near 3,600. None of those figures is normative; the spread is the point, and it is why the criterion published at `mandate.budget` is a comparison rather than a formula.
+
+| Diagnostic | Which axis binds | Observed shape |
+|---|---|---|
+| Seed rate far above the run's real rate | minutes | A multi-lane implementation track seeded near 8,300 tokens per minute ran at about 2,100. It extended its wall clock by half, was granted a quarter of the tokens it asked for, and had spent under a quarter of its token ceiling when time ran out. |
+| Seed rate far below the run's real rate | tokens | A single-lane redesign run seeded near 4,200 tokens per minute ran at about 15,200 and parked on tokens after 169 minutes. |
+| Seed rate near the run's real rate | neither | A coordination-heavy track whose seeded rate matched the rate it actually ran at passed its milestones with no extension at all. |
+
+The observed driver is coordination. A track that runs several lanes and waits on human gates spends wall clock without spending tokens, so its rate is low and minutes are what run out; a single-lane implementation track is the inverse. A successful `close` now appends its own `metered:` ledger line (BUD-015), so this sample stops being drawn only from runs that went over.
+
 ## Model and session verification
 
 The built-in orchestrator role is `@default`; a planning-grade role such as `@plan` with elevated thinking is recommended. The orchestrator is the highest-judgment seat: it holds minimal context and owns decisions, direction, delegation, and settlement — never bulk execution. The built-in worker profiles are exactly `default`, `task`, and `slow`, all selecting `@default` so they resolve without user configuration. Configured installations may map `task` to `@task`, `slow` to `@slow`, or select another bounded OMP role alias.
@@ -333,3 +348,11 @@ Assignment completion never implies worker or track closure.
 A sibling reset uses a different run coordinate, copies the source plan, and fixes policies to `close-settled-preserve-active` and `revalidate-before-import`. It does not import evidence as truth or mutate source workers.
 
 The target ORCH launches under the configuration-selected OMP role. `/reload-plugins` refreshes the skill and MCP server; extension cutover verification requires a new OMP session.
+
+## Succession claims
+
+`LIFE-008` has always said that a reset copies planning context, not truth. Nothing enforced it, and the reason was mechanical rather than normative: the machine could not find the document. Every succession this project ran wrote its handoff under a filename its author chose, and the shipped `handoff.md` template was referenced by no code at all.
+
+The coordinate is now fixed at `<run>/handoff.md`, and the load-bearing claims inside it are a table a parser can judge — `| claim | coordinate | command | observed | disposition |`, under one heading titled `Inherited claims`. `disposition` is closed at `measured`, `unverified`, and `withdrawn`, so a claim that is neither checked nor dropped has no legal cell to sit in. A `measured` row carries the coordinate a reader can open, the command that produced its observation, and that observation as a 40-hex sha with an ISO-8601 instant; an `unverified` row leaves `command` empty; a `withdrawn` row needs only the claim; a compatibility or version claim needs one row per direction. The first `herdr_assignment add` in a run whose document exists and carries that section refuses on presentation and on sha freshness against the project's HEAD, before the budget judgment, mutating and persisting nothing.
+
+What this is not is a truth check. An author who cites a real coordinate, a real command, and the current HEAD passes with a wrong conclusion; the truth of a prose claim is undecidable, and a gate claiming otherwise would be worse than none. What the grammar buys is narrower and real: a load-bearing claim either carries the coordinates that make re-measuring it cheap, or is published as `unverified` where the successor reads it. The gate never runs anything in the `command` column — that would make a human-written document an execution surface — and a project directory outside a Git work tree keeps every syntactic refusal while naming the freshness check it had to skip.

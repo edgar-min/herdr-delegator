@@ -16,6 +16,7 @@ import { DelegationStore, mountedBuild } from "./registry";
 import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, healClampTokens, meterRun, meteringLedgerLine, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, scaffoldClamp, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
+import { assertSuccessionClaims } from "./succession";
 
 
 // ---------------------------------------------------------------------------
@@ -1319,7 +1320,7 @@ export class CompositeTools {
       }
       if (input.action === "revive") return await this.reviveTrack(input, run, store, runtime);
       const forced = await this.authorizeClose(store, run, runtime.facts);
-      await this.judgeBudget(store, run, "close");
+      const closeJudgment = await this.judgeBudget(store, run, "close");
       const registry = await store.read();
       if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
       // A lane that never reached a live session is never-born, not unsettled:
@@ -1362,6 +1363,13 @@ export class CompositeTools {
           dead_orch_evidence: forced.evidence,
         });
       }
+      // Real cost, recorded once per closed run. The ledger used to carry a
+      // `metered:` line only from a park, a warning, or an extension, so a run
+      // that finished inside its seed left NO cost record at all — which is why
+      // every calibration figure this project can cite comes from a run that
+      // went over (A-009 §9.4). A close is the one moment the final judgment is
+      // already in hand, so it is written down instead of recomputed later.
+      await appendLedger(store.runPath, "closed", [meteringLedgerLine(closeJudgment.metering)]).catch(() => undefined);
       return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes), ...(forced ? { forced_close: { closed_by: forced.closedBySessionId, closed_at: forced.closedAt, approved_generation: forced.generation, approval: { path: forced.approval.path, sha256: forced.approval.sha256, reason: forced.approval.reason }, dead_orch_evidence: forced.evidence } } : {}) } };
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
   }
@@ -2452,13 +2460,21 @@ export class CompositeTools {
         }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
+        // Succession claim gate (SUC-001..SUC-006), before the budget judgment:
+        // the friction this closes asked for a gate BEFORE implementation starts,
+        // and `add` is the only point every run reaches regardless of how it was
+        // born. It fires only when the canonical succession document exists and
+        // carries the canonical claims section, refuses on presentation and sha
+        // freshness only, executes nothing, and persists nothing.
+        const succession = await assertSuccessionClaims(store.runPath, store.cwd);
         await this.judgeBudget(store, run, "add");
         // FIFO placement is judged from the lane record, so the sweep runs
         // first: a lane that finished while nobody asked must not queue this
         // assignment behind a completed one (friction bbc360a158e3a3bf).
         const sweepWarnings: string[] = [];
         await sweepSettlements(store, run, await store.read(), sweepWarnings);
-        const sweptData = sweepWarnings.length ? { data: { settlement_sweep: sweepWarnings } } : {};
+        const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}) };
+        const sweptData = Object.keys(gateData).length ? { data: gateData } : {};
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...sweptData };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...sweptData };

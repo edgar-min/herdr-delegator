@@ -103,13 +103,23 @@ Startup, inspection, revalidation, assignment, and source-lane lifecycle rules a
 - `orchestrator-instructions.md`: `<coordinate and SHA-256>`
 - `herdr_track start_orchestrator` observation: `<result/effect/ambiguity>`
 - First target `herdr_track inspect`: `<coordinate and state>`
-- Inherited evidence dispositions: `<claim -> accept/defer/reject and ground>`
+- Inherited evidence dispositions: recorded as rows in the `Inherited claims` table below, not as prose here
 - Preserved source-worker inspections and dispositions: `<worker -> evidence and disposition>`
 - Accepted work assignment artifacts and dispatch observations: `<IDs/hashes/results>`
 - Assignment-control and lane-lifecycle observations: `<wait/list/inspect/resume/close effects; [ORCH Response] appends and wakes>`
 - Target acceptance, report, and relay ownership: `<coordinates and status>`
 - Budget state carried across: `<seed/granted cap, park state and reason, extension verdicts, ledger coordinate>`
 - Birth chain and revival history: `<generations with origin; any rebirth approval hash>`
+
+### Inherited claims
+
+Machine-checked. This run's first `herdr_assignment add` refuses to dispatch until every row parses and every `measured` row's sha equals the project's current HEAD (SUC-001 through SUC-006). Nothing in `command` is ever executed by the tool: you run it, then record what you saw. `disposition` is exactly one of `measured`, `unverified`, `withdrawn` — there is no third state for a claim you neither checked nor dropped. A compatibility or version claim needs one row per direction, `old->new` and `new->old`.
+
+| claim | coordinate | command | observed | disposition |
+|---|---|---|---|---|
+| `<load-bearing claim inherited from the source run>` | `<repo-relative or run-relative path, optionally :line>` | `<the command you actually ran>` | `<40-hex sha> <ISO-8601>` | measured |
+| `<claim you are carrying without having checked it>` | `<coordinate if one exists>` | | | unverified |
+| `<claim the source run made that you are dropping>` | | | | withdrawn |
 
 ## 8. Source closure record
 
@@ -141,7 +151,14 @@ Use only the appendices that apply. Remove unused appendices from the completed 
 - Evidence policy: `revalidate-before-import`
 - Source mutation check: `<proof initialization did not mutate source>`
 - Preserved source lanes: `<worker IDs/states or none>`
-- Inherited claim revalidation: `<claim -> evidence and disposition>`
+
+### Inherited claim revalidation
+
+Reset lineage only, and the same grammar re-measured after import: the gated canonical table is the one in section 7. A claim you could not re-measure at the target's HEAD is `unverified` with an empty `command` — never a `measured` row still carrying the source run's sha.
+
+| claim | coordinate | command | observed | disposition |
+|---|---|---|---|---|
+| `<source-run claim re-measured after import>` | `<coordinate>` | `<command re-run at the target HEAD>` | `<40-hex sha> <ISO-8601>` | measured |
 
 ## Appendix B. Blocked or ambiguous operations — when unresolved operations exist
 
