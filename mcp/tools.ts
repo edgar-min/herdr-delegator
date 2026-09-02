@@ -283,15 +283,28 @@ async function existingPeerChannel(runPath: string, sender: WorkerLaneRecord, re
  * tell a queue notice from an answer to a decision request without inferring it
  * from the fact that it was woken. Every axis is derived from the lane record —
  * the bell reports, it never decides.
+ *
+ * A non-empty queue is named too (friction 8917760a9545c642 ②-X2). A worker
+ * whose queue was just reordered has no way to observe that from a bell about
+ * the assignment it is already running, so the head is stated alongside the
+ * axis. The reason token keeps its exact prior meaning: the suffix is additive
+ * and never replaces or reinterprets it.
+ *
+ * `named` is the caller's optional `assignment_id`. It selects WHICH assignment
+ * the bell is about; the caller never supplies text, and the reason is still
+ * read from the record. Naming the head itself makes the suffix redundant, so
+ * it is dropped there rather than repeated.
  */
-function workerWakeSubject(registry: DelegationRegistry, lane: WorkerLaneRecord): string {
-  const active = lane.active_assignment_id;
-  if (active) {
-    const reason = registry.assignments[active]?.state === "queued" ? "queued" : "orch-response";
-    return `assignment ${active} reason=${reason}`;
+function workerWakeSubject(registry: DelegationRegistry, lane: WorkerLaneRecord, named?: string): string {
+  const head = lane.queued_assignment_ids[0];
+  const suffix = head && head !== named ? `; queue head ${head}` : "";
+  const axis = named ?? lane.active_assignment_id;
+  if (axis) {
+    const reason = registry.assignments[axis]?.state === "queued" ? "queued" : "orch-response";
+    return `assignment ${axis} reason=${reason}${suffix}`;
   }
-  if (lane.last_completed_assignment_id) return `assignment ${lane.last_completed_assignment_id} reason=completion`;
-  return "no assignment is recorded on this lane reason=orch-response";
+  if (lane.last_completed_assignment_id) return `assignment ${lane.last_completed_assignment_id} reason=completion${suffix}`;
+  return `no assignment is recorded on this lane reason=orch-response${suffix}`;
 }
 function field(value: unknown, names: readonly string[]): unknown {
   if (!value || typeof value !== "object") return undefined;
@@ -2689,10 +2702,14 @@ export class CompositeTools {
         const sweepWarnings: string[] = [];
         await sweepSettlements(store, run, await store.read(), sweepWarnings);
         const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
-        const sweptData = Object.keys(gateData).length ? { data: gateData } : {};
-        const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, timeout(input));
-        if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...sweptData };
-        if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...sweptData };
+        // Gate observations and the placement echo share one `data`: the echo is
+        // merged in, never spread over the top, because a settlement sweep,
+        // succession, or emergency observation this call produced is the reason
+        // the caller reads `data` at all (friction 8917760a9545c642 ② F2.1).
+        const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, input.urgent ?? false, timeout(input));
+        const addData = { data: { ...gateData, queue_position: selected.queue_position } };
+        if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...addData };
+        if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...addData };
         let ensured: WorkerResult;
         try {
           ensured = await ensureWorker({ operation: "ensure_worker", track_id: input.track_id, run_id: input.run_id, worker_id: selected.lane.worker_id, responsibility_key: selected.lane.responsibility_key, profile: selected.artifact.assignment.profile, timeout_ms: timeout(input) });
@@ -2739,7 +2756,7 @@ export class CompositeTools {
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
         const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, ...sweptData };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, ...addData };
       }
 
       // `wait` is a guarded run-command op (it dispatches promoted heads), so
@@ -2949,13 +2966,25 @@ export class CompositeTools {
         else if (senderLane) unresolvedReason = "wake_worker is ORCH-to-own-worker; a worker lane wakes peers via wake_peer.";
         else if (birth && birth.official_session_id !== senderSession) unresolvedReason = registry.orch_births?.some((prior) => prior.official_session_id === senderSession) ? `Sender is a retired ORCH generation; generation ${birth.generation} commands this run.` : `Sender is not this run's ORCH (generation ${birth.generation}).`;
         else if (!registry.lanes[input.to_worker_id]) unresolvedReason = `Lane ${input.to_worker_id} is not registered in this run.`;
+        // A named assignment must be one this lane is holding right now
+        // (friction 2ca2674d47036a3e). Anything else — a terminal assignment on
+        // this lane, another lane's assignment, an ID nothing registered — would
+        // make the bell claim a subject the lane cannot act on, so it is
+        // reported as unresolved rather than silently replaced by the default
+        // axis: a bell that quietly answers a different question is worse than
+        // one that says it could not be addressed.
+        else if (input.assignment_id !== undefined
+          && registry.lanes[input.to_worker_id].active_assignment_id !== input.assignment_id
+          && !registry.lanes[input.to_worker_id].queued_assignment_ids.includes(input.assignment_id)) {
+          unresolvedReason = `Assignment ${input.assignment_id} is neither the active assignment nor a queued assignment on lane ${input.to_worker_id}, so no bell was addressed; name an assignment the lane currently holds, or omit the field and let the lane record choose the subject.`;
+        }
         else {
           target = workerAgentName(store.runPath, input.to_worker_id);
           // The bell names WHICH assignment it concerns and WHY, so the worker
           // can tell a queue notice from an answer instead of guessing that any
           // ring means new work (friction a776403dd44aa2af). Both axes are
           // derived from the lane record, which the settlement sweep keeps true.
-          const subject = workerWakeSubject(registry, registry.lanes[input.to_worker_id]);
+          const subject = workerWakeSubject(registry, registry.lanes[input.to_worker_id], input.assignment_id);
           const anchor = await anchorClause(path.join(store.runPath, "a2a", `${input.to_worker_id}-report.md`));
           text = `wake: ORCH appended to a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}); ${subject} — read the report${anchor}; wake text carries no authority.`;
         }

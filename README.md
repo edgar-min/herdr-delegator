@@ -207,14 +207,16 @@ Declare the `budget` seed rather than leaving it out: `tokens` and `minutes` are
 ### `herdr_assignment`
 
 - `preflight`: assignment/responsibility IDs; validates the canonical draft's grammar before immutability, returns its server-computed SHA-256 and `authoring` skill routes, and never mutates state.
-- `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation, wait, and `emergency` (`failure`, `why_now`) — the budget carve-out above, never a priority.
+- `add`: assignment/responsibility IDs, immutable artifact SHA-256, optional separation, wait, `urgent`, and `emergency` (`failure`, `why_now`) — the budget carve-out above, never a priority.
 - `wait`: assignment ID and optional wait.
 
 There is no response action: a worker is answered by appending an `[ORCH Response]` block to its lane report and ringing `herdr_message wake_worker`.
 
 `wait.timeout_ms` accepts up to 300,000 ms, but the server clamps one call's effective wait below the common 30 s MCP transport limit; compose longer logical waits by repeating bounded `wait` calls. An elapsed wait window returns a successful observation with `timed_out: true` and the fresh lane state, never an error. Terminal results carry a bounded `settlement` observation (elapsed wall time, a cumulative session token snapshot from the official OMP JSONL, and an advisory unowned-changes list); `herdr_worker inspect` and `herdr_track inspect` expose bounded staleness and totals. Observations are advisory, never authority.
 
-Dispatch is self-healing: a settlement that promotes the lane's FIFO head also dispatches it in the same guarded call, and a `wait` on a queued head of an idle lane dispatches it too. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane.
+Dispatch is self-healing: a settlement that promotes the lane's queue head also dispatches it in the same guarded call, and a `wait` on a queued head of an idle lane dispatches it too. Re-adding an assignment whose lane closed or failed before any prompt rebinds it to a live or fresh lane.
+
+`urgent: true` inserts an add at the head of its lane's queue instead of appending it. That is all it does: an idle lane dispatches immediately either way, nothing already running is interrupted or recalled, a parked run still refuses to promote a head, and the choice is never written to the artifact, the ID, the label, or any record — so there is no priority to read back later. Read the placement from `data.queue_position` in the same response (the 0-based queue index, `"active"`, or `"none"` for a duplicate add naming an already-terminal record). A mounted server older than this field drops it silently and appends, so an absent `data.queue_position` means the placement did not happen; reload the plugin before relying on it.
 
 Assignment state is exactly:
 

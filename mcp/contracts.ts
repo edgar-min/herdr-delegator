@@ -601,6 +601,11 @@ export const herdrTrackInputShape = {
   wait,
   expected_registry_revision: z.number().int().nonnegative().optional(),
 };
+// Queue insertion position for one `add` (friction 8917760a9545c642 ②). It is a
+// call-time field and nothing else: it is never written to the artifact, the
+// assignment ID, the label, or any registry record (ASN-003a), so a queue that
+// was reordered once carries no priority anyone can re-read later.
+const urgent = z.boolean().optional().describe("Insert this assignment at the HEAD of its lane's queue instead of appending it. It decides placement inside the queue and nothing else: an idle lane dispatches immediately, so the field has no effect there; a parked run still refuses to promote a queued head; nothing already dispatched is interrupted or recalled; and it is orthogonal to `emergency`, which buys registration past a budget park rather than queue order. It is call-time only — never persisted, never part of identity — so read the placement back from `data.queue_position` in this call's response. A mounted server older than this field silently drops it and appends: an absent `data.queue_position` in the response means the placement you asked for did not happen.");
 export const herdrAssignmentInputShape = {
   ...run,
   action: z.enum(["add", "preflight", "wait"]),
@@ -608,6 +613,7 @@ export const herdrAssignmentInputShape = {
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
   separation: separation.optional(),
+  urgent,
   emergency,
   wait,
 };
@@ -624,8 +630,8 @@ export const herdrWorkerInputShape = {
 export const herdrMessageInputShape = {
   ...run,
   action: z.enum(["wake_orch", "wake_orch_audit", "wake_peer", "wake_worker", "notify_run"]),
-  assignment_id: assignmentId.optional(),
-  boundary: z.enum(MESSAGE_BOUNDARIES).optional(),
+  assignment_id: assignmentId.optional().describe("Which assignment the bell is about. Required by wake_orch, where it names the assignment whose boundary you reached. Optional on wake_worker, where it selects the subject axis of a bell the server composes: it MUST be the target lane's active assignment or one of its queued assignments, and any other value — a terminal assignment on that lane, another lane's assignment, or an unregistered ID — is reported as `data.delivery: \"target_unresolved\"` rather than guessed. No other action accepts it."),
+  boundary: z.enum(MESSAGE_BOUNDARIES).optional().describe("The worker boundary that produced this bell. It belongs to wake_orch alone and every other action rejects it: a doorbell the ORCH sends to its own worker announces no boundary, because the worker's own report is what states one."),
   to_worker_id: workerId.optional(),
   to_track_id: coordinate.optional(),
   to_run_id: coordinate.optional(),
@@ -654,7 +660,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [
-  z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), emergency, wait }).strict(),
+  z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), urgent, emergency, wait }).strict(),
   z.object({ ...run, action: z.literal("preflight"), assignment_id: assignmentId, responsibility_key: coordinate }).strict(),
   z.object({ ...run, action: z.literal("wait"), assignment_id: assignmentId, wait }).strict(),
 ]);
@@ -673,7 +679,7 @@ export const herdrMessageSchema = z.discriminatedUnion("action", [
   // worker bell keeps its published requirement to name both.
   z.object({ ...run, action: z.literal("wake_orch_audit") }).strict(),
   z.object({ ...run, action: z.literal("wake_peer"), to_worker_id: workerId }).strict(),
-  z.object({ ...run, action: z.literal("wake_worker"), to_worker_id: workerId }).strict(),
+  z.object({ ...run, action: z.literal("wake_worker"), to_worker_id: workerId, assignment_id: assignmentId.optional() }).strict(),
   z.object({ ...run, action: z.literal("notify_run"), to_track_id: coordinate, to_run_id: coordinate }).strict(),
 ]);
 export const herdrFrictionSchema = z.discriminatedUnion("action", [

@@ -369,7 +369,16 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
 }
 
 export type AssignmentFile = { path: string; assignment: AssignmentArtifact; instructionsHash: string };
-export type LaneSelection = { lane: WorkerLaneRecord; assignment: AssignmentRecord; queued: boolean; duplicate: boolean; artifact: AssignmentFile; revision: number };
+/**
+ * `queue_position` is where this `add` left the assignment in its lane: the
+ * 0-based index it holds in the lane queue, `"active"` when the lane is running
+ * it now, or `"none"` when a duplicate `add` names a record that is already
+ * terminal and therefore holds no place in any queue. It is derived from the
+ * lane at the end of the transaction and persisted nowhere, so it reports the
+ * placement a caller asked about instead of inviting anyone to store a rank.
+ */
+export type QueuePosition = number | "active" | "none";
+export type LaneSelection = { lane: WorkerLaneRecord; assignment: AssignmentRecord; queued: boolean; duplicate: boolean; queue_position: QueuePosition; artifact: AssignmentFile; revision: number };
 
 export class DelegationStore {
   private constructor(readonly runPath: string, readonly cwd: string, readonly registryPath: string, readonly lockPath: string) {}
@@ -529,7 +538,14 @@ export class DelegationStore {
     return { worker_id: workerId, report_path: path.join(this.runPath, "a2a", `${workerId}-report.md`), lane_reuse: reused !== undefined };
   }
 
-  async select(assignmentId: string, responsibility: string, instructionsHash: string, separation: Separation | undefined, timeoutMs: number): Promise<LaneSelection> {
+  /** The placement a lane record proves, never a rank anything stored. */
+  private static position(lane: WorkerLaneRecord, assignmentId: string): QueuePosition {
+    if (lane.active_assignment_id === assignmentId) return "active";
+    const index = lane.queued_assignment_ids.indexOf(assignmentId);
+    return index < 0 ? "none" : index;
+  }
+
+  async select(assignmentId: string, responsibility: string, instructionsHash: string, separation: Separation | undefined, urgent: boolean, timeoutMs: number): Promise<LaneSelection> {
     const artifact = await this.assignmentFile(assignmentId, responsibility, instructionsHash);
     let selected!: LaneSelection;
     await this.transaction(timeoutMs, async (registry) => {
@@ -540,7 +556,7 @@ export class DelegationStore {
         const boundLane = registry.lanes[existing.worker_id];
         if (boundLane && boundLane.state !== "closed" && boundLane.state !== "failed") {
           const ready = existing.state === "queued" && boundLane.active_assignment_id === assignmentId;
-          selected = { lane: boundLane, assignment: existing, queued: !ready && existing.state === "queued", duplicate: !ready, artifact, revision: registry.revision + 1 };
+          selected = { lane: boundLane, assignment: existing, queued: !ready && existing.state === "queued", duplicate: !ready, queue_position: DelegationStore.position(boundLane, assignmentId), artifact, revision: registry.revision + 1 };
           return;
         }
         // Rebind path (dogfooded defect): an assignment whose lane died before any
@@ -585,9 +601,12 @@ export class DelegationStore {
         assignment = { assignment_id: assignmentId, responsibility_key: responsibility, worker_id: lane.worker_id, state: "queued", instructions_sha256: instructionsHash, created_at: now, updated_at: now };
         registry.assignments[assignmentId] = assignment;
       }
-      if (queued) lane.queued_assignment_ids.push(assignmentId); else lane.active_assignment_id = assignmentId;
+      // Placement is the one thing `urgent` decides, and it decides it here:
+      // append is the rule, head insertion is the exception a caller asked for
+      // in this call only. Nothing about the choice is written to the record.
+      if (queued) { if (urgent) lane.queued_assignment_ids.unshift(assignmentId); else lane.queued_assignment_ids.push(assignmentId); } else lane.active_assignment_id = assignmentId;
       lane.updated_at = now;
-      selected = { lane, assignment, queued, duplicate: false, artifact, revision: registry.revision + 1 };
+      selected = { lane, assignment, queued, duplicate: false, queue_position: DelegationStore.position(lane, assignmentId), artifact, revision: registry.revision + 1 };
     });
     return selected;
   }

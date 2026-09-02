@@ -192,7 +192,7 @@ For `herdr_assignment.add`:
 
 1. verify the assignment file, grammar, coordinates, and hash;
 2. find the exact responsibility's primary or matching separated lane;
-3. queue FIFO when that lane is active;
+3. queue when that lane is active — appended by default, inserted at the head when the call passes `urgent`;
 4. create a lane only when none exists or a valid separation requires one;
 5. reserve worker ordinals already present in delegation state, lifecycle state, or canonical worker artifacts;
 6. ensure and verify the selected lane before prompt;
@@ -207,6 +207,8 @@ conflicts_with_worker_id: existing lane
 ```
 
 There is no fixed number of lanes and no complex scoring policy.
+
+Queue order lives in the queue and nowhere else. `urgent` is a call-time placement argument: it moves where the assignment is inserted and changes nothing else — no rank, class, or priority is written to any record, nothing already dispatched is interrupted, and a parked run still refuses to promote a head. Because the choice is unreadable afterwards, every successful `add` echoes `data.queue_position` (the 0-based index, `"active"`, or `"none"` for a terminal duplicate) merged into the same `data` object as that call's gate observations.
 
 ## Public actions
 
@@ -223,7 +225,7 @@ There is no fixed number of lanes and no complex scoring policy.
 ### `herdr_assignment`
 
 - `preflight {assignment_id, responsibility_key}` — grammar validation and server-computed hash before immutability; no mutation
-- `add {assignment_id, responsibility_key, instructions_sha256, separation?, emergency?, wait?}` — `emergency {failure, why_now}` is the budget carve-out below, not a priority
+- `add {assignment_id, responsibility_key, instructions_sha256, separation?, urgent?, emergency?, wait?}` — `urgent` is queue placement only; `emergency {failure, why_now}` is the budget carve-out below, and neither is a priority anything stores
 - `wait {assignment_id, wait?}`
 
 `assignment_id` is `/^A-(?!0+$)[0-9]{3,}$/` and the published input shape of `herdr_assignment` and `herdr_message` is that schema itself, so the advertised grammar is the enforced one and the `describe` carries it. IDs are allocated per run and encode nothing: a human-readable name is the artifact's `label`, and two runs that both hold `A-001` are told apart by `<track_id>/<run_id>/<assignment_id>`. A grammar violation is refused at the published boundary itself — the SDK validates the input shape before any handler runs, so the refusal is its plain error text carrying the schema's authored sentence. A schema rejection that reaches a tool handler (a missing action field, an extra key, a broken discriminator) comes back as an ordinary failing `McpResult` — stable code, phase `validate`, non-retryable, authored recovery — instead of escaping as a bare validator string. Because the artifact grammar itself carries no version, a label-bearing artifact is unreadable to servers built before the field existed: respawn long-lived mounted servers (`/reload-plugins`) before first using `label` on a shared tree.
