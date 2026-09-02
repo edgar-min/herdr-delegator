@@ -8,5 +8,5 @@
     "types": ["bun"],
     "skipLibCheck": true
   },
-  "include": ["io.github.edgar-min.herdr-delegator/**/*.ts", "mcp/**/*.ts"]
+  "include": ["io.github.edgar-min.herdr-delegator/**/*.ts", "mcp/**/*.ts", "skills/herdr-config/scripts/**/*.ts"]
 }

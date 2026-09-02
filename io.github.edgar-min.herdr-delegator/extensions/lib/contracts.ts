@@ -101,10 +101,9 @@ export type ModelProfile = {
    */
   intent?: string;
   /**
-   * Optional worker-facing execution do/don't compensating this profile's
-   * characteristic failure mode. It renders only to the selected lane
-   * (`guidance-<profile>.md`) and is advisory: the assignment stays the only
-   * contract.
+   * Optional execution guidance. On the orchestrator profile it renders at the
+   * top of `guidance.md`; on a worker profile it renders only to the selected
+   * lane. It remains advisory.
    */
   directive?: string;
 };
