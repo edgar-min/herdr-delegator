@@ -17,11 +17,13 @@
  * is a reader-side no-op, and a skill body resolves natively through `skill://`.
  *
  * Placement is deliberately asymmetric: `intent` renders only to the selector
- * (`guidance.md`), `directive` only to the selected lane, and a skill's
- * `trigger` only to the ORCH, because a worker's moment already carries its
- * timing. Absence is a no-op at every level: a moment with no routes renders no
- * section, and a profile with neither a directive nor routes renders no
- * document.
+ * (`guidance.md`), a worker profile's `directive` only to the selected lane,
+ * and a skill's `trigger` only to the ORCH, because a worker's moment already
+ * carries its timing. The orchestrator profile's own `directive` is the one
+ * execution prose `guidance.md` carries, and it renders as that document's
+ * first section. Absence is a no-op at every level: an unset orchestrator
+ * directive renders no section, a moment with no routes renders no section,
+ * and a profile with neither a directive nor routes renders no document.
  *
  * The module is non-blocking by construction. A render failure degrades to a
  * document that names what could not be rendered; only a failed write is
@@ -46,6 +48,7 @@ export function workerGuidanceDocumentName(profile: string): string {
  * reader is asked to weigh comes from configuration.
  */
 const ORCH_HEADER = "# guidance.md — ORCH advisory (criteria only; changes no authority, scope, or completion condition)";
+const ORCH_DIRECTIVE_SECTION = "## Orchestrator directive";
 const ORCH_PROFILE_SECTION = "## Worker profile selection";
 const ORCH_PROFILE_TABLE_HEAD = ["| profile | role | intent |", "| --- | --- | --- |"];
 const ORCH_SELECTION_AXES = "Selection axes: specification maturity × cost of error. Bounded mechanical work goes to host OMP subagents without a lane.";
@@ -133,6 +136,17 @@ function renderOrchRoutes(config: DelegatorConfig): string[] {
   return sections.length ? [ORCH_ROUTE_SECTION, "", ...sections] : [];
 }
 
+/**
+ * The ORCH's own execution directive, as the document's first section. The
+ * value is already a bounded, control-free single line from parse, and a
+ * paragraph body is not a table cell, so it renders verbatim rather than
+ * through `cell()`, which would rewrite an authored `|`.
+ */
+function renderOrchestratorDirective(config: DelegatorConfig): string[] {
+  const directive = config.orchestrator.directive;
+  return directive ? [ORCH_DIRECTIVE_SECTION, "", directive, ""] : [];
+}
+
 function renderProfileTable(config: DelegatorConfig): string[] {
   const rows = Object.entries(config.worker_profiles).map(([name, profile]) => {
     // `intent` is the authored field; `guidance` is the single field it
@@ -146,7 +160,7 @@ function renderProfileTable(config: DelegatorConfig): string[] {
 
 /** Renders the ORCH document from an already-resolved configuration. Never throws. */
 export function renderGuidanceDocument(config: DelegatorConfig): string {
-  return [ORCH_HEADER, "", ...renderProfileTable(config), ...renderOrchRoutes(config), ORCH_FOOTER, ""].join("\n");
+  return [ORCH_HEADER, "", ...renderOrchestratorDirective(config), ...renderProfileTable(config), ...renderOrchRoutes(config), ORCH_FOOTER, ""].join("\n");
 }
 
 /**

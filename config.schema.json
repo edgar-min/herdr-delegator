@@ -4,7 +4,10 @@
   "title": "Herdr Delegator Configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "storage"],
+  "required": [
+    "version",
+    "storage"
+  ],
   "properties": {
     "version": {
       "const": 1
@@ -12,7 +15,9 @@
     "storage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["root"],
+      "required": [
+        "root"
+      ],
       "properties": {
         "root": {
           "type": "string",
@@ -22,16 +27,7 @@
       }
     },
     "orchestrator": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "role": {
-          "$ref": "#/$defs/role"
-        },
-        "thinking": {
-          "$ref": "#/$defs/thinking"
-        }
-      }
+      "$ref": "#/$defs/orchestratorProfilePatch"
     },
     "worker_profiles": {
       "type": "object",
@@ -39,56 +35,12 @@
         "$ref": "#/$defs/profileName"
       },
       "additionalProperties": {
-        "$ref": "#/$defs/profilePatch"
+        "$ref": "#/$defs/workerProfilePatch"
       },
       "description": "Worker launch profiles, patched per layer by name. A profile inherits only from the same name in an earlier layer: a name no earlier layer defines must declare `role` in the layer that first defines it, or the layer is rejected with invalid_config. This cross-layer rule is enforced in code, not expressible here."
     },
     "skill_routing": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["rules"],
-      "properties": {
-        "rules": {
-          "type": "array",
-          "maxItems": 16,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["boundary", "surface", "skills"],
-            "properties": {
-              "boundary": {
-                "enum": ["plan", "authoring", "dispatch", "completion", "settlement", "reset"]
-              },
-              "surface": {
-                "enum": ["orch", "worker"]
-              },
-              "skills": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 8,
-                "items": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
-                }
-              },
-              "trigger": {
-                "$ref": "#/$defs/guidanceText",
-                "description": "Optional prose naming when this route applies, rendered as advisory selection criteria beside the skill names."
-              },
-              "profiles": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 8,
-                "items": {
-                  "$ref": "#/$defs/profileName"
-                },
-                "description": "Optional worker-profile scope. Present: the rule is delivered only to a lane whose assignment profile is named here. Absent: the rule reaches every profile. A name no worker_profiles entry defines never matches and is not an error, since rules and profiles may live in different layers. A delivery point with no profile in hand — every orchestrator-surface point — receives only unscoped rules."
-              }
-            }
-          },
-          "description": "Advisory skill routes surfaced in tool results and worker dispatch prompts at matching boundaries. Routes never gate settlement, lifecycle, or authority."
-        }
-      }
+      "$ref": "#/$defs/skillRouting"
     }
   },
   "$defs": {
@@ -97,9 +49,23 @@
       "pattern": "^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     },
     "thinking": {
-      "enum": ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"]
+      "enum": [
+        "inherit",
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "auto"
+      ]
     },
     "profileName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "skillName": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     },
@@ -107,9 +73,25 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 500,
-      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001f\\u007f]+$"
     },
-    "profilePatch": {
+    "orchestratorProfilePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/role"
+        },
+        "thinking": {
+          "$ref": "#/$defs/thinking"
+        },
+        "directive": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "ORCH-facing execution guidance rendered at the top of guidance.md. Advisory only; never changes authority, scope, or completion conditions."
+        }
+      }
+    },
+    "workerProfilePatch": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -121,7 +103,176 @@
         },
         "guidance": {
           "$ref": "#/$defs/guidanceText",
-          "description": "Optional profile-selection criteria prose for this worker profile, delivered as advisory material at judgment boundaries. It never resolves a role, a model, or authority. Required nowhere; when a layer defines a profile name for the first time it must still declare `role` (code-enforced)."
+          "description": "Legacy ORCH-facing profile-selection criteria for this worker profile; rendered only when intent is absent. Advisory only. Required nowhere; when a layer first defines a profile name it must still declare role (code-enforced)."
+        },
+        "intent": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "ORCH-facing profile-selection criteria for this worker profile. Advisory only; never resolves a role, model, authority, or assignment contract."
+        },
+        "directive": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "Worker-facing execution guidance rendered only to a lane selected with this profile. Advisory only; never changes the assignment contract."
+        }
+      }
+    },
+    "skillNames": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/skillName"
+      }
+    },
+    "skillMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "intent": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "Optional advisory prose describing what this skill does wherever the skill is named."
+        },
+        "trigger": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "Optional advisory prose describing when this skill applies; rendered only to the ORCH."
+        }
+      }
+    },
+    "agentRule": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agent",
+            "moment",
+            "skills"
+          ],
+          "properties": {
+            "agent": {
+              "const": "orch"
+            },
+            "moment": {
+              "enum": [
+                "plan",
+                "authoring",
+                "settlement",
+                "reset"
+              ]
+            },
+            "skills": {
+              "$ref": "#/$defs/skillNames"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "agent",
+            "moment",
+            "skills"
+          ],
+          "properties": {
+            "agent": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/profileName"
+                },
+                {
+                  "not": {
+                    "const": "orch"
+                  }
+                }
+              ]
+            },
+            "moment": {
+              "enum": [
+                "intake",
+                "report"
+              ]
+            },
+            "skills": {
+              "$ref": "#/$defs/skillNames"
+            }
+          }
+        }
+      ]
+    },
+    "legacyRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "boundary",
+        "surface",
+        "skills"
+      ],
+      "properties": {
+        "boundary": {
+          "enum": [
+            "plan",
+            "authoring",
+            "dispatch",
+            "completion",
+            "settlement",
+            "reset"
+          ]
+        },
+        "surface": {
+          "enum": [
+            "orch",
+            "worker"
+          ]
+        },
+        "skills": {
+          "$ref": "#/$defs/skillNames"
+        },
+        "trigger": {
+          "$ref": "#/$defs/guidanceText",
+          "description": "Optional advisory prose naming when this legacy route applies."
+        },
+        "profiles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/profileName"
+          },
+          "description": "Optional worker-profile scope. An undefined profile name is valid but never matches; orchestrator delivery points receive only unscoped rules."
+        }
+      }
+    },
+    "skillRouting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rules"
+      ],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/agentRule"
+              },
+              {
+                "$ref": "#/$defs/legacyRule"
+              }
+            ]
+          },
+          "description": "Advisory routes in agent/moment or legacy boundary/surface form. Routes never gate settlement, lifecycle, or authority."
+        },
+        "skills": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "$ref": "#/$defs/skillName"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/skillMetadata"
+          },
+          "description": "Optional per-skill authored intent and trigger metadata; no installed-presence claim."
         }
       }
     }

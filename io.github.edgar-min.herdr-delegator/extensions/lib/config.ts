@@ -60,19 +60,28 @@ function parseGuidanceText(value: unknown, coordinate: string): string {
   return value.trim();
 }
 
+/**
+ * The closed key set of each profile kind. The orchestrator is a single
+ * standing reader, so it carries execution `directive` but no selection prose:
+ * `intent` and `guidance` are worker-profile selection criteria and have no
+ * selector to serve here.
+ */
+const PROFILE_KEYS = {
+  orchestrator: ["role", "thinking", "directive"],
+  worker: ["role", "thinking", "guidance", "intent", "directive"],
+} as const;
+
+type ProfileKind = keyof typeof PROFILE_KEYS;
+
 function parseProfilePatch(
   value: unknown,
   coordinate: string,
-  options: { guidance: boolean },
+  kind: ProfileKind,
 ): Partial<ModelProfile> {
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
   }
-  assertExactKeys(
-    value,
-    options.guidance ? ["role", "thinking", "guidance", "intent", "directive"] : ["role", "thinking"],
-    coordinate,
-  );
+  assertExactKeys(value, PROFILE_KEYS[kind], coordinate);
   if (
     value.role !== undefined &&
     (
@@ -237,7 +246,7 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
   }
   const patch: ConfigPatch = {};
   if (value.orchestrator !== undefined) {
-    patch.orchestrator = parseProfilePatch(value.orchestrator, `${coordinate}.orchestrator`, { guidance: false });
+    patch.orchestrator = parseProfilePatch(value.orchestrator, `${coordinate}.orchestrator`, "orchestrator");
   }
   if (value.worker_profiles !== undefined) {
     if (!isObject(value.worker_profiles)) {
@@ -248,7 +257,7 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
       if (!PROFILE_RE.test(name)) {
         throw new ContractError("invalid_config", `${coordinate}.worker_profiles: invalid profile name ${JSON.stringify(name)}.`, "config");
       }
-      patch.worker_profiles[name] = parseProfilePatch(profile, `${coordinate}.worker_profiles.${name}`, { guidance: true });
+      patch.worker_profiles[name] = parseProfilePatch(profile, `${coordinate}.worker_profiles.${name}`, "worker");
     }
   }
   if (value.storage !== undefined) {
