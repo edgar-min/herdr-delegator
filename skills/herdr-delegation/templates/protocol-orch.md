@@ -133,8 +133,9 @@ Judge completion against the immutable assignment and the worker's durable evide
 Use the tool-recognized final report form; the mounted schema, dispatch contract, and
 returned errors own its exact grammar.
 
-Independently reproduce material claims. Run focused checks at the assignment boundary
-and one integration verification at the integration boundary. Record why the evidence
+Obtain independent reproduction of material claims under the input-independence rule
+above: focused checks at each assignment boundary and one integration verification at
+the integration boundary, executed by a delegate, never by you. Record why the evidence
 satisfies each completion condition, any accepted warning, and any recovery required.
 A tool-accepted completion proves report shape and identity, not correctness.
 
