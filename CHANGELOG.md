@@ -13,6 +13,59 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.8.0] - 2026-09-02
+
+### Changed
+
+- The ORCH protocol's supervision section is now "Supervise by judgment, delegate
+  evidence": the orchestrator keeps thought, direction, and authority — run
+  decomposition, design judgment, every assignment's text, `plan.md`,
+  `[ORCH Response]` blocks, acceptance and rejection, guarded MCP operations, the
+  user conversation, budget justification — and delegates evidence production:
+  harness execution and pass/fail tables to a host subagent, compression of a long
+  lane report into a per-completion-condition table to a read-only scout,
+  coordinate re-measurement likewise. Two rules replace the old "spend the
+  interval on your own work": the ORCH never reads a lane report in full, and
+  independent reproduction means independence of input — worker outputs taken by
+  hash into a separate temporary root and exercised there by a delegate — never
+  that the ORCH runs the check itself. The settlement paragraph says the same.
+  Runs materialized on the previous text keep loading under the historical-digest
+  warning; the new digests are appended to the allowlist, nothing removed. (SPEC
+  STO-006, RUN-012; friction `1aa1a55b985bb28c`, `666384aa0ebfd67d`)
+
+### Added
+
+- `orchestrator.directive`: one bounded single-line prose field on the
+  orchestrator profile, validated exactly like a worker directive and overriding
+  by layer like `role` and `thinking`. It renders as the first section of a run's
+  `guidance.md` (`## Orchestrator directive`) at open and revive, and is omitted
+  when unset. `guidance` and `intent` remain worker-profile fields and are
+  rejected on the orchestrator. (SPEC CFG-005b, GDE-002)
+- `herdr-config` gains three scripts under `skills/herdr-config/scripts/`:
+  `drift.ts <run>` reports each of a run's three protocol documents as current,
+  historical, or unknown against the installed templates; `routes.ts <cwd>
+  [run]` lists the orchestrator directive, every worker profile's intent and
+  directive, every skill route (both rule shapes), and every skill's intent and
+  trigger with the config layer each came from; `directive.ts <cwd> --set
+  "<text>" [--layer] [--apply]` validates through the real parser, previews the
+  rendered `guidance.md`, and writes only with `--apply`. The scripts are
+  typechecked by `bun run check`. The skill description now also answers "check
+  orchestrator directives" and "why does the ORCH behave this way".
+
+### Fixed
+
+- `config.schema.json` matches the parser again: worker and orchestrator profiles
+  are separate definitions with exactly the keys each parser accepts, both
+  `skill_routing.rules` shapes and `skill_routing.skills` metadata are expressed,
+  and prose fields reject whitespace-only strings as the parser does. (friction
+  `8321e109eeb07083`)
+- `herdr-config` documentation no longer says lane guidance delivery is pending;
+  it has been live since dispatch-time materialization landed. The route authoring
+  guidance names both the current `{agent, moment, skills}` shape and the legacy
+  `{boundary, surface, …}` shape.
+- The `ModelProfile.directive` documentation comment no longer claims the field
+  renders only to a worker lane.
+
 ## [3.7.0] - 2026-09-02
 
 ### Fixed
