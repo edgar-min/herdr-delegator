@@ -124,6 +124,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ASN-011**: Settlement MUST require an exact `[Assignment Completion: A-NNN]` block containing exactly one `status: completed` or `status: failed` line.
 - **ASN-012**: Settlement MUST store the complete worker-report SHA-256 and completion timestamp in `delegation.json`.
 - **ASN-013**: Settlement MUST transition the assignment to its terminal state, return the lane to `idle`, record the last completed assignment, and promote the FIFO head.
+- **ASN-013a**: A promoted queue head that was never prompted MUST still be settleable from its own completion block once its lane is observed idle or failed; that settlement MUST NOT claim `elapsed_ms` and MUST name the missing dispatch in its observation. The settlement sweep's eligibility MUST be widened only for the head the lane currently holds active, and the shared active-state vocabulary MUST NOT be changed, because it also governs the ownership union and the inter-run overlap observation.
 - **ASN-014**: Assignment completion MUST NOT close the worker tab or official OMP session.
 
 ## 5. Public MCP tool contract
@@ -426,6 +427,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] The published `assignment_id` shape is the enforced schema itself, its `describe` names the grammar plus the `label` and coordinate alternatives, a handler-level schema rejection returns a stable-coded `McpResult` with authored recovery, and the optional display-only `label` is parsed from the artifact yet absent from every registry key set (ASN-003, ASN-003a, ASN-026).
 - [ ] The succession claim grammar, its closed disposition vocabulary, the canonical `<run>/handoff.md` coordinate, the `add`-time enforcement point before the budget judgment, the non-execution of the `command` column, and the non-persistence of `data.succession` match `mcp/succession.ts` and `mcp/tools.ts` (SUC-001 through SUC-006).
 - [ ] The emergency carve-out's admissibility predicate, its document-only debt, the create-exclusive ordinal, the `budget_extend` leading step, and the disjoint `justified`/`unjustified` grammar match `mcp/budget.ts` and `mcp/tools.ts`, and no budget registry key or schema version moved for it (BUD-016).
+- [ ] The settlement sweep settles a promoted-but-never-prompted head from its own completion block once the lane is observed idle or failed, omits `elapsed_ms`, names the missing dispatch in its observation, and leaves the shared active-state constant and the dispatch gate untouched (ASN-013a).
 
 ### Live behavior to verify
 

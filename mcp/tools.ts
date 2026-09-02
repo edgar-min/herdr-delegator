@@ -1076,7 +1076,16 @@ export async function sweepSettlements(
     const assignmentId = current.lanes[workerId].active_assignment_id;
     if (!assignmentId) continue;
     const assignment = current.assignments[assignmentId];
-    if (!assignment || !ACTIVE_SETTLEMENT_STATES[assignment.state]) continue;
+    // A promoted queue head is an active assignment that was never dispatched:
+    // settlement promotes it into the lane while its record stays `queued` with
+    // no `prompted_at`, and a worker that starts it on its own leaves the lane
+    // live, so the dispatch gate never reopens. Skipping it here left its own
+    // completion block unsettleable and blocked track close (friction
+    // 9a62576dbbaeaf70). The extension is local on purpose: the shared constant
+    // also feeds the ownership union and the inter-run overlap observation, and
+    // widening it there would silently broaden what those report.
+    const promotedHead = assignment?.state === "queued" && current.lanes[workerId].active_assignment_id === assignmentId;
+    if (!assignment || !(ACTIVE_SETTLEMENT_STATES[assignment.state] || promotedHead)) continue;
     if (current.lanes[workerId].state !== "idle" && current.lanes[workerId].state !== "failed") {
       if (workerId === fresh) continue;
       try {
@@ -1088,11 +1097,17 @@ export async function sweepSettlements(
       }
     }
     const before = current.assignments[assignmentId].state;
+    // Read before settlement, because settling is what makes the record
+    // terminal: a head that carries no `prompted_at` was settled from evidence
+    // alone, and `settleIfReported` already omits `elapsed_ms` for it (OBS-001).
+    // The observation names that rather than leaving a settlement that silently
+    // lacks a duration look like one whose duration was lost.
+    const undispatched = current.assignments[assignmentId].prompted_at === undefined;
     current = await settleIfReported(store, current, current.lanes[workerId], current.assignments[assignmentId], warnings);
     const settled = current.assignments[assignmentId].state;
     if (settled === before) continue;
     const promoted = current.lanes[workerId].active_assignment_id;
-    warnings.push(`settlement_swept: assignment ${assignmentId} on lane ${workerId} settled as ${settled} from its reported completion block${promoted ? `; queued head ${promoted} promoted` : ""}.`);
+    warnings.push(`settlement_swept: assignment ${assignmentId} on lane ${workerId} settled as ${settled} from its reported completion block${undispatched ? ", settled without a recorded dispatch (no prompted_at was ever stamped, so no elapsed_ms is claimed)" : ""}${promoted ? `; queued head ${promoted} promoted` : ""}.`);
   }
   return current;
 }
