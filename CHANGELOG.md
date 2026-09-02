@@ -13,6 +13,64 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.7.0] - 2026-09-02
+
+### Fixed
+
+- A queue head that was promoted but never dispatched can be settled again. A
+  settlement promotes the next head into the lane record while the assignment
+  itself stays `queued` with no dispatch timestamp; if the worker then starts
+  that work on its own the lane is live, the dispatch gate stays shut for good,
+  and the settlement sweep skipped the record as inactive — so a head that had
+  already written its completion block could never settle and track close
+  refused the run. The sweep's eligibility now also admits the `queued` record
+  a lane currently holds active. This corrects the predicate's scope, not the
+  state vocabulary: the shared active-state set is unchanged, and settlement
+  still requires an idle-or-failed lane plus that assignment's own completion
+  block, so nothing settles without evidence. Such a settlement claims no
+  elapsed time and says so — `settled without a recorded dispatch`. (SPEC
+  ASN-013a; friction `9a62576dbbaeaf70`)
+
+### Added
+
+- `herdr_assignment add` accepts an optional `urgent: true`, which inserts the
+  assignment at the head of its lane's queue instead of appending it. That is
+  its whole effect: an idle lane dispatches immediately either way, nothing
+  already running is interrupted or recalled, a parked run still refuses to
+  promote a head, and it is orthogonal to the `emergency` claim, which buys
+  registration past a budget park rather than queue order. The choice is
+  call-time only — never written to the artifact, the identifier, the label, or
+  any registry record — so every successful `add` now echoes
+  `data.queue_position` (the 0-based queue index, `"active"`, or `"none"` for a
+  duplicate add naming an already-terminal record) merged into the same `data`
+  object as that call's gate observations. No registry schema change. (SPEC
+  RSP-003, ASN-015; friction `8917760a9545c642` item ②)
+- The `wake_worker` doorbell names the lane's queue head. Its server-composed
+  subject now appends `; queue head <id>` whenever the queue is not empty, so a
+  worker whose queue was just reordered can observe that from a bell about the
+  assignment it is already running; the `queued` / `orch-response` /
+  `completion` reason tokens keep their exact prior meaning. The action also
+  accepts an optional `assignment_id` that selects which assignment the bell is
+  about. It must be one the lane holds active or queued — a terminal
+  assignment, another lane's, or an unregistered identifier is reported as
+  `target_unresolved` with one journal row and no bell rather than quietly
+  answering a different question — and `boundary` stays refused outside
+  `wake_orch`, which the published field description now states. (SPEC
+  MSG-001; friction `2ca2674d47036a3e`)
+
+### Notice
+
+- A mounted server older than this release drops the unknown `urgent` key
+  silently and appends. After updating, run `/reload-plugins` in the active
+  pane and let the **next** turn republish attestation before relying on the
+  field; if the first `add` afterwards returns no `data.queue_position`, the
+  placement did not happen and further urgent adds should stop until the mount
+  is current.
+- This release closes the machine half of re-direction: queue order and the
+  composed signal. The half a worker feels — the bell actually waking its pane
+  — still depends on the delivery-layer repair tracked as friction
+  `024a02386ec9dd9d`, so friction `8917760a9545c642` item ② stays in progress.
+
 ## [3.6.0] - 2026-09-01
 
 ### Added
