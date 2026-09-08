@@ -15,6 +15,79 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 
 ## [3.9.0] - Unreleased
 
+### Changed
+
+- Settlement reads every completion block in a lane report and acts on the LATEST
+  valid one, instead of the first candidate it found. A worker whose first attempt was
+  malformed now settles by appending a correct block underneath it, which is what
+  everyone assumed already happened. Blocks that do not settle no longer vanish: each
+  one reports its report line, its cause — a `##` heading marker on the header, a
+  capitalized `Status:` key, a capitalized value, an indented status line, two
+  recognized status lines in one block, or an unrecognized value — and the exact two
+  lines that would have settled it. "No candidate at all" is a distinct observation
+  (`completion_block_absent`) from "a candidate that does not parse"
+  (`completion_block_unparsable`), and both surface on `herdr_assignment wait`,
+  `herdr_worker inspect`, and the `herdr_track close` refusal, which now names per
+  lane why it is still live. No blank-line rule was added; the parser never had one.
+  (SPEC ASN-011, ASN-011a, ASN-011e; friction `0b2c5548cb73bf25`,
+  `ffd8390346e69cae`, `55bd11394cc1553a`)
+- `status: blocked` is recognized. It records `reported_boundary: "blocked"` on the
+  assignment record as an observation the machine did not act on: assignment state,
+  lane runtime state, `wait.until` semantics, and doorbell boundaries are unchanged,
+  and a later `completed`/`failed` block is what settles. The worker protocol has
+  listed `blocked` as a boundary all along while the parser rejected it.
+  (SPEC ASN-011b; friction `89bc054958c59c88`, `55bd11394cc1553a`)
+- A completion block appended after the assignment already settled changes nothing and
+  says so (`completion_block_after_terminal`); the FIFO promotion still happens
+  exactly once, at the settlement that landed. Settlement, the `wait` progress writer,
+  and the dispatch progress and ambiguity writers re-verify assignment existence, lane
+  binding, active-id, and terminality inside their own write transaction, so a lost
+  race is reported rather than written over a decided state.
+  (SPEC ASN-011c, ASN-011d)
+- Every `assignment_artifact_invalid` now names the offending section, the line where
+  the defect is a line, the bound it violated, and the exact text that satisfies the
+  rule — including the trap that a `# ` at column 1 splits a section even inside a
+  fenced code block. The section, Goal, bullet, and artifact-size bounds are single
+  constants shared by the parser, the published schema, and the documents, so the
+  three cannot drift. (SPEC ASN-004, ASN-004a, ASN-004b, ASN-005; friction
+  `2f772405d442c6f3`, `171183a6663fabb1`)
+- `herdr_assignment`'s `action` field publishes the whole authoring contract in its
+  schema description: frontmatter, the five sections and their bounds, the fenced-code
+  trap, `# References`, the 0444 seal, and the completion-block grammar. The grammar
+  was previously discoverable only by failing a preflight. (SPEC ASN-004b)
+
+### Added
+
+- An optional trailing `# References` section pins the documents an assignment is
+  written against: at most 16 bullets of `- <run-relative path> sha256:<64 hex>`. A
+  path is rejected when it is absolute, carries a drive letter, or contains a `..`,
+  `.`, or empty segment, a backslash, or a control character; the file must resolve —
+  under `realpath`, on separator boundaries — to a regular non-symlink file inside the
+  run directory with `nlink` 1, a distinct `(dev, ino)`, and at most 256 KiB, read as
+  raw bytes under that bound. `preflight` and `add` verify every hash and refuse
+  before the assignment ID is consumed: a structural failure as
+  `assignment_artifact_invalid`, a stale pin as `reference_hash_mismatch`. From the
+  first dispatch onward a mismatch is a `reference_drift` observation on `wait`,
+  `herdr_worker inspect`, and `herdr_track close` — never a recall, because the worker
+  already holds the pinned hashes. Compatibility: the artifact grammar is not
+  versioned, so a server older than 3.9.0 rejects an artifact carrying `# References`
+  as "missing or extra sections". That refusal's recovery now names the server
+  respawn instead of inviting deletion of a healthy section. Reload mounted servers
+  (`/reload-plugins`) before authoring the first `# References` artifact on a shared
+  working tree. (SPEC ASN-004, ASN-005a, ASN-005b, ASN-005c, ASN-005d;
+  friction `171183a6663fabb1`)
+- `add` makes the registered artifact read-only (`0444`) immediately after
+  registration, so an edit to a dispatched assignment fails on the write rather than
+  silently diverging from the hash the registry holds. A `chmod` that cannot be
+  applied is reported as `assignment_readonly_failed` and never unwinds the
+  registration. (SPEC ASN-007; friction `e893b98ff16d24aa`)
+- `preflight` and `add` refuse a profile the responsibility's live lane cannot run, as
+  `model_profile_mismatch`, before the assignment ID is consumed. The mismatch used to
+  pass preflight and fail inside `ensure_worker`, which burned the ID and forced
+  re-authoring under a new one. The recovery names both profiles and the two ways
+  forward: match the lane, or dispatch under a `separation` that binds a new lane.
+  (SPEC ASN-014c; friction `17b7fd5328871a88`)
+
 ## [3.8.0] - 2026-09-02
 
 ### Changed

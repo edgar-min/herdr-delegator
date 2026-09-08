@@ -172,23 +172,36 @@ ORCH writes one file:
 <run>/a2a/assignments/A-NNN.md
 ```
 
-The strict Markdown contains `assignment_id`, `responsibility_key`, and `profile` frontmatter — optionally followed by one more field, `label` — then `Goal`, `Completion conditions`, `Write ownership`, `Dependencies`, and `User boundaries` sections. After dispatch it is immutable.
+The strict Markdown contains `assignment_id`, `responsibility_key`, and `profile` frontmatter — optionally followed by one more field, `label` — then `Goal`, `Completion conditions`, `Write ownership`, `Dependencies`, and `User boundaries` sections, optionally followed by one trailing `References` section. `Goal` is prose of at most 4096 characters; the four bullet sections take at most 64 lines each, every line a `- <text>` bullet of 1 to 1000 characters. The whole file is at most 64 KiB with LF line endings. Watch one trap: a line starting `# ` at column 1 begins a new section wherever it appears, including inside a fenced code block, so indent such a fence. Every refusal names the section, the bound, and the exact text that would satisfy it. After dispatch the file is immutable, and `add` makes it read-only (`0444`) to say so.
 
 `assignment_id` is `A-` plus three or more digits that are not all zero, and the published tool schema enforces exactly that. The ID is ORCH-chosen and carries no meaning. A human-readable name goes in `label`: 1 to 48 characters of letters, digits, `-` or `_`, beginning and ending with a letter or digit — so `id-grammar` is a label and `_draft` is not. It is shown on the dispatch pointer, the `preflight` result, and the worker pane title, and two runs that both hold `A-001` are told apart by `<track_id>/<run_id>/<assignment_id>`. A label is never copied into `delegation.json`, never queued on, and never part of settlement, and nothing enforces that labels are unique — the coordinate disambiguates, the label only reads well.
 
 One compatibility note: the artifact grammar is not versioned, so a server older than the `label` field rejects a label-bearing artifact as invalid. Reload mounted servers (`/reload-plugins`) before first using `label` on a working tree that older server processes may still read.
 
-Workers append results to `a2a/w<N>-report.md` and settle an assignment with an exact completion block:
+`References` pins the documents an assignment is written against, so "read the plan" names bytes rather than a filename:
+
+```text
+# References
+
+- plan-contract.md sha256:f2a73ac32d27d0f3db1d15e0acc46da9cf5d0ad56ab9433bd87eb3ec9367b977
+```
+
+At most 16 bullets; each path is relative to the run directory and must resolve to a plain file inside it — no `..`, no symlink, no hardlink, no duplicate, at most 256 KiB. `preflight` and `add` verify every hash and refuse a mismatch before the assignment ID is consumed, so the fix is a one-line edit rather than a new ID. After dispatch a mismatch is reported as `reference_drift` on `wait`, `herdr_worker inspect`, and `herdr_track close`: the dispatch is never recalled, because the worker already holds the pinned hashes and can check for itself. Correct a drifted document with a new assignment. `References` is also a one-way relaxation — a server older than 3.9.0 rejects an artifact carrying it for section count, so reload mounted servers first.
+
+Workers append results to `a2a/w<N>-report.md` and settle an assignment with an exact completion block — two literal lines at column 1:
 
 ```text
 [Assignment Completion: A-001]
-
 status: completed
 ```
 
+No heading marker before the header, lowercase `status:`, lowercase value, exactly one recognized status line in the block. Blank lines around it are allowed and never required. The four near-misses this grammar used to swallow in silence now each name themselves — `## [Assignment Completion: …]`, `Status: completed`, `status: Completed`, two status lines in one block — with the cause, the report line, and the two lines that would have settled it, reported on `wait`, `herdr_worker inspect`, and the `herdr_track close` refusal. "No completion block at all" is a distinct observation from "a block that does not parse".
+
+`status: blocked` is recognized too. It records a reported boundary on the assignment and settles nothing: state, lane state, `wait.until` and doorbell boundaries are untouched, and a later `completed` or `failed` block is what settles. When a report carries several valid blocks for one assignment, the latest one is acted on — so a correction appended under a malformed attempt is what decides. A block appended after the assignment already settled changes nothing and says so.
+
 MCP stores the report SHA-256 and completion timestamp in `a2a/delegation.json`. There is no separate assignment contract or receipt file.
 
-Completion returns the lane to `idle`, promotes its FIFO head, and leaves the worker tab/session open.
+Completion returns the lane to `idle`, promotes its FIFO head exactly once, and leaves the worker tab/session open.
 
 ## MCP tools
 

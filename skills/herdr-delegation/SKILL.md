@@ -50,6 +50,9 @@ born ORCH in `plan.md`.
 
 Preserve settled user language. For call shape, limits, grammar, and recoverable
 failures, follow the mounted `herdr_track` schema and its error text, not this prose.
+The immutable-assignment grammar is not yours to teach or to use: no assignment exists
+before birth, and the born ORCH reads it from the mounted `herdr_assignment` schema and
+its own `protocol-orch.md`.
 
 ## Open once
 

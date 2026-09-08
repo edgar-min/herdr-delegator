@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_LABEL_RE, ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_APPLIED_STATES, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, MAX_ASSIGNMENT_LABEL, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetAppliedState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_LABEL_RE, ASSIGNMENT_RE, ASSIGNMENT_REFERENCES_SECTION, ASSIGNMENT_SECTIONS, BOUNDED_TOKEN_RE, BUDGET_APPLIED_STATES, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, MAX_ASSIGNMENT_ARTIFACT_BYTES, MAX_ASSIGNMENT_BULLET, MAX_ASSIGNMENT_GOAL, MAX_ASSIGNMENT_LABEL, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCE_PATH_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_ASSIGNMENT_SECTION_LINES, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetAppliedState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -15,8 +15,6 @@ const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   failed: true,
   ambiguous: true,
 };
-const LIST_SECTIONS = ["Completion conditions", "Write ownership", "Dependencies", "User boundaries"] as const;
-const MAX_ARTIFACT_BYTES = 64 * 1024;
 
 /**
  * The mounted build's own identity, for results that must name the code that
@@ -280,29 +278,108 @@ function assertMode600(mode: number, coordinate: string): void {
   if ((mode & 0o777) !== 0o600) throw new McpContractError("unsafe_file_mode", `${coordinate} must have mode 600.`, "storage", "Restore the canonical control-plane file mode before continuing.");
 }
 
+/**
+ * One assignment-grammar refusal, in the shape every `assignment_artifact_invalid`
+ * now takes: WHAT is wrong, WHICH section and line it is in, WHAT the bound is,
+ * and the exact text that would satisfy it.
+ *
+ * The three friction reports behind this (2f772405d442c6f3, 171183a6663fabb1,
+ * 0b2c5548cb73bf25) are all the same defect seen from different angles: the
+ * grammar was discoverable only by failing, and the failure did not say how to
+ * pass. A refusal that names no fix costs an authoring round trip per rule.
+ */
+function artifactInvalid(what: string, fix: string): McpContractError {
+  return new McpContractError("assignment_artifact_invalid", what, "validate", fix);
+}
+
+const SECTION_SHAPE = `The canonical assignment is exactly ${ASSIGNMENT_SECTIONS.length} H1 sections in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it.`;
+
 function parseListSection(value: string, heading: string): string[] {
+  const shape = `Every line of "# ${heading}" is one Markdown bullet "- <text>" of 1 to ${MAX_ASSIGNMENT_BULLET} characters, at most ${MAX_ASSIGNMENT_SECTION_LINES} lines total: no blank lines, no wrapped continuation lines, no nested indentation, no sub-headings. Example:\n- one bounded claim, on one line`;
   const lines = value.trim().split("\n");
-  if (lines.length > 64 || lines.some((line) => !line.startsWith("- ") || line.length < 3 || line.length > 1_002)) {
-    throw new McpContractError("assignment_artifact_invalid", `${heading} must contain only bounded Markdown bullets.`, "validate", "Repair the immutable assignment Markdown before dispatch.");
+  if (lines.length > MAX_ASSIGNMENT_SECTION_LINES) {
+    throw artifactInvalid(`Section "# ${heading}" has ${lines.length} lines; the limit is ${MAX_ASSIGNMENT_SECTION_LINES}.`, shape);
+  }
+  const offending = lines.findIndex((line) => !line.startsWith("- ") || line.length < 3 || line.length > MAX_ASSIGNMENT_BULLET + 2);
+  if (offending >= 0) {
+    const line = lines[offending];
+    const why = !line.startsWith("- ")
+      ? line.trim() === ""
+        ? "it is blank"
+        : `it begins ${JSON.stringify(line.slice(0, 12))} instead of "- "`
+      : line.length < 3
+        ? "it is a bullet with no text"
+        : `it is ${line.length - 2} characters of text and the limit is ${MAX_ASSIGNMENT_BULLET}`;
+    throw artifactInvalid(`Section "# ${heading}" line ${offending + 1} is not a bounded Markdown bullet: ${why}.`, shape);
   }
   return lines.map((line) => line.slice(2));
 }
 
+const REFERENCE_BULLET_RE = /^- (\S+) sha256:([a-f0-9]{64})$/;
+const REFERENCE_SHAPE = `Every line of "# ${ASSIGNMENT_REFERENCES_SECTION}" is exactly "- <path> sha256:<64 lowercase hex>", at most ${MAX_ASSIGNMENT_REFERENCES} lines. The path is relative to the RUN directory, has no "..", no empty segment, no leading "/" and no backslash, and names one regular file of at most ${MAX_ASSIGNMENT_REFERENCE_BYTES} bytes. Example:\n- plan-contract.md sha256:${"0".repeat(64)}`;
+
+/**
+ * Path SYNTAX only, decided from the raw declared bytes before anything touches
+ * the filesystem. Containment is re-decided against the resolved realpath in the
+ * tool layer; this rejects the forms that make a containment check meaningless
+ * (traversal, absolute, empty segments) plus the two that make it
+ * platform-dependent (backslash separators, control characters).
+ */
+function assertReferencePathSyntax(raw: string, line: number): void {
+  const named = `"# ${ASSIGNMENT_REFERENCES_SECTION}" line ${line}`;
+  const reject = (why: string): never => { throw artifactInvalid(`${named} declares path ${JSON.stringify(raw)}, which ${why}.`, REFERENCE_SHAPE); };
+  if (Buffer.byteLength(raw) > MAX_ASSIGNMENT_REFERENCE_PATH_BYTES) reject(`is ${Buffer.byteLength(raw)} bytes; the limit is ${MAX_ASSIGNMENT_REFERENCE_PATH_BYTES}`);
+  if (raw.startsWith("/")) reject("is absolute; references are relative to the run directory");
+  if (/^[A-Za-z]:/.test(raw)) reject("carries a drive letter; references are relative to the run directory");
+  if (raw.includes("\\")) reject("contains a backslash; the separator is always \"/\"");
+  if (/[\u0000-\u001f\u007f]/.test(raw)) reject("contains a control character");
+  const segments = raw.split("/");
+  if (segments.some((segment) => segment === "")) reject("contains an empty segment");
+  if (segments.some((segment) => segment === "..")) reject('contains a ".." segment; a reference never leaves the run directory');
+  if (segments.some((segment) => segment === ".")) reject('contains a "." segment; write the path in canonical form');
+}
+
+function parseReferences(value: string): { path: string; sha256: string }[] {
+  const lines = value.trim().split("\n");
+  if (lines.length > MAX_ASSIGNMENT_REFERENCES) {
+    throw artifactInvalid(`Section "# ${ASSIGNMENT_REFERENCES_SECTION}" pins ${lines.length} files; the limit is ${MAX_ASSIGNMENT_REFERENCES}.`, REFERENCE_SHAPE);
+  }
+  const references = lines.map((line, index) => {
+    const match = REFERENCE_BULLET_RE.exec(line);
+    if (!match) {
+      const why = !line.startsWith("- ")
+        ? "it is not a Markdown bullet"
+        : /sha256:/i.test(line)
+          ? "its hash is not exactly \"sha256:\" followed by 64 lowercase hex characters"
+          : "it names no sha256 pin";
+      throw artifactInvalid(`Section "# ${ASSIGNMENT_REFERENCES_SECTION}" line ${index + 1} is not a reference bullet: ${why}.`, REFERENCE_SHAPE);
+    }
+    assertReferencePathSyntax(match[1], index + 1);
+    return { path: match[1], sha256: match[2] };
+  });
+  const duplicate = references.find((reference, index) => references.findIndex((other) => other.path === reference.path) !== index);
+  if (duplicate) {
+    throw artifactInvalid(`Section "# ${ASSIGNMENT_REFERENCES_SECTION}" pins ${JSON.stringify(duplicate.path)} more than once.`, `Pin each path once. Two hashes for one path cannot both be current, so the duplicate is either a stale line to delete or a different file to name.`);
+  }
+  return references;
+}
+
 function parseAssignmentMarkdown(text: string, assignmentId: string, responsibility: string): AssignmentArtifact {
-  if (text.includes("\r") || Buffer.byteLength(text) > MAX_ARTIFACT_BYTES) throw new McpContractError("assignment_artifact_invalid", "Assignment Markdown must be bounded UTF-8 with LF line endings.", "validate", "Rewrite the canonical assignment file.");
+  if (text.includes("\r")) throw artifactInvalid("Assignment Markdown contains a CR byte.", "Rewrite the file with LF line endings only; a CRLF artifact would hash differently on every platform that touched it.");
+  if (Buffer.byteLength(text) > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw artifactInvalid(`Assignment Markdown is ${Buffer.byteLength(text)} bytes; the limit is ${MAX_ASSIGNMENT_ARTIFACT_BYTES}.`, `Keep the artifact under ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes. Detail that does not fit belongs in a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, not in the assignment body.`);
   const frontmatterEnd = text.indexOf("\n---\n", 4);
-  if (!text.startsWith("---\n") || frontmatterEnd < 0) throw new McpContractError("assignment_artifact_invalid", "Assignment Markdown requires strict frontmatter.", "validate", "Add assignment_id, responsibility_key, and profile frontmatter.");
+  if (!text.startsWith("---\n") || frontmatterEnd < 0) throw artifactInvalid("Assignment Markdown has no closing frontmatter delimiter.", "The file begins with \"---\" on line 1, then assignment_id, responsibility_key and profile on one line each, then \"---\", then a blank line. Example:\n---\nassignment_id: A-001\nresponsibility_key: my-lane\nprofile: task\n---");
   const frontmatter = text.slice(4, frontmatterEnd).split("\n");
   // Three canonical fields, optionally followed by a fourth display-only
   // `label` (ASN-003a). Anything else fails closed: an unknown or repeated
   // fourth key never reaches `scalar` with the `label: ` prefix, and a fifth
   // line is rejected outright, so the relaxation widens what is read and
   // nothing else.
-  if (frontmatter.length !== 3 && frontmatter.length !== 4) throw new McpContractError("assignment_artifact_invalid", "Assignment frontmatter has unexpected fields.", "validate", "Keep assignment_id, responsibility_key, and profile, optionally followed by a display-only label.");
+  if (frontmatter.length !== 3 && frontmatter.length !== 4) throw artifactInvalid(`Assignment frontmatter has ${frontmatter.length} lines; it takes 3, or 4 with a display-only label.`, `The frontmatter is exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally followed by "label: <label>". No other key, no repeated key, no blank line inside the block.`);
   const scalar = (line: string, key: string, pattern: RegExp, recovery = "Repair the canonical assignment Markdown."): string => {
     const prefix = `${key}: `;
     const value = line.startsWith(prefix) ? line.slice(prefix.length) : "";
-    if (!pattern.test(value)) throw new McpContractError("assignment_artifact_invalid", `Invalid ${key} frontmatter.`, "validate", recovery);
+    if (!pattern.test(value)) throw artifactInvalid(`Frontmatter line ${JSON.stringify(line.slice(0, 64))} is not a valid ${key}.`, recovery === "Repair the canonical assignment Markdown." ? `The line reads exactly "${key}: <value>" — one space after the colon, no quotes, no trailing spaces — and the value matches ${pattern.source}.` : recovery);
     return value;
   };
   const parsedAssignmentId = scalar(frontmatter[0], "assignment_id", ASSIGNMENT_RE);
@@ -311,31 +388,45 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
   const label = frontmatter.length === 4
     ? scalar(frontmatter[3], "label", ASSIGNMENT_LABEL_RE, `The optional fourth frontmatter field is exactly "label: <value>": 1 to ${MAX_ASSIGNMENT_LABEL} characters of letters, digits, "-" or "_", beginning and ending alphanumeric. It is display only — identity, queue order, settlement, and priority all read assignment_id — so drop the line rather than widening it.`)
     : undefined;
-  if (parsedAssignmentId !== assignmentId || parsedResponsibility !== responsibility) throw new McpContractError("assignment_artifact_invalid", "Assignment frontmatter conflicts with requested coordinates.", "validate", "Use the file matching the requested assignment and responsibility.");
+  if (parsedAssignmentId !== assignmentId || parsedResponsibility !== responsibility) throw artifactInvalid(`Assignment frontmatter declares ${parsedAssignmentId}/${parsedResponsibility} but this call names ${assignmentId}/${responsibility}.`, "Call the coordinate the artifact declares, or fix the frontmatter. The filename, the frontmatter, and the call must agree: nothing infers one from another.");
 
   const body = text.slice(frontmatterEnd + 5).trim();
   const sections = body.split(/\n(?=# )/);
-  const expectedHeadings = ["Goal", ...LIST_SECTIONS];
-  if (sections.length !== expectedHeadings.length) throw new McpContractError("assignment_artifact_invalid", "Assignment Markdown has missing or extra sections.", "validate", "Use the canonical five-section assignment format.");
+  // Exactly the five canonical sections, optionally followed by `# References`
+  // as the LAST section and nothing after it (Q4). The split is positional, so
+  // the optional section can only ever be trailing — which is also what makes
+  // it safe: nothing between the five is reinterpreted.
+  const withReferences = sections.length === ASSIGNMENT_SECTIONS.length + 1;
+  if (sections.length !== ASSIGNMENT_SECTIONS.length && !withReferences) {
+    const observed = sections.map((section) => section.split("\n", 1)[0]).join(" | ");
+    throw artifactInvalid(
+      `Assignment Markdown has ${sections.length} H1 sections; it takes ${ASSIGNMENT_SECTIONS.length}, or ${ASSIGNMENT_SECTIONS.length + 1} with a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}". Observed headings: ${observed}.`,
+      `${SECTION_SHAPE} A line beginning "# " at column 1 starts a section wherever it appears — including inside a fenced code block, because the split runs before anything knows about fences (friction 171183a6663fabb1). Indent such a fence so no line inside it starts at column 1. If this artifact DOES carry a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, the mounted server predates it (the section shipped in 3.9.0): respawn the plugin with /reload-plugins and retry the identical call rather than deleting the section.`,
+    );
+  }
   const sectionValues = sections.map((section, index) => {
-    const prefix = `# ${expectedHeadings[index]}\n\n`;
-    if (!section.startsWith(prefix)) throw new McpContractError("assignment_artifact_invalid", `Expected heading ${expectedHeadings[index]}.`, "validate", "Keep canonical section order and headings.");
+    const heading = index < ASSIGNMENT_SECTIONS.length ? ASSIGNMENT_SECTIONS[index] : ASSIGNMENT_REFERENCES_SECTION;
+    const prefix = `# ${heading}\n\n`;
+    if (!section.startsWith(prefix)) {
+      throw artifactInvalid(`Section ${index + 1} of the assignment reads ${JSON.stringify(section.split("\n", 1)[0])}; section ${index + 1} is "# ${heading}" followed by one blank line.`, SECTION_SHAPE);
+    }
     return section.slice(prefix.length);
   });
   const goal = sectionValues[0].trim();
-  if (!goal) throw new McpContractError("assignment_artifact_invalid", "Goal section is empty.", "validate", "Repair the assignment goal.");
-  if (goal.length > 4_096) throw new McpContractError("assignment_artifact_invalid", `Goal is ${goal.length} characters; the limit is 4096.`, "validate", "Shorten the goal to at most 4096 characters; move detail into completion conditions or referenced documents.");
-  if (goal.includes("\n# ")) throw new McpContractError("assignment_artifact_invalid", "Goal contains a nested H1 heading.", "validate", "Keep the goal one H1-free Markdown section.");
+  if (!goal) throw artifactInvalid('Section "# Goal" is empty.', "Write the goal as prose in the Goal section. It is the one section a worker reads first, so an empty one dispatches an assignment that states no objective.");
+  if (goal.length > MAX_ASSIGNMENT_GOAL) throw artifactInvalid(`Section "# Goal" is ${goal.length} characters; the limit is ${MAX_ASSIGNMENT_GOAL}.`, `Shorten the goal to at most ${MAX_ASSIGNMENT_GOAL} characters. Detail belongs in "# Completion conditions" as bounded bullets, or in a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section.`);
+  if (goal.includes("\n# ")) throw artifactInvalid('Section "# Goal" contains a nested H1 heading.', 'Keep the goal one H1-free section: no line inside it begins "# " at column 1.');
   return {
     assignment_id: assignmentId,
     responsibility_key: responsibility,
     profile,
     ...(label ? { label } : {}),
     goal,
-    completion_conditions: parseListSection(sectionValues[1], LIST_SECTIONS[0]),
-    write_ownership: parseListSection(sectionValues[2], LIST_SECTIONS[1]),
-    dependencies: parseListSection(sectionValues[3], LIST_SECTIONS[2]),
-    user_boundaries: parseListSection(sectionValues[4], LIST_SECTIONS[3]),
+    completion_conditions: parseListSection(sectionValues[1], ASSIGNMENT_SECTIONS[1]),
+    write_ownership: parseListSection(sectionValues[2], ASSIGNMENT_SECTIONS[2]),
+    dependencies: parseListSection(sectionValues[3], ASSIGNMENT_SECTIONS[3]),
+    user_boundaries: parseListSection(sectionValues[4], ASSIGNMENT_SECTIONS[4]),
+    ...(withReferences ? { references: parseReferences(sectionValues[5]) } : {}),
   };
 }
 
@@ -501,7 +592,7 @@ export class DelegationStore {
     try {
       if (await realpath(artifactPath) !== artifactPath) throw new Error("non-canonical artifact");
       const file = await lstat(artifactPath);
-      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ARTIFACT_BYTES) throw new Error("unsafe artifact");
+      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw new Error("unsafe artifact");
       const bytes = await readFile(artifactPath);
       if (sha256(bytes) !== expectedHash) throw new McpContractError("assignment_hash_mismatch", "Immutable assignment Markdown hash does not match the request.", "validate", "Use the exact file hash; never overwrite a submitted assignment.");
       return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: expectedHash };
@@ -522,7 +613,7 @@ export class DelegationStore {
     try {
       if (await realpath(artifactPath) !== artifactPath) throw new Error("non-canonical artifact");
       const file = await lstat(artifactPath);
-      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ARTIFACT_BYTES) throw new Error("unsafe artifact");
+      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw new Error("unsafe artifact");
       const bytes = await readFile(artifactPath);
       return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: sha256(bytes) };
     } catch (error: unknown) {

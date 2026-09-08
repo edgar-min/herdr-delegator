@@ -1,6 +1,6 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, type Stats } from "node:fs";
 import { isUtf8 } from "node:buffer";
-import { appendFile, lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -8,12 +8,13 @@ import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorS
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
+import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, renderEmergencyAuditInput, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
@@ -327,6 +328,10 @@ const ASSIGNMENT_STATE_ORDER: readonly AssignmentState[] = ["queued", "prompting
 // only ORCH identity (plan U3 gate order).
 const CLOSE_FORCE_ELIGIBLE_CODES: Record<string, true> = { orch_identity_mismatch: true, stale_orch_generation: true };
 const ACTIVE_SETTLEMENT_STATES: Partial<Record<AssignmentState, true>> = { prompting: true, working: true, blocked: true, ambiguous: true };
+// Settled for good. A completion block appended after one of these is an
+// observation with no effect: the settlement stands and its FIFO promotion
+// already happened exactly once (C9).
+const ASSIGNMENT_TERMINAL_STATES: Partial<Record<AssignmentState, true>> = { completed: true, failed: true };
 const TOKEN_FIELDS = [
   ["input", "input_tokens"],
   ["output", "output_tokens"],
@@ -1002,32 +1007,186 @@ async function updateLaneFromWorker(store: DelegationStore, workerId: string, re
   });
 }
 
+// ---------------------------------------------------------------------------
+// The completion-block grammar, read from a lane report.
+//
+// Four dogfooded reports are one defect: a worker appended something it
+// believed was a completion block, the parser did not settle it, and nothing
+// said why. `Status: completed` with a capital S read as zero recognized
+// statuses (0b2c5548cb73bf25); `## [Assignment Completion: …]` left the lane
+// working (ffd8390346e69cae); `status: blocked` settled nothing AND the correct
+// `completed` block appended after it was ignored, because only the FIRST block
+// was ever examined (55bd11394cc1553a, 89bc054958c59c88).
+//
+// So: every block is read, the LATEST valid one settles, `blocked` is recognized
+// as a reported boundary that settles nothing, and every candidate that does not
+// settle names its own cause and the exact text that would have settled it. No
+// blank-line rule was added: the parser never required one (F7).
+// ---------------------------------------------------------------------------
+
+const COMPLETION_STATUSES = ["completed", "failed", "blocked"] as const;
+type CompletionStatus = (typeof COMPLETION_STATUSES)[number];
+
+type CompletionCandidate = {
+  /** 1-based line of the candidate's header in the report. */
+  line: number;
+  /** Heading markers found before the header, e.g. `##`. Empty when canonical. */
+  heading: string;
+  /** The single recognized status this candidate carries, when it carries exactly one. */
+  status?: CompletionStatus;
+  /** Why this candidate does not settle, in the report reader's words. */
+  defects: string[];
+};
+
 /**
- * Settles one assignment from its own durable evidence, or leaves it untouched.
+ * Every `[Assignment Completion: <id>]` candidate in a report, canonical or not,
+ * in file order.
  *
- * The predicate is unchanged: the lane is observed idle or failed AND its report
- * carries the tool-recognized completion block with exactly one status line.
- * `warnings` is an optional observation sink — a block that exists but does not
- * parse names itself there instead of degrading into a silent no-op, because a
- * worker that believes it reported and a run that disagrees is precisely the
- * state nobody discovers by reading a registry (friction bbc360a158e3a3bf).
+ * A heading-prefixed candidate is scanned deliberately: it cannot settle, but it
+ * is the single most common near-miss, and a parser that cannot see it can only
+ * report "no completion block" for a report that visibly contains one.
  */
-export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord, warnings?: string[]): Promise<DelegationRegistry> {
-  if (lane.state !== "idle" && lane.state !== "failed") return registry;
-  let report: Buffer;
-  try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); }
-  catch { return registry; }
+export function scanCompletionBlocks(report: string, assignmentId: string): CompletionCandidate[] {
   // Defense in depth: `ASSIGNMENT_RE` admits no RegExp metacharacter today, but
   // this is the one place an assignment ID becomes pattern source rather than
   // pattern input, so the grammar is not the only thing standing between an ID
   // and a header a worker could forge or a pattern that silently stops matching.
-  const completion = new RegExp(`^\\[Assignment Completion: ${assignment.assignment_id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\]$([\\s\\S]*?)(?=^\\[[^\\n]+\\]$|(?![\\s\\S]))`, "m").exec(report.toString("utf8"));
-  const statuses = completion?.[1].match(/^status: (completed|failed)$/gm) ?? [];
-  if (completion && statuses.length !== 1) {
-    warnings?.push(`completion_block_unparsable: [Assignment Completion: ${assignment.assignment_id}] in a2a/${lane.worker_id}-report.md carries ${statuses.length} recognized status lines; exactly one line reading "status: completed" or "status: failed" settles it, so the assignment stays ${assignment.state}.`);
+  const escaped = assignmentId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const header = new RegExp(`^(#{1,6})?[ \\t]*\\[Assignment Completion: ${escaped}\\][ \\t]*$`);
+  // The historical block terminator: any line that is a bare bracketed marker.
+  const terminator = /^\[[^\n]+\]$/;
+  const lines = report.split("\n");
+  const candidates: CompletionCandidate[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = header.exec(lines[index]);
+    if (!match) continue;
+    const heading = match[1] ?? "";
+    let end = lines.length;
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      if (terminator.test(lines[cursor]) || header.test(lines[cursor])) { end = cursor; break; }
+    }
+    const body = lines.slice(index + 1, end);
+    const defects: string[] = [];
+    if (heading) defects.push(`its header line is prefixed with "${heading}", which makes it a Markdown heading and not the block header the tool matches`);
+    // Exact string equality against the closed status set, so the recognized
+    // value is typed by construction and no cast stands between the report's
+    // bytes and the boundary the machine acts on.
+    const recognized: CompletionStatus[] = [];
+    for (const line of body) for (const status of COMPLETION_STATUSES) if (line === `status: ${status}`) recognized.push(status);
+    if (recognized.length > 1) {
+      defects.push(`it carries ${recognized.length} recognized status lines (${recognized.map((status) => `"status: ${status}"`).join(", ")}) and exactly one settles`);
+    }
+    if (recognized.length === 0) {
+      const loose = body.map((line) => /^([ \t]*)([Ss][Tt][Aa][Tt][Uu][Ss])[ \t]*:[ \t]*(.*?)[ \t]*$/.exec(line)).find((found) => found !== null);
+      if (!loose) defects.push('it carries no "status:" line at all');
+      else {
+        if (loose[1]) defects.push(`its status line is indented by ${loose[1].length} character(s) and the line must start at column 1`);
+        if (loose[2] !== "status") defects.push(`its status key reads ${JSON.stringify(`${loose[2]}:`)} and the recognized key is lowercase "status:"`);
+        const value = loose[3];
+        const known = (COMPLETION_STATUSES as readonly string[]).includes(value.toLowerCase());
+        if (known && value !== value.toLowerCase()) defects.push(`its status value reads ${JSON.stringify(value)} and the recognized values are lowercase`);
+        if (!known) defects.push(`its status value ${JSON.stringify(value)} is not one of ${COMPLETION_STATUSES.join(", ")}`);
+      }
+    }
+    candidates.push({
+      line: index + 1,
+      heading,
+      ...(recognized.length === 1 ? { status: recognized[0] } : {}),
+      defects,
+    });
   }
-  if (!completion || statuses.length !== 1 || !lane.official_session_id || !Number.isSafeInteger(lane.state_change_seq)) return registry;
-  const terminal = statuses[0] === "status: failed" ? "failed" as const : "completed" as const;
+  return candidates;
+}
+
+/** The two lines that settle, quoted so a correction is a copy rather than a guess. */
+export function completionExample(assignmentId: string, status: CompletionStatus = "completed"): string {
+  return `Append these two lines to the end of the report, both starting at column 1 and the first with no heading marker: "[Assignment Completion: ${assignmentId}]" then "status: ${status}". Recognized statuses are ${COMPLETION_STATUSES.join(", ")}, lowercase; blocked is recorded as a reported boundary and settles nothing.`;
+}
+
+/**
+ * Re-decides, INSIDE the write transaction, the three facts every assignment
+ * writer in this file read outside it: that the record still exists, that it is
+ * still bound to this lane, and that the lane still holds it as active.
+ *
+ * Settlement, the wait progress writer, and the prompt's progress and ambiguity
+ * writers all read a snapshot, then wrote unconditionally. Two guarded calls
+ * racing on one lane could therefore write a state derived from a registry that
+ * no longer said what the writer assumed (G5). Returning a reason instead of
+ * throwing is deliberate: these writers are observation-driven, so a lost race
+ * is reported and the registry is left exactly as the winner wrote it.
+ */
+function assignmentWriterConflict(next: DelegationRegistry, workerId: string, assignmentId: string): string | undefined {
+  const assignment = next.assignments[assignmentId];
+  if (!assignment) return `assignment ${assignmentId} is no longer registered`;
+  const lane = next.lanes[workerId];
+  if (!lane) return `lane ${workerId} is no longer registered`;
+  if (assignment.worker_id !== workerId) return `assignment ${assignmentId} is bound to lane ${assignment.worker_id}, not ${workerId}`;
+  if (lane.active_assignment_id !== assignmentId) {
+    return lane.active_assignment_id
+      ? `lane ${workerId} now holds ${lane.active_assignment_id} as its active assignment`
+      : `lane ${workerId} no longer holds an active assignment`;
+  }
+  return undefined;
+}
+
+/**
+ * Settles one assignment from its own durable evidence, or leaves it untouched.
+ *
+ * The predicate is otherwise unchanged: the lane is observed idle or failed AND
+ * its report carries a tool-recognized completion block. What changed is which
+ * block — the LATEST valid one, not the first — and that `warnings` now receives
+ * a named cause and a correction for every candidate that does not settle,
+ * because a worker that believes it reported and a run that disagrees is
+ * precisely the state nobody discovers by reading a registry (friction
+ * bbc360a158e3a3bf, 55bd11394cc1553a, 0b2c5548cb73bf25, ffd8390346e69cae).
+ */
+export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord, warnings?: string[]): Promise<DelegationRegistry> {
+  if (lane.state !== "idle" && lane.state !== "failed") return registry;
+  const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
+  let report: Buffer;
+  try { report = await readFile(reportPath); }
+  catch {
+    warnings?.push(`completion_block_absent: lane ${lane.worker_id} is settled but a2a/${lane.worker_id}-report.md is unreadable, so assignment ${assignment.assignment_id} stays ${assignment.state}. ${completionExample(assignment.assignment_id)}`);
+    return registry;
+  }
+  const candidates = scanCompletionBlocks(report.toString("utf8"), assignment.assignment_id);
+  const settleable = candidates.filter((candidate) => !candidate.heading && candidate.status !== undefined);
+  const chosen = settleable[settleable.length - 1];
+  for (const candidate of candidates) {
+    if (candidate.defects.length === 0) continue;
+    warnings?.push(`completion_block_unparsable: the [Assignment Completion: ${assignment.assignment_id}] candidate at a2a/${lane.worker_id}-report.md line ${candidate.line} does not settle because ${candidate.defects.join("; and ")}. The assignment stays ${assignment.state} until a valid block is appended. ${completionExample(assignment.assignment_id)}`);
+  }
+  if (candidates.length === 0) {
+    warnings?.push(`completion_block_absent: a2a/${lane.worker_id}-report.md carries no [Assignment Completion: ${assignment.assignment_id}] candidate at all, so assignment ${assignment.assignment_id} stays ${assignment.state}. ${completionExample(assignment.assignment_id)}`);
+    return registry;
+  }
+  if (!chosen) return registry;
+  if (settleable.length > 1) {
+    warnings?.push(`completion_block_superseded: a2a/${lane.worker_id}-report.md carries ${settleable.length} valid [Assignment Completion: ${assignment.assignment_id}] blocks; the latest one, at line ${chosen.line} reading "status: ${chosen.status}", is the one that was acted on.`);
+  }
+  // A REPORTED boundary, not a settlement (Q5): `blocked` is recorded on the
+  // record and changes nothing else — not the assignment state, not the lane's
+  // runtime state, not `wait.until`, not a doorbell boundary. A later
+  // completed/failed block is what settles, and this observation is what makes
+  // the interim state legible instead of silently dropped.
+  if (chosen.status === "blocked") {
+    warnings?.push(`completion_block_blocked: assignment ${assignment.assignment_id} reported boundary "blocked" at a2a/${lane.worker_id}-report.md line ${chosen.line}. It is recorded as reported_boundary and settles nothing: the assignment stays ${assignment.state} until a "status: completed" or "status: failed" block is appended.`);
+    if (assignment.reported_boundary === "blocked") return registry;
+    let conflict: string | undefined;
+    const observed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+      conflict = assignmentWriterConflict(next, lane.worker_id, assignment.assignment_id);
+      if (conflict) return;
+      next.assignments[assignment.assignment_id].reported_boundary = "blocked";
+      next.assignments[assignment.assignment_id].updated_at = nowIso();
+    });
+    if (conflict) {
+      warnings?.push(`reported_boundary_not_recorded: the blocked boundary for ${assignment.assignment_id} was not written because ${conflict}.`);
+      return registry;
+    }
+    return observed;
+  }
+  if (!lane.official_session_id || !Number.isSafeInteger(lane.state_change_seq)) return registry;
+  const terminal = chosen.status === "failed" ? "failed" as const : "completed" as const;
   const settledAt = nowIso();
   const [tokenUsage, advisoryUnownedChanges] = await Promise.all([
     observeTokenUsage(lane, settledAt),
@@ -1038,7 +1197,16 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
   const elapsedMs = promptedAt !== undefined && Number.isSafeInteger(promptedAt) && promptedAt <= settledAtMs
     ? settledAtMs - promptedAt
     : undefined;
-  return store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+  let conflict: string | undefined;
+  const settled = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+    conflict = assignmentWriterConflict(next, lane.worker_id, assignment.assignment_id);
+    // Already terminal: the block that settled it stands, and a later block is
+    // an observation with no effect — including on the FIFO promotion, which
+    // happened exactly once, at that settlement (C9).
+    if (!conflict && ASSIGNMENT_TERMINAL_STATES[next.assignments[assignment.assignment_id].state]) {
+      conflict = `assignment ${assignment.assignment_id} already settled as ${next.assignments[assignment.assignment_id].state}`;
+    }
+    if (conflict) return;
     const currentLane = next.lanes[lane.worker_id];
     const current = next.assignments[assignment.assignment_id];
     current.state = terminal;
@@ -1055,6 +1223,11 @@ export async function settleIfReported(store: DelegationStore, registry: Delegat
     const following = currentLane.queued_assignment_ids.shift();
     if (following) currentLane.active_assignment_id = following;
   });
+  if (conflict) {
+    warnings?.push(`completion_block_after_terminal: the [Assignment Completion: ${assignment.assignment_id}] block at line ${chosen.line} was not acted on because ${conflict}. Nothing changed: the settlement that already landed stands, and its queue promotion happened once.`);
+    return registry;
+  }
+  return settled;
 }
 
 /**
@@ -1122,9 +1295,187 @@ export async function sweepSettlements(
     const promoted = current.lanes[workerId].active_assignment_id;
     warnings.push(`settlement_swept: assignment ${assignmentId} on lane ${workerId} settled as ${settled} from its reported completion block${undispatched ? ", settled without a recorded dispatch (no prompted_at was ever stamped, so no elapsed_ms is claimed)" : ""}${promoted ? `; queued head ${promoted} promoted` : ""}.`);
   }
+  // A block appended AFTER the assignment already settled. It reaches no
+  // settlement path at all — the sweep skips terminal records and the lane no
+  // longer holds them — so without this pass a worker that re-reported would
+  // see silence and conclude the run had lost its report (C9). The scan is
+  // bounded to each lane's own last settlement, so it costs one report read per
+  // lane at most, and it changes nothing.
+  for (const lane of Object.values(current.lanes)) {
+    const settledId = lane.last_completed_assignment_id;
+    if (!settledId || !ASSIGNMENT_TERMINAL_STATES[current.assignments[settledId]?.state]) continue;
+    let report: Buffer;
+    try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); } catch { continue; }
+    const settleable = scanCompletionBlocks(report.toString("utf8"), settledId).filter((candidate) => !candidate.heading && candidate.status !== undefined);
+    if (settleable.length < 2) continue;
+    warnings.push(`completion_block_after_terminal: a2a/${lane.worker_id}-report.md carries ${settleable.length} valid [Assignment Completion: ${settledId}] blocks and the assignment is already ${current.assignments[settledId].state}. The extra block changed nothing: the recorded settlement stands and its queue promotion happened once.`);
+  }
   return current;
 }
 
+// ---------------------------------------------------------------------------
+// `# References`: the pinned-document boundary (Q4, Q13, C8).
+//
+// An assignment that does not fit in 64KiB used to point at a document by name,
+// and nothing said which bytes it meant. A reference names a path AND the hash
+// it was authored against, so the machine can say whether the document a worker
+// will read is the document the ORCH wrote the assignment about.
+//
+// The refusals are deliberately asymmetric. Before anything is committed —
+// preflight and add — a mismatch REFUSES, because a dispatch cannot be recalled.
+// From the first prompt onward it is a WARNING, because refusing there would
+// invent a new stuck state for work already delivered, and the worker holds the
+// pinned hashes and can verify for itself.
+// ---------------------------------------------------------------------------
+
+type ReferenceObservation = {
+  path: string;
+  sha256: string;
+  /** The hash the bytes actually have, when the file was readable at all. */
+  observed_sha256?: string;
+  /** Why this reference is not the file the assignment pinned. */
+  problem?: string;
+};
+
+/**
+ * One reference, decided against the filesystem. Path SYNTAX was already settled
+ * at parse time; this answers the questions only the filesystem can: does it
+ * exist, is it a plain file inside the run directory after every link is
+ * resolved, is it reachable from anywhere else, is it bounded, and are its bytes
+ * still the pinned bytes.
+ *
+ * `identities` accumulates (dev, ino) across the section so two bullets cannot
+ * name one file under two paths — a hardlink and a bind-mounted alias both pass
+ * every other check.
+ */
+async function observeReference(
+  runPath: string,
+  runRoot: string,
+  reference: { path: string; sha256: string },
+  identities: Map<string, string>,
+): Promise<ReferenceObservation> {
+  const observation: ReferenceObservation = { path: reference.path, sha256: reference.sha256 };
+  const target = path.resolve(runPath, reference.path);
+  const lexical = path.relative(runPath, target);
+  if (!lexical || lexical === ".." || lexical.startsWith(`..${path.sep}`) || path.isAbsolute(lexical)) {
+    observation.problem = "resolves outside the run directory";
+    return observation;
+  }
+  let file: Stats;
+  try { file = await lstat(target); }
+  catch { observation.problem = "does not exist"; return observation; }
+  if (file.isSymbolicLink()) {
+    observation.problem = "is a symbolic link; a reference names a regular file the run directory holds directly";
+    return observation;
+  }
+  if (!file.isFile()) { observation.problem = "is not a regular file"; return observation; }
+  if (file.nlink !== 1) {
+    observation.problem = `has ${file.nlink} hard links, so the same bytes are reachable and rewritable from outside the run directory`;
+    return observation;
+  }
+  if (file.size > MAX_ASSIGNMENT_REFERENCE_BYTES) {
+    observation.problem = `is ${file.size} bytes; the limit is ${MAX_ASSIGNMENT_REFERENCE_BYTES}`;
+    return observation;
+  }
+  let resolved: string;
+  try { resolved = await realpath(target); }
+  catch { observation.problem = "cannot be resolved"; return observation; }
+  // Containment decided on the RESOLVED path and on separator boundaries, so a
+  // sibling directory whose name merely starts with the run directory's name is
+  // outside, and a component symlink cannot smuggle the target out.
+  const contained = path.relative(runRoot, resolved);
+  if (!contained || contained === ".." || contained.startsWith(`..${path.sep}`) || path.isAbsolute(contained)) {
+    observation.problem = "resolves outside the run directory once every path component is resolved";
+    return observation;
+  }
+  const identity = `${file.dev}:${file.ino}`;
+  const twin = identities.get(identity);
+  if (twin !== undefined) {
+    observation.problem = `is the same file as ${JSON.stringify(twin)}, pinned twice under two paths`;
+    return observation;
+  }
+  identities.set(identity, reference.path);
+  // Bounded raw-byte read: the size gate above is what makes this safe, and the
+  // bytes are hashed exactly as they are, never decoded.
+  observation.observed_sha256 = sha256(await readFile(target));
+  if (observation.observed_sha256 !== reference.sha256) {
+    observation.problem = `now hashes ${observation.observed_sha256} and the assignment pinned ${reference.sha256}`;
+  }
+  return observation;
+}
+
+export async function observeReferences(runPath: string, references: readonly { path: string; sha256: string }[]): Promise<ReferenceObservation[]> {
+  const runRoot = await realpath(runPath).catch(() => runPath);
+  const identities = new Map<string, string>();
+  const observations: ReferenceObservation[] = [];
+  for (const reference of references) observations.push(await observeReference(runPath, runRoot, reference, identities));
+  return observations;
+}
+
+/**
+ * The pre-commit gate. A structural problem is a grammar failure and refuses as
+ * `assignment_artifact_invalid`; bytes that merely moved on refuse as
+ * `reference_hash_mismatch`. Both run before the assignment ID is consumed.
+ */
+export function assertReferencesPinned(assignmentId: string, observations: readonly ReferenceObservation[]): void {
+  const structural = observations.filter((observation) => observation.problem !== undefined && observation.observed_sha256 === undefined);
+  if (structural.length) {
+    throw new McpContractError(
+      "assignment_artifact_invalid",
+      `Section "# ${ASSIGNMENT_REFERENCES_SECTION}" of ${assignmentId} names ${structural.length} file(s) this run cannot pin: ${structural.map((observation) => `${observation.path} ${observation.problem}`).join("; ")}.`,
+      "validate",
+      `Each of the at most ${MAX_ASSIGNMENT_REFERENCES} bullets in "# ${ASSIGNMENT_REFERENCES_SECTION}" is "- <path> sha256:<64 lowercase hex>", where the path is relative to the RUN directory and names one regular file of at most ${MAX_ASSIGNMENT_REFERENCE_BYTES} bytes — no "..", no symlink, no hardlinked file, no directory, and no two bullets naming the same file. Copy the document into the run directory if it lives elsewhere; a reference is pinned bytes, not a pointer.`,
+    );
+  }
+  const drifted = observations.filter((observation) => observation.problem !== undefined);
+  if (drifted.length) {
+    throw new McpContractError(
+      "reference_hash_mismatch",
+      `${assignmentId} pins ${drifted.length} reference(s) that no longer hash as declared: ${drifted.map((observation) => `${observation.path} ${observation.problem}`).join("; ")}.`,
+      "validate",
+      `Update the sha256 in "# ${ASSIGNMENT_REFERENCES_SECTION}" to the current bytes, or restore the document to the bytes the assignment was written against, then retry. Nothing was registered: the assignment ID is still free, and the artifact's own hash changes with the edit, so pass the new instructions_sha256 on the next add.`,
+    );
+  }
+}
+
+/**
+ * Post-dispatch drift, as an observation. The dispatch stands (Q13): the worker
+ * holds the pinned hashes, so the honest thing is to say which document moved,
+ * not to invent a refusal for work already delivered.
+ */
+export async function observeReferenceDrift(store: DelegationStore, registry: DelegationRegistry, assignment: AssignmentRecord | undefined): Promise<string | undefined> {
+  if (!assignment?.references?.length) return undefined;
+  const observations = await observeReferences(store.runPath, assignment.references);
+  const problems = observations.filter((observation) => observation.problem !== undefined);
+  if (!problems.length) return undefined;
+  return `reference_drift: ${problems.length} of ${observations.length} document(s) ${assignment.assignment_id} pinned in "# ${ASSIGNMENT_REFERENCES_SECTION}" no longer match: ${problems.map((observation) => `${observation.path} ${observation.problem}`).join("; ")}. The dispatch is not recalled and cannot be — the worker already holds the assignment and its pinned hashes, and can verify each document itself. Treat this as evidence about the documents, and reflect any correction in a NEW assignment rather than by editing the immutable one.`;
+}
+
+/**
+ * Refuses a profile the responsibility's live lane cannot run, BEFORE `select`
+ * consumes the assignment ID.
+ *
+ * A lane's launch profile is pinned for its lifetime, so an artifact that
+ * declares a different one was always going to fail — but it failed inside
+ * `ensure_worker`, after registration, which burned the ID and left the ORCH
+ * re-authoring under a new one (friction 17b7fd5328871a88). The check reads the
+ * profile the lifecycle registry recorded at launch, which is the same value
+ * `ensure_worker` compares against.
+ */
+export async function assertLaneProfile(store: DelegationStore, registry: DelegationRegistry, artifact: AssignmentArtifact): Promise<void> {
+  const predicted = await store.predictLane(registry, artifact.responsibility_key);
+  if (!predicted.lane_reuse) return;
+  const lifecycle = await readRegistry(path.join(store.runPath, "a2a", "herdr-workers.json")).catch(() => undefined);
+  const record = Object.values(lifecycle?.workers ?? {}).find((worker) => worker.worker_id === predicted.worker_id);
+  const launched = record?.selected_profile;
+  if (!launched || launched === artifact.profile) return;
+  throw new McpContractError(
+    "model_profile_mismatch",
+    `${artifact.assignment_id} declares profile "${artifact.profile}", but responsibility "${artifact.responsibility_key}" runs on lane ${predicted.worker_id}, which was launched under profile "${launched}".`,
+    "validate",
+    `A live lane's launch profile is fixed for its lifetime. Either set "profile: ${launched}" in the artifact frontmatter to run this on the existing lane, or keep the profile and dispatch it with a \`separation\`, which binds a lane of its own. Nothing was registered: the assignment ID is still free.`,
+  );
+}
 /**
  * Terminal observation of an already-committed settlement. It is a display-only
  * side effect, so every failure degrades to a bounded warning: a settled
@@ -1360,7 +1711,43 @@ export class CompositeTools {
       const neverBorn = (lane: WorkerLaneRecord): boolean =>
         lane.state === "starting" && !lane.official_session_id && !lane.official_session_path;
       const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed" && !neverBorn(lane));
-      if (unsafe.length) throw new McpContractError("track_not_settled", "At least one responsibility lane is active or blocked.", "close", "Settle every lane before track closure.");
+      if (unsafe.length) {
+        // The refusal now carries WHY each lane is still live (C11). A lane that
+        // is unsettled because its worker's completion block does not parse is
+        // indistinguishable, from "at least one lane is active", from a lane
+        // that is genuinely still working — and the first is a two-line fix in
+        // the report while the second is a wait.
+        const diagnosis: string[] = [];
+        for (const lane of unsafe) {
+          const assignmentId = lane.active_assignment_id;
+          if (!assignmentId) { diagnosis.push(`${lane.worker_id} is ${lane.state} and holds no assignment`); continue; }
+          let report: Buffer | undefined;
+          try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); } catch { /* unreadable report reads as no candidate */ }
+          const candidates = report ? scanCompletionBlocks(report.toString("utf8"), assignmentId) : [];
+          const settleable = candidates.filter((candidate) => !candidate.heading && candidate.status !== undefined && candidate.status !== "blocked");
+          if (settleable.length) { diagnosis.push(`${lane.worker_id} is ${lane.state} with a valid completion block for ${assignmentId} at report line ${settleable[settleable.length - 1].line}; inspect the lane so the settlement is observed, then retry the close`); continue; }
+          const malformed = candidates.filter((candidate) => candidate.defects.length > 0);
+          if (malformed.length) {
+            diagnosis.push(`${lane.worker_id} is ${lane.state} and its report carries ${malformed.length} unparsable completion candidate(s) for ${assignmentId}: ${malformed.map((candidate) => `line ${candidate.line} — ${candidate.defects.join("; and ")}`).join(" | ")}. ${completionExample(assignmentId)}`);
+            continue;
+          }
+          const blocked = candidates.some((candidate) => candidate.status === "blocked");
+          diagnosis.push(blocked
+            ? `${lane.worker_id} is ${lane.state} and ${assignmentId} reported the boundary "blocked", which settles nothing; it needs a "status: completed" or "status: failed" block`
+            : `${lane.worker_id} is ${lane.state} on ${assignmentId} with no completion candidate in its report at all`);
+        }
+        const drift: string[] = [];
+        for (const lane of Object.values(registry.lanes)) {
+          const observed = await observeReferenceDrift(store, registry, registry.assignments[lane.active_assignment_id ?? ""]);
+          if (observed) drift.push(observed);
+        }
+        throw new McpContractError(
+          "track_not_settled",
+          `${unsafe.length} responsibility lane(s) are still active or blocked: ${diagnosis.join(" || ")}${drift.length ? ` || ${drift.join(" || ")}` : ""}`,
+          "close",
+          "Settle every lane before track closure. Where the cause named above is an unparsable completion block, the fix is in the worker's report, not in the registry: have the lane append the exact two lines quoted, then inspect the lane so the settlement is observed.",
+        );
+      }
       const closeCandidates: { lane: WorkerLaneRecord; liveSequence: number }[] = [];
       for (const lane of Object.values(registry.lanes)) if (lane.state === "idle") {
         if (!lane.official_session_id) throw new McpContractError("worker_identity_conflict", "Close requires a verified official session.", "close", "Inspect and verify the lane before closure.");
@@ -2552,6 +2939,11 @@ export class CompositeTools {
       next.assignments[assignmentId].updated_at = promptedAt;
       next.lanes[workerId].state = "working";
     });
+    // Dispatch is the last moment the pinned documents are re-read on the
+    // ORCH's behalf (Q13). It observes and never refuses: the prompt is about
+    // to be delivered and cannot be recalled, and the worker holds the hashes.
+    const dispatchDrift = await observeReferenceDrift(store, registry, registry.assignments[assignmentId]);
+    if (dispatchDrift) warnings.push(dispatchDrift);
     // The lane's profile and its display-only label both live in the canonical
     // assignment artifact rather than mirrored in the registry, so one read
     // serves both. An unreadable artifact leaves the profile unknown, which
@@ -2576,12 +2968,22 @@ export class CompositeTools {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
     } catch (error) {
-      if (error instanceof McpContractError && error.ambiguousEffect) await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
-        const current = next.assignments[assignmentId];
-        current.state = "ambiguous";
-        current.ambiguous_operation = "prompt";
-        current.updated_at = nowIso();
-      });
+      // Guarded like every other assignment writer in this file (G5): the
+      // snapshot this call read is not what the transaction sees, and marking
+      // ambiguity on an assignment another call already settled or rebound
+      // would overwrite a decided state with a stale one.
+      if (error instanceof McpContractError && error.ambiguousEffect) {
+        let conflict: string | undefined;
+        await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+          conflict = assignmentWriterConflict(next, workerId, assignmentId);
+          if (conflict) return;
+          const current = next.assignments[assignmentId];
+          current.state = "ambiguous";
+          current.ambiguous_operation = "prompt";
+          current.updated_at = nowIso();
+        });
+        if (conflict) warnings.push(`ambiguity_not_recorded: the prompt for ${assignmentId} failed ambiguously, but the ambiguity was not written because ${conflict}. Observe the lane rather than re-adding.`);
+      }
       throw error;
     }
     // Everything below runs AFTER the prompt was delivered, so no failure here
@@ -2598,12 +3000,16 @@ export class CompositeTools {
       registry = await updateLaneFromWorker(store, workerId, verified);
       const observedState = laneState(verified.state);
       const seq = numberField(verified.worker, ["state_change_seq"]) ?? registry.lanes[workerId].state_change_seq;
+      let progressConflict: string | undefined;
       registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        progressConflict = assignmentWriterConflict(next, workerId, assignmentId);
+        if (progressConflict) return;
         next.lanes[workerId].state = observedState;
         next.lanes[workerId].state_change_seq = seq;
         next.assignments[assignmentId].state = observedState === "blocked" ? "blocked" : "working";
         next.assignments[assignmentId].updated_at = nowIso();
       });
+      if (progressConflict) warnings.push(`progress_not_recorded: the post-dispatch state of ${assignmentId} was not written because ${progressConflict}. The prompt was delivered; the registry reflects whichever call decided the assignment.`);
       const progress = await this.adapter.reportObservation(paneId, record.responsibility_key, assignmentId, registry.assignments[assignmentId].state, registry.revision, 10_000, artifact?.assignment.label).then((observed) => observed.warning).catch((error: unknown) => `Progress observation failed: ${error instanceof Error ? error.message : String(error)}`);
       if (progress) warnings.push(progress);
       const beforeSettlement = registry.assignments[assignmentId].state;
@@ -2612,12 +3018,16 @@ export class CompositeTools {
       if (terminal) warnings.push(terminal);
       return registry;
     } catch (error) {
+      let conflict: string | undefined;
       await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        conflict = assignmentWriterConflict(next, workerId, assignmentId);
+        if (conflict) return;
         const current = next.assignments[assignmentId];
         current.state = "ambiguous";
         current.ambiguous_operation = "prompt";
         current.updated_at = nowIso();
       });
+      if (conflict) warnings.push(`ambiguity_not_recorded: post-dispatch verification of ${assignmentId} failed, but the ambiguity was not written because ${conflict}.`);
       const recovery = "The assignment prompt was already delivered; inspect_worker to observe the lane's real state instead of re-adding or re-prompting the assignment.";
       if (error instanceof McpContractError) throw new McpContractError(error.code, error.message, error.phase, recovery, true, false);
       if (error instanceof LegacyContractError) throw new McpContractError(error.code, error.message, normalizeLegacyPhase(error.phase), recovery, true, false);
@@ -2663,6 +3073,12 @@ export class CompositeTools {
           return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
+        // Both authoring-time refusals, before anything is registered: the
+        // profile a live lane cannot run (friction 17b7fd5328871a88) and a
+        // `# References` bullet whose document is unpinnable or has moved on.
+        await assertLaneProfile(store, registry, artifact.assignment);
+        const references = artifact.assignment.references ? await observeReferences(store.runPath, artifact.assignment.references) : [];
+        assertReferencesPinned(input.assignment_id, references);
         const predicted = await store.predictLane(registry, input.responsibility_key);
         // Authoring-time overlap, read from the artifact just validated. It is
         // an observation appended to a non-mutating result: preflight still
@@ -2671,7 +3087,7 @@ export class CompositeTools {
         // Authoring-time display (M2 P2): the coordinate is what disambiguates
         // an ID that dozens of runs also hold, and the label is echoed back so
         // the author sees exactly what the artifact declared. Neither is stored.
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, inter_run_ownership: interRunOwnership } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership } };
       }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
@@ -2701,13 +3117,34 @@ export class CompositeTools {
         // assignment behind a completed one (friction bbc360a158e3a3bf).
         const sweepWarnings: string[] = [];
         await sweepSettlements(store, run, await store.read(), sweepWarnings);
+        // Both pre-commit refusals again, on the path an ORCH may reach without
+        // ever calling preflight. They run BEFORE `select`, so a refusal leaves
+        // the assignment ID unconsumed and the artifact re-authorable in place.
+        const addArtifact = await store.assignmentFile(input.assignment_id, input.responsibility_key, input.instructions_sha256);
+        const preAdd = await store.read();
+        if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment);
+        const addReferences = addArtifact.assignment.references ?? [];
+        assertReferencesPinned(input.assignment_id, await observeReferences(store.runPath, addReferences));
         const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
         // Gate observations and the placement echo share one `data`: the echo is
         // merged in, never spread over the top, because a settlement sweep,
         // succession, or emergency observation this call produced is the reason
         // the caller reads `data` at all (friction 8917760a9545c642 ② F2.1).
         const selected = await store.select(input.assignment_id, input.responsibility_key, input.instructions_sha256, input.separation, input.urgent ?? false, timeout(input));
-        const addData = { data: { ...gateData, queue_position: selected.queue_position } };
+        // The artifact is immutable from this instant, so the filesystem is made
+        // to say so (Q6): a registered assignment is 0444, and a later edit
+        // fails on the write rather than silently changing what a worker reads
+        // and what the registry hashed (friction e893b98ff16d24aa). A chmod that
+        // cannot be applied is reported and never unwinds the registration.
+        const sealWarnings: string[] = [];
+        try { await chmod(selected.artifact.path, 0o444); }
+        catch (error) { sealWarnings.push(`assignment_readonly_failed: ${input.assignment_id} is registered, but its canonical artifact could not be made read-only (0444): ${auditDetail(error)}. The registry holds its hash, so any edit is still detectable — but the file is writable, so treat it as immutable by discipline until the mode is repaired.`); }
+        // References are stored as the artifact declared them, not as observed:
+        // the record is the pin a later drift check compares against.
+        if (addReferences.length) {
+          await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { next.assignments[input.assignment_id].references = addReferences.map((reference) => ({ ...reference })); });
+        }
+        const addData = { data: { ...gateData, ...(sealWarnings.length ? { seal: sealWarnings } : {}), ...(addReferences.length ? { references: addReferences.length } : {}), queue_position: selected.queue_position } };
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...addData };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...addData };
         let ensured: WorkerResult;
@@ -2794,11 +3231,20 @@ export class CompositeTools {
       if (waited.warning) tailWarnings.push(waited.warning);
       const finalInspect = await inspectWorker({ operation: "inspect_worker", track_id: input.track_id, run_id: input.run_id, worker_id: lane.worker_id });
       registry = await updateLaneFromWorker(store, lane.worker_id, finalInspect);
+      // Guarded (G5): between the inspect above and this write, another guarded
+      // call may have settled or rebound the assignment, and a wait must never
+      // reopen a decided record as `working`.
+      let waitConflict: string | undefined;
       registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        waitConflict = assignmentWriterConflict(next, lane.worker_id, input.assignment_id);
+        if (waitConflict) return;
         const state = next.lanes[lane.worker_id].state;
         next.assignments[input.assignment_id].state = state === "blocked" ? "blocked" : "working";
         next.assignments[input.assignment_id].updated_at = nowIso();
       });
+      if (waitConflict) tailWarnings.push(`progress_not_recorded: this wait did not write ${input.assignment_id}'s observed state because ${waitConflict}.`);
+      const waitDrift = await observeReferenceDrift(store, registry, registry.assignments[input.assignment_id]);
+      if (waitDrift) tailWarnings.push(waitDrift);
       const beforeSettlement = registry.assignments[input.assignment_id].state;
       registry = await settleIfReported(store, registry, registry.lanes[lane.worker_id], registry.assignments[input.assignment_id], tailWarnings);
       const terminal = await reportTerminalObservation(this.adapter, store, registry, input.assignment_id, beforeSettlement, stringField(finalInspect.worker, ["root_pane_id"]));
@@ -2836,6 +3282,10 @@ export class CompositeTools {
         // The inspected lane is `fresh`, so its live state is not re-read.
         const sweepWarnings: string[] = [];
         registry = await sweepSettlements(store, run, registry, sweepWarnings, input.worker_id);
+        // The pinned documents of whatever this lane is holding, re-read at the
+        // one surface an ORCH uses to supervise (C8). Observation only.
+        const inspectDrift = await observeReferenceDrift(store, registry, registry.assignments[registry.lanes[input.worker_id].active_assignment_id ?? ""]);
+        if (inspectDrift) sweepWarnings.push(inspectDrift);
         const rawStaleness = isObject(result.observation?.staleness) ? result.observation.staleness : undefined;
         const lastActivityAt = stringField(rawStaleness, ["last_activity_at"]);
         const observedAt = stringField(rawStaleness, ["observed_at"]);

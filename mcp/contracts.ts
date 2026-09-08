@@ -14,6 +14,22 @@ export const ASSIGNMENT_RE = /^A-(?!0+$)[0-9]{3,}$/;
 // `[Assignment Completion: ...]` header, or reach a RegExp as a metacharacter.
 export const MAX_ASSIGNMENT_LABEL = 48;
 export const ASSIGNMENT_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,46}[A-Za-z0-9])?$/;
+// The canonical assignment artifact's grammar, as bounded numbers, so the parser
+// that enforces them, the schema description that publishes them, and the
+// documents that teach them cannot drift apart (friction 2f772405d442c6f3: the
+// five-section and Goal limits were discoverable only by failing a preflight).
+export const MAX_ASSIGNMENT_ARTIFACT_BYTES = 64 * 1024;
+export const MAX_ASSIGNMENT_GOAL = 4_096;
+export const MAX_ASSIGNMENT_SECTION_LINES = 64;
+export const MAX_ASSIGNMENT_BULLET = 1_000;
+// The five required H1 sections, in order, followed by the optional trailing
+// `# References` (Q4). Order is part of the grammar: sections are split on H1
+// boundaries and matched positionally, never searched for by name.
+export const ASSIGNMENT_SECTIONS = ["Goal", "Completion conditions", "Write ownership", "Dependencies", "User boundaries"] as const;
+export const ASSIGNMENT_REFERENCES_SECTION = "References";
+export const MAX_ASSIGNMENT_REFERENCES = 16;
+export const MAX_ASSIGNMENT_REFERENCE_BYTES = 256 * 1024;
+export const MAX_ASSIGNMENT_REFERENCE_PATH_BYTES = 1_024;
 export const WORKER_RE = /^w[1-9][0-9]*$/;
 export const SHA256_RE = /^[a-f0-9]{64}$/;
 export const ROLE_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -281,6 +297,14 @@ export type AssignmentArtifact = {
    * registry, a lane queue, a settlement, or a scheduling decision.
    */
   label?: string;
+  /**
+   * The optional trailing `# References` section, as the artifact declared it:
+   * a run-relative path and the SHA-256 the author pinned it at. Grammar and
+   * path syntax are decided here, at parse time; existence, containment,
+   * symlink and hardlink refusal, the size bound, and the hash comparison are
+   * filesystem questions the tool layer answers (Q4, Q13).
+   */
+  references?: { path: string; sha256: string }[];
 };
 
 export type AssignmentRecord = {
@@ -671,9 +695,26 @@ export const herdrTrackInputShape = {
 // assignment ID, the label, or any registry record (ASN-003a), so a queue that
 // was reordered once carries no priority anyone can re-read later.
 const urgent = z.boolean().optional().describe("Insert this assignment at the HEAD of its lane's queue instead of appending it. It decides placement inside the queue and nothing else: an idle lane dispatches immediately, so the field has no effect there; a parked run still refuses to promote a queued head; nothing already dispatched is interrupted or recalled; and it is orthogonal to `emergency`, which buys registration past a budget park rather than queue order. It is call-time only — never persisted, never part of identity — so read the placement back from `data.queue_position` in this call's response. A mounted server older than this field silently drops it and appends: an absent `data.queue_position` in the response means the placement you asked for did not happen.");
+// The whole authoring contract, published where an ORCH reads it BEFORE writing a
+// file rather than after a preflight refuses one (friction 2f772405d442c6f3,
+// 171183a6663fabb1, 0b2c5548cb73bf25). Every number here is the constant the
+// parser enforces, so the text cannot drift from the behavior.
+export const ASSIGNMENT_GRAMMAR_GUIDANCE = `The canonical assignment is one UTF-8 Markdown file at <run>/a2a/assignments/<assignment_id>.md, LF line endings only, at most ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes.
+
+Frontmatter: "---", then exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally "label: <display-only label>", then "---", then a blank line. No other key, no repeated key, no blank line inside the block.
+
+Body: exactly ${ASSIGNMENT_SECTIONS.length} H1 sections in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each heading followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it. "# Goal" is free prose of at most ${MAX_ASSIGNMENT_GOAL} characters. The other four are Markdown bullets only: at most ${MAX_ASSIGNMENT_SECTION_LINES} lines each, every line "- <text>" of 1 to ${MAX_ASSIGNMENT_BULLET} characters, with no blank lines, no wrapped continuation lines, no nested indentation and no sub-headings.
+
+Trap: a line beginning "# " at column 1 starts a new section wherever it appears, INCLUDING inside a fenced code block, because sections are split before anything interprets fences. Indent such a fence so no line inside it begins at column 1.
+
+"# ${ASSIGNMENT_REFERENCES_SECTION}" pins documents by hash: at most ${MAX_ASSIGNMENT_REFERENCES} bullets, each exactly "- <path> sha256:<64 lowercase hex>". The path is relative to the RUN directory with no "..", no empty segment, no leading "/" and no backslash, and must name a regular file inside the run directory — no symlink, no hardlinked file, no directory, no two bullets naming the same file — of at most ${MAX_ASSIGNMENT_REFERENCE_BYTES} bytes. preflight and add verify every hash and REFUSE on a mismatch (\`reference_hash_mismatch\`, nothing registered); from the first dispatch onward a mismatch is a \`reference_drift\` warning on wait, worker inspect and track close, and the dispatch is never recalled. An artifact carrying this section is rejected by servers older than 3.9.0 with "missing or extra sections": respawn the plugin rather than deleting the section.
+
+Settlement grammar: the worker appends, at the END of its own lane report and at column 1, "[Assignment Completion: <assignment_id>]" on one line and "status: completed" or "status: failed" on the next. Both lines are literal: no heading marker before the header, lowercase "status:", lowercase value, exactly one recognized status line in the block. "status: blocked" is recognized and recorded as a reported boundary — it settles nothing and a later completed/failed block is what settles. When a report carries several valid blocks for one assignment the LATEST one is acted on; a block appended after the assignment already settled changes nothing and is reported as \`completion_block_after_terminal\`.
+
+add makes the registered artifact read-only (0444). It is immutable from that instant: author a NEW assignment rather than editing a dispatched one.`;
 export const herdrAssignmentInputShape = {
   ...run,
-  action: z.enum(["add", "preflight", "wait"]),
+  action: z.enum(["add", "preflight", "wait"]).describe(`preflight validates the canonical assignment file and decides nothing; add registers it immutably and dispatches it; wait observes the lane holding it.\n\n${ASSIGNMENT_GRAMMAR_GUIDANCE}`),
   assignment_id: assignmentId,
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
