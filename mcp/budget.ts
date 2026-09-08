@@ -16,6 +16,8 @@ import {
   McpContractError,
   nowIso,
   sha256,
+  type BudgetAppliedState,
+  type BudgetExtension,
   type BudgetJustification,
   type BudgetMetering,
   type BudgetParkReason,
@@ -361,20 +363,32 @@ export function clampWriteLedgerLine(runPath: string, outcome: ClampWriteOutcome
 }
 
 /**
+ * What a verdict alone may not exceed, per axis. Under `notify` there is no such
+ * bound — the audit is the authority and the granted figure IS the ceiling.
+ * Under `full` the human approves every extension by raising the clamp, so the
+ * granted figure is held at this floor until they do: `seed_tokens` on the token
+ * axis, `minutes_floor` on the wall-clock axis. The two used to disagree — the
+ * token axis held at the seed while the minutes axis simply followed
+ * `granted_minutes` — which is why a `full` run could be parked on
+ * `approval-required` for tokens while its minutes rose with no approval at all
+ * (friction 09470253737e9da6).
+ */
+export function policyFloor(record: BudgetRecord): { tokens: number; minutes: number } {
+  return { tokens: record.seed_tokens, minutes: record.minutes_floor ?? record.seed_minutes };
+}
+
+/**
  * Effective ceiling. A clamp bound, when present, is the human-set ABSOLUTE
  * ceiling: cap = clamp value, even above the granted figure — raising the clamp
  * releases a denied/approval-required/over-cap park on the next guarded op, and
- * 0 stays the kill switch. An absent bound falls back to the granted figure;
- * under `full` the human approves every extension by raising the clamp, so
- * budget granted above the seed simply does not exist until the clamp says so.
+ * 0 stays the kill switch. An absent bound falls back to the granted figure,
+ * held at this policy's floor on both axes alike.
  */
 export function effectiveCap(record: BudgetRecord, clamp: BudgetClamp | undefined): { cap_tokens: number; cap_minutes: number } {
-  const tokensCeiling = clamp?.max_tokens !== undefined
-    ? clamp.max_tokens
-    : record.doorbell_policy === "full" && record.granted_tokens > record.seed_tokens
-      ? record.seed_tokens
-      : record.granted_tokens;
-  const minutesCeiling = clamp?.max_minutes !== undefined ? clamp.max_minutes : record.granted_minutes;
+  const floor = policyFloor(record);
+  const full = record.doorbell_policy === "full";
+  const tokensCeiling = clamp?.max_tokens ?? (full ? Math.min(record.granted_tokens, floor.tokens) : record.granted_tokens);
+  const minutesCeiling = clamp?.max_minutes ?? (full ? Math.min(record.granted_minutes, floor.minutes) : record.granted_minutes);
   return { cap_tokens: Math.max(0, tokensCeiling), cap_minutes: Math.max(0, minutesCeiling) };
 }
 
@@ -382,6 +396,192 @@ export function effectiveCap(record: BudgetRecord, clamp: BudgetClamp | undefine
 export function stepCap(record: BudgetRecord): number {
   return Math.max(1, Math.floor(record.granted_tokens * BUDGET_STEP_FRACTION));
 }
+
+/** The same covenant on the wall-clock axis, so neither axis can outrun the other. */
+export function minutesStepCap(record: BudgetRecord): number {
+  return Math.max(1, Math.floor(record.granted_minutes * BUDGET_STEP_FRACTION));
+}
+
+/**
+ * The request this extension actually carries, per axis. An omitted axis falls
+ * back to ITS OWN step rather than to zero, because a grant moves both
+ * dimensions (BUD-010): wall clock keeps accruing while a run is parked, so a
+ * token-only grant would leave a minutes-parked run parked forever. An
+ * over-ambitious ask is TRUNCATED to the step, never refused — the covenant is a
+ * ceiling on what one extension may buy, not a grammar the caller must guess.
+ */
+export function requestedAxes(record: BudgetRecord, tokens: number | undefined, minutes: number | undefined): { tokens: number; minutes: number } {
+  return {
+    tokens: Math.min(tokens ?? stepCap(record), stepCap(record)),
+    minutes: Math.min(minutes ?? minutesStepCap(record), minutesStepCap(record)),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Was the approval APPLIED? (friction 09470253737e9da6, 2c8f859d4875bbc0)
+//
+// The verdict and its application are different facts, and the machine used to
+// record only the first: a settled `grant` of 600000 tokens sat beside an
+// effective cap of 400000 and a standing `approval-required` park, with no field
+// anywhere saying which of the two was in force. `applied` is that field, per
+// axis, and its whole discriminator is observable: does the axis ceiling carry
+// the granted figure? When it does not, the state NAMES THE CAUSE — the human
+// has to raise the clamp, a human pin sits below the figure, or the server's own
+// write did not land.
+//
+// `applied` is never a cap and never a park reason. `usable` below is the
+// separate observation of the moment, so a grant can read `awaiting-clamp` while
+// its axis is still perfectly usable because the human's ceiling was already
+// high enough — which is exactly the case a single conflated field got wrong.
+// ---------------------------------------------------------------------------
+
+export type BudgetAxis = "tokens" | "minutes";
+export type AppliedAxes = { tokens: BudgetAppliedState; minutes: BudgetAppliedState };
+
+/**
+ * Derives one axis from the live clamp and policy. The order is the contract:
+ *
+ * 1. Nothing granted on this axis, or no grant at all -> `none`.
+ * 2. An unreadable clamp -> `awaiting-clamp`, BEFORE any cap comparison: a cap
+ *    computed without the human's file is not a fact about their ceiling.
+ * 3. A human pin below the granted figure -> `pinned`. A pin ABOVE it withholds
+ *    nothing and falls through to the cap comparison.
+ * 4. An owed server write -> `write-owed`, ALSO before the cap comparison. Under
+ *    `notify` with no ceiling on disk the cap already equals the granted figure,
+ *    so the comparison would read `applied` while the human-visible file still
+ *    does not show the approval — the exact invisibility the write exists to fix.
+ * 5. The axis ceiling carries the granted figure -> `applied`.
+ * 6. Otherwise the ceiling is below it, so name what holds it down: under `full`
+ *    the human has not applied the approval yet, and under `notify` a present
+ *    `max_minutes` is theirs (the server never writes that axis).
+ */
+function deriveApplied(record: BudgetRecord, extension: BudgetExtension, reading: ClampReading, axis: BudgetAxis): BudgetAppliedState {
+  if (extension.state !== "settled" || extension.verdict === undefined || extension.verdict === "deny") return "none";
+  // An extension recorded before v5 carries no minutes figures even though it
+  // did move `granted_minutes`, so `undefined` means "not recorded", never zero.
+  const requested = axis === "tokens" ? extension.requested_tokens : extension.requested_minutes;
+  const granted = axis === "tokens" ? extension.granted_tokens : extension.granted_minutes;
+  if (requested === 0 || granted === 0) return "none";
+  if (reading.unreadable) return "awaiting-clamp";
+  const caps = effectiveCap(record, reading.clamp);
+  const cap = axis === "tokens" ? caps.cap_tokens : caps.cap_minutes;
+  const grantedTotal = axis === "tokens" ? record.granted_tokens : record.granted_minutes;
+  if (axis === "tokens" && record.doorbell_policy === "notify") {
+    if (cap < grantedTotal && clampTokensPinned(reading.clamp?.max_tokens, record)) return "pinned";
+    const slots = record.server_clamp_tokens;
+    if (slots?.intended !== undefined && slots.intended !== slots.confirmed) return "write-owed";
+  }
+  if (cap >= grantedTotal) return "applied";
+  if (record.doorbell_policy === "full") return "awaiting-clamp";
+  return axis === "minutes" && reading.clamp?.max_minutes !== undefined ? "pinned" : "awaiting-clamp";
+}
+
+/**
+ * The recorded state where it is terminal, the derivation where it is not.
+ * `applied` and `none` are settled history on a disposed extension: a human
+ * lowering the clamp later does not retroactively un-apply a grant that was in
+ * force. The three transient states are re-derived at every observation, and the
+ * next guarded mutation writes the derivation back (`refreshApplied`).
+ *
+ * A `pending` extension is never terminal. It has bought nothing yet, so it
+ * derives `none`, and honoring that as history would freeze the axis at `none`
+ * for the grant that lands one call later.
+ */
+export function projectApplied(record: BudgetRecord, extension: BudgetExtension, reading: ClampReading): AppliedAxes {
+  const axis = (name: BudgetAxis): BudgetAppliedState => {
+    const stored = extension.applied?.[name];
+    const terminal = extension.state !== "pending" && (stored === "applied" || stored === "none");
+    return terminal && stored !== undefined ? stored : deriveApplied(record, extension, reading, name);
+  };
+  return { tokens: axis("tokens"), minutes: axis("minutes") };
+}
+
+/**
+ * Writes every disposed extension's projection into the record, and reports
+ * whether anything actually changed so a caller can skip a registry write that
+ * would only bump the revision. It converges: the two terminal states are never
+ * re-derived, so a settled run stops producing changes. A `pending` extension is
+ * skipped entirely — recording an application for an undecided request would be
+ * the same conflation of decision and effect this field exists to end.
+ */
+export function refreshApplied(record: BudgetRecord, reading: ClampReading): boolean {
+  let changed = false;
+  for (const extension of record.extensions) {
+    if (extension.state === "pending") continue;
+    const projected = projectApplied(record, extension, reading);
+    if (extension.applied?.tokens === projected.tokens && extension.applied.minutes === projected.minutes) continue;
+    extension.applied = projected;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * Usability at the observed moment, per axis, and deliberately independent of
+ * `applied`: this is `usage < effective cap`, the same predicate the park
+ * judgment uses, so a surface can never report a usable axis as unusable
+ * because an approval has not been written down yet.
+ */
+export function usableAxes(metering: BudgetMetering): { tokens: boolean; minutes: boolean } {
+  return { tokens: metering.judged_tokens < metering.cap_tokens, minutes: metering.elapsed_minutes < metering.cap_minutes };
+}
+
+export type RequiredClamp = { field: "max_tokens" | "max_minutes"; value: number };
+
+/**
+ * The exact clamp field and VALUE a human must write to release this park, for
+ * every axis that is over its ceiling while an approved figure sits above it.
+ * The missing half of the old recovery text: it named the file and the verb and
+ * left the reader to derive the number (friction 09470253737e9da6). An axis
+ * whose ceiling already carries the granted figure is omitted — there is nothing
+ * to write, and the route is another extension.
+ */
+export function requiredClamp(record: BudgetRecord, metering: BudgetMetering): RequiredClamp[] {
+  const required: RequiredClamp[] = [];
+  if (metering.judged_tokens >= metering.cap_tokens && record.granted_tokens > metering.cap_tokens) {
+    required.push({ field: "max_tokens", value: record.granted_tokens });
+  }
+  if (metering.elapsed_minutes >= metering.cap_minutes && record.granted_minutes > metering.cap_minutes) {
+    required.push({ field: "max_minutes", value: record.granted_minutes });
+  }
+  return required;
+}
+
+/**
+ * One line naming what releases the run and WHERE that happens. `inspect` is
+ * read-only, so nothing an observation reports can itself unpark: the transition
+ * belongs to the next guarded op that judges the budget (Q11).
+ */
+export function releaseCondition(runPath: string, record: BudgetRecord, required: readonly RequiredClamp[]): string {
+  const nextOp = "the next guarded op that judges the budget (assignment add or wait, worker close, track close, or budget_extend, which re-judges before its own gates) — never from inspect, which only reads";
+  if (record.state !== "parked") return `Nothing is pending: the run is active, and the ceiling is re-judged at ${nextOp}.`;
+  if (required.length) {
+    return `A human writes ${required.map((entry) => `${entry.field} ${entry.value}`).join(" and ")} into ${budgetClampPath(runPath)}, and the park lifts at ${nextOp}.`;
+  }
+  if (record.park_reason === "clamp-unreadable") return `A human repairs ${budgetClampPath(runPath)} so it parses, and the park lifts at ${nextOp}.`;
+  if (record.park_reason === "audit-unavailable") return `A fresh budget_extend lands a verdict, or a human raises ${budgetClampPath(runPath)}; either way the park lifts at ${nextOp}.`;
+  return `Spend falls back under the effective cap, or a granted extension raises it; the park lifts at ${nextOp}.`;
+}
+
+/**
+ * What every surface reports about one moment of the approval machine. It is a
+ * named shape rather than a loose object because two surfaces must agree field
+ * for field: `budget_extend`'s response and the `inspect` that follows it.
+ */
+export type BudgetApprovalView = {
+  state: BudgetRecord["state"];
+  park_reason?: BudgetParkReason;
+  /** The latest extension's audit disposition, or why there is none. */
+  verdict: { ordinal: number; state: BudgetExtension["state"]; verdict?: BudgetVerdict } | string;
+  granted: { tokens: number; minutes: number };
+  effective_cap: { tokens: number; minutes: number };
+  approval_floor: { tokens: number; minutes: number };
+  usage: { tokens: number; minutes: number };
+  applied: AppliedAxes;
+  usable: { tokens: boolean; minutes: boolean };
+  required_clamp?: RequiredClamp[];
+  release_condition: string;
+};
 
 // JSONL token snapshots are append-only, so a size+mtime signature is a sound
 // cache key. Metering runs at every guarded op; re-streaming an ORCH session's
@@ -495,9 +695,10 @@ export function meteringLedgerLine(metering: BudgetMetering): string {
 export function renderAuditInput(
   run: RunRef,
   ordinal: number,
+  runPath: string,
   record: BudgetRecord,
   justification: BudgetJustification,
-  requestedTokens: number,
+  requested: { tokens: number; minutes: number },
   metering: BudgetMetering,
   machineFacts: readonly string[],
 ): string {
@@ -506,9 +707,12 @@ export function renderAuditInput(
   // ceiling cannot rise no matter what it grants: the effective cap is the
   // human's number, and only a minutes raise buys the run anything.
   const pinned = clampTokensPinned(metering.clamp?.max_tokens, record);
+  const floor = policyFloor(record);
   const capLine = pinned
     ? `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — the token ceiling is PINNED by the human in ${metering.clamp?.path ?? "the clamp file"}, so a token grant moves the registry figure above and CANNOT raise the effective token cap; only the wall-clock dimension a grant also moves can buy this run anything.\n`
-    : `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — a grant raises the registry figure above, and the effective cap follows it unless the human's clamp file holds a lower ceiling.\n`;
+    : record.doorbell_policy === "full"
+      ? `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — the doorbell policy is \`full\`, so on BOTH axes your verdict alone raises nothing above this run's approval floor (${floor.tokens} tokens / ${floor.minutes} min): a grant records the figure and the human applies it by writing max_tokens / max_minutes into ${metering.clamp?.path ?? "the clamp file"}.\n`
+      : `- effective cap: ${metering.cap_tokens} tokens / ${metering.cap_minutes} min — a grant raises the registry figure above, and the effective cap follows it unless the human's clamp file holds a lower ceiling.\n`;
   return `---
 version: 1
 track_id: ${run.track_id}
@@ -524,7 +728,7 @@ facts below, then append your verdict to this file.
 
 ## Request
 
-- requested increase: ${requestedTokens} tokens (step cap ${stepCap(record)})
+- requested increase: ${requested.tokens} tokens (step cap ${stepCap(record)}) and ${requested.minutes} min (step cap ${minutesStepCap(record)})
 - current cap: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes})
 - extensions already granted: ${granted}
 ${capLine}\
@@ -543,8 +747,12 @@ ${machineFacts.map((fact) => `- ${fact}`).join("\n")}
 
 ## What to judge
 
-Read this run's \`orchestrator-instructions.md\` (the mandate), \`plan.md\`,
-\`budget-ledger.md\`, and every \`a2a/w<N>-report.md\`. Then decide:
+Every document named here is a real file inside this run's directory,
+\`${runPath}\`, and you read it with your ordinary file tools: read
+\`orchestrator-instructions.md\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
+and every \`a2a/w<N>-report.md\` under that path. A \`local://\` or session-scoped
+URL is NOT how these are reached — you have no session history with this run, so
+that form would resolve to nothing. Then decide:
 
 1. Do the run documents match the machine facts, or is the narrative stale? An
    orchestrator that does not keep its run documents current cannot be granted
@@ -729,6 +937,7 @@ export async function createEmergencyAudit(runPath: string, ordinal: number, bod
 export function renderEmergencyAuditInput(
   run: RunRef,
   ordinal: number,
+  runPath: string,
   assignmentId: string,
   claim: EmergencyClaim,
   record: BudgetRecord,
@@ -777,8 +986,12 @@ ${machineFacts.map((fact) => `- ${fact}`).join("\n")}
 
 ## What to judge
 
-Read this run's \`orchestrator-instructions.md\` (the mandate), \`plan.md\`,
-\`budget-ledger.md\`, and every \`a2a/w<N>-report.md\`. Then decide:
+Every document named here is a real file inside this run's directory,
+\`${runPath}\`, read with your ordinary file tools: this run's
+\`orchestrator-instructions.md\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
+and every \`a2a/w<N>-report.md\` under that path. A \`local://\` or session-scoped
+URL resolves to nothing here, because you have no session history with this run.
+Then decide:
 
 1. Does \`failure\` name an operational failure that blocks the run itself —
    something broken — rather than work the run simply wants to continue? Wanting

@@ -266,11 +266,11 @@ function validAdvisoryUnownedChanges(value: unknown): boolean {
 function validReferences(value: unknown): boolean {
   return value === undefined || (
     Array.isArray(value) &&
-    value.length <= 16 &&
+    value.length <= MAX_ASSIGNMENT_REFERENCES &&
     value.every((entry) =>
       isRecord(entry) &&
       exactKeys(entry, ["path", "sha256"]) &&
-      typeof entry.path === "string" && entry.path.length >= 1 && Buffer.byteLength(entry.path) <= 1_024 &&
+      typeof entry.path === "string" && entry.path.length >= 1 && Buffer.byteLength(entry.path) <= MAX_ASSIGNMENT_REFERENCE_PATH_BYTES &&
       typeof entry.sha256 === "string" && SHA256_RE.test(entry.sha256))
   );
 }

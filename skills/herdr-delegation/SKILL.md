@@ -44,6 +44,11 @@ The mandate contains only **WHAT** and **WHY**:
 - `shape_of_success`: observable conditions that make the track complete;
 - `budget`: your estimate of the tokens and minutes this scope should take. Declare
   it; an undeclared seed falls back to tight defaults that park a nontrivial run early.
+  The two axes are independent ceilings and the narrower one parks the run, so the
+  shape of the estimate matters as much as its size: a coordination-heavy track
+  exhausts minutes, a single-lane implementation track exhausts tokens. Both are
+  extendable later, and under `doorbell_policy: "full"` the user applies every
+  approved figure by hand in the run's `budget-clamp.json`.
 
 Keep **HOW** out: planning, decomposition, routing, and implementation belong to the
 born ORCH in `plan.md`.

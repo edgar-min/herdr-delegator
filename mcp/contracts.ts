@@ -677,6 +677,16 @@ const emergency = z.object({
   failure: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`The operational failure that blocks this run itself — what is broken right now, in observable terms, not what work you want to continue. A clean auditor judges this line after the fact, and a claim it cannot recognize as a run-blocking failure is what closes the carve-out for the whole run. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
   why_now: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why registering this repair cannot wait for the ordinary ladder — budget_extend, or the human raising the clamp. The ladder is the default path out of a park; this field must say what makes it insufficient here. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
 }).strict().optional().describe("Emergency carve-out for ONE registration while the run is budget-parked on the cadence reason `over-cap`. It buys registration only: nothing is granted, the park stands, and a queued assignment still is not promoted. It creates a post-hoc audit debt — the server writes `emergency-audit-<n>.md`, a clean auditor judges these two lines, and no second emergency add is admissible until that verdict lands. The verdict cannot recall what was already dispatched: `unjustified` closes the carve-out for this run permanently and routes the run's budget decisions to the human. Omit it unless this add repairs a failure that blocks the run itself; on an unparked run it asserts no authority and is recorded as unused.");
+// The two axes an extension may ask for. Published and enforced share these
+// objects, so the advertised grammar IS the enforced grammar (JDG-001). Both
+// state the same three facts a caller cannot otherwise know: the covenant
+// TRUNCATES rather than refuses, an omitted axis still moves by its own step
+// because a grant moves both dimensions, and the registry figure a grant
+// records is not automatically the effective ceiling — under `full`, or under a
+// human clamp value below it, the response's `applied` and `required_clamp`
+// name what is still owed.
+const requestedTokens = z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe("Token cap increase you are asking for. Ask for what the remaining work named in the justification needs. One extension may raise the cap by at most half of what is already granted, and a larger ask is TRUNCATED to that step rather than refused. Omitted, it defaults to that same step, because a grant moves both dimensions. A grant records the figure in the registry; read the response's `applied.tokens` to see whether it reached the effective ceiling, and `required_clamp` for the exact value a human must write when it did not.");
+const requestedMinutes = z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe("Wall-clock increase in minutes you are asking for — the axis a run coordinating several lanes or waiting on human gates exhausts first, and the one that used to have no extension path at all. Same covenant as the token axis: at most half of what is already granted, a larger ask TRUNCATED to that step, and an omitted axis defaulting to its own step. A grant records the figure in the registry; read `applied.minutes` and `required_clamp` to see whether it reached the effective ceiling. Under `full` no verdict raises either axis above the run's approval floor until the human writes max_minutes.");
 
 export const herdrTrackInputShape = {
   ...run,
@@ -685,7 +695,8 @@ export const herdrTrackInputShape = {
   mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
   justification: justification.optional(),
-  requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe("Token cap you are asking for. Ask for what the remaining work named in the justification needs; one extension may raise the cap by at most half of what is already granted regardless of what is requested."),
+  requested_tokens: requestedTokens,
+  requested_minutes: requestedMinutes,
   mode: z.enum(REVIVAL_MODES).optional().describe("How to bring the ORCH back. resume (the fallback) reconnects the recorded birth session and keeps its context, bumping no generation. rebirth destroys that context and starts generation+1; it needs the human-owned rebirth-approval.json naming that generation, run documents sufficient to reconstruct command, and an ORCH that is not live. Resume unless the recorded session is genuinely gone."),
   wait,
   expected_registry_revision: z.number().int().nonnegative().optional(),
@@ -761,7 +772,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("init"), cwd: z.string().min(1), reset_of: z.object(run).strict().optional() }).strict(),
   z.object({ ...run, action: z.literal("inspect") }).strict(),
   z.object({ ...run, action: z.literal("start_orchestrator") }).strict(),
-  z.object({ ...run, action: z.literal("budget_extend"), justification, requested_tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional(), wait }).strict(),
+  z.object({ ...run, action: z.literal("budget_extend"), justification, requested_tokens: requestedTokens, requested_minutes: requestedMinutes, wait }).strict(),
   z.object({ ...run, action: z.literal("revive"), mode: z.enum(REVIVAL_MODES).optional(), wait }).strict(),
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);

@@ -14,8 +14,8 @@ import { ContractError as LegacyContractError, type WorkerResult } from "../io.g
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, BUDGET_STEP_FRACTION, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
-import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, readAuditDocument, readClamp, renderAuditInput, renderEmergencyAuditInput, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, writeClampMaxTokens, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
+import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, minutesStepCap, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, policyFloor, projectApplied, readAuditDocument, readClamp, refreshApplied, releaseCondition, renderAuditInput, renderEmergencyAuditInput, requestedAxes, requiredClamp, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, usableAxes, writeClampMaxTokens, type AppliedAxes, type BudgetApprovalView, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
 
@@ -2132,9 +2132,43 @@ export class CompositeTools {
   }
 
   /**
-   * Read-only budget view for `inspect`: the record, the human clamp, and a
-   * fresh conservative metering. It never transitions state — an observation
-   * that could park a run would make inspection unsafe to run.
+   * The ONE assembler for the approval state, used by `inspect` and by every
+   * `budget_extend` response. Two surfaces that computed this separately are how
+   * a response could report a grant while the next inspect reported an unchanged
+   * cap and a standing park (friction 09470253737e9da6), so there is exactly one
+   * of these and both callers pass through it.
+   *
+   * Every field is per axis, and two of them are deliberately different
+   * questions: `applied` is why the granted figure is or is not the ceiling, and
+   * `usable` is whether usage is under that ceiling right now. A grant may be
+   * `awaiting-clamp` on an axis that is still usable.
+   */
+  private budgetApprovalState(runPath: string, record: BudgetRecord, metering: BudgetMetering, reading: ClampReading): BudgetApprovalView {
+    const latest = record.extensions[record.extensions.length - 1];
+    const applied: AppliedAxes = latest ? projectApplied(record, latest, reading) : { tokens: "none", minutes: "none" };
+    const required = requiredClamp(record, metering);
+    return {
+      state: record.state,
+      ...(record.park_reason ? { park_reason: record.park_reason } : {}),
+      ...(latest
+        ? { verdict: { ordinal: latest.ordinal, state: latest.state, ...(latest.verdict ? { verdict: latest.verdict } : {}) } }
+        : { verdict: "no extension has been requested for this run" }),
+      granted: { tokens: record.granted_tokens, minutes: record.granted_minutes },
+      effective_cap: { tokens: metering.cap_tokens, minutes: metering.cap_minutes },
+      approval_floor: policyFloor(record),
+      usage: { tokens: metering.judged_tokens, minutes: metering.elapsed_minutes },
+      applied,
+      usable: usableAxes(metering),
+      ...(required.length ? { required_clamp: required } : {}),
+      release_condition: releaseCondition(runPath, record, required),
+    };
+  }
+
+  /**
+   * Read-only budget view for `inspect`: the record, the human clamp, a fresh
+   * conservative metering, and the approval state assembled from all three. It
+   * never transitions state — an observation that could park a run, or promote a
+   * registry version, would make inspection unsafe to run (Q11).
    */
   private async observeBudget(store: DelegationStore, registry: DelegationRegistry): Promise<Record<string, unknown>> {
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
@@ -2143,6 +2177,7 @@ export class CompositeTools {
     return {
       record,
       metering,
+      approval: this.budgetApprovalState(store.runPath, record, metering, clampReading),
       ledger_path: budgetLedgerPath(store.runPath),
       clamp_path: budgetClampPath(store.runPath),
       ...(clampReading.unreadable ? { clamp_unreadable: clampReading.unreadable } : {}),
@@ -2224,7 +2259,27 @@ export class CompositeTools {
     // Metering read: fresh, so a reconcile that just landed is already in the cap.
     const clampReading = await readClamp(store.runPath);
     const metering = await meterRun(registry, record, clampReading.clamp);
+    // The applied projection is written back at the judgment every guarded op
+    // already makes, so a transient state is never merely inferred by whoever
+    // reads next. It converges: `applied` and `none` are terminal, so a steady
+    // run stops producing writes. Probe a copy first — `store.mutate` always
+    // bumps the revision, so a no-op refresh must not write.
+    if (refreshApplied({ ...record, extensions: record.extensions.map((entry) => ({ ...entry })) }, clampReading)) {
+      const refreshed = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
+        const current = next.budget ?? seedBudget(undefined, next.created_at);
+        refreshApplied(current, clampReading);
+        next.budget = current;
+      });
+      record = refreshed.budget ?? record;
+    }
     const lastExtension = record.extensions[record.extensions.length - 1];
+    // The exact field and value a human must write, per over-ceiling axis. Every
+    // refusal below carries it: naming the file and the verb while leaving the
+    // reader to derive the number is the whole of friction 09470253737e9da6.
+    const required = requiredClamp(record, metering);
+    const clampValues = required.length
+      ? ` Write ${required.map((entry) => `${entry.field} ${entry.value}`).join(" and ")} into ${budgetClampPath(store.runPath)} to release it.`
+      : "";
     // One predicate, token axis only (`pin_present`): a human-valued max_tokens is
     // a permanent ceiling on exactly the dimension a token grant would raise, so
     // an over-cap token axis under a pin is a human decision, not a cadence step.
@@ -2238,7 +2293,7 @@ export class CompositeTools {
         ? undefined
         : lastExtension?.verdict === "deny"
           ? "denied"
-          : record.doorbell_policy === "full" && record.granted_tokens > (clampReading.clamp?.max_tokens ?? record.seed_tokens)
+          : record.doorbell_policy === "full" && (record.granted_tokens > metering.cap_tokens || record.granted_minutes > metering.cap_minutes)
             ? "approval-required"
             : pinPresent && tokenAxisOver
               ? "approval-required"
@@ -2261,8 +2316,8 @@ export class CompositeTools {
     const detail = clampReading.unreadable
       ? `The human-owned clamp file cannot be trusted: ${clampReading.unreadable}. No tool op raises what the human lowered, so the run waits.`
       : reason !== undefined && pinPresent
-        ? `${meteringLedgerLine(metering)}. ${pinDetail}${zeroMoveClause}`
-        : `${meteringLedgerLine(metering)}.`;
+        ? `${meteringLedgerLine(metering)}. ${pinDetail}${zeroMoveClause}${clampValues}`
+        : `${meteringLedgerLine(metering)}.${clampValues}`;
     const clampScaffold = reason ? await scaffoldClamp(store.runPath) : undefined;
     if (reason && (record.state !== "parked" || record.park_reason !== reason)) {
       const parked = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
@@ -2335,7 +2390,7 @@ export class CompositeTools {
         : reason === "approval-required"
           ? pinPresent
             ? `The human pinned this run's token ceiling. ${pinDetail} budget_extend cannot buy token headroom here. ${humanRoute}${zeroMoveClause}${minutesExceptionOpen ? " The wall clock is over its own ceiling and no max_minutes is set, so a budget_extend may still buy minutes: the token pin does not govern the time dimension." : ""}`
-            : `The mandate's doorbell policy is full, so the human approves each extension by raising ${budgetClampPath(store.runPath)}. Ask, then retry.`
+            : `The mandate's doorbell policy is full, so on both axes the human — not a verdict — applies an approved figure by raising ${budgetClampPath(store.runPath)}.${clampValues} Ask, then retry.`
           : pinPresent && !minutesExceptionOpen
             ? `${pinDetail} ${humanRoute}${zeroMoveClause}`
             : `Call herdr_track {action:"budget_extend"} with a bounded justification (done / remaining / why more). Work already in flight can still land: wait and close remain allowed while parked.${minutesExceptionOpen ? ` The wall clock, not the token cap, is what is over: a grant raises granted_minutes, and the human's token pin in ${budgetClampPath(store.runPath)} does not govern the time dimension.` : ""}`
@@ -2346,11 +2401,14 @@ export class CompositeTools {
     const carveOutClause = action === "add" && reason === "over-cap" && emergency === undefined
       ? ` If this registration is itself the repair of an operational failure that blocks the run — not work you want to continue — re-send the identical add with \`emergency: {failure, why_now}\`: it passes this park once and buys registration only, and it creates a post-hoc audit debt at ${path.join(store.runPath, "emergency-audit-<n>.md")} that a clean auditor judges. No second emergency add is admissible until that verdict lands, an \`unjustified\` verdict closes the carve-out for this run permanently, and nothing already dispatched can be recalled.`
       : "";
+    // The release condition is stated once, from the same helper the responses
+    // use, so a refusal and an inspect of the same moment cannot disagree about
+    // what unparks the run or about where that transition happens.
     throw new McpContractError(
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
       "budget",
-      `${recovery}${carveOutClause} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
+      `${recovery}${carveOutClause} ${releaseCondition(store.runPath, { ...record, state: "parked", park_reason: reason }, required)} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
       false,
       true,
     );
@@ -2392,7 +2450,7 @@ export class CompositeTools {
     const auditPath = emergencyAuditPath(store.runPath, ordinal);
     const registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
-    const created = await createEmergencyAudit(store.runPath, ordinal, renderEmergencyAuditInput(run, ordinal, request.assignment_id, request.claim, record, metering, machineFacts(registry)));
+    const created = await createEmergencyAudit(store.runPath, ordinal, renderEmergencyAuditInput(run, ordinal, store.runPath, request.assignment_id, request.claim, record, metering, machineFacts(registry)));
     if (!created) {
       throw new McpContractError(
         "emergency_not_admissible",
@@ -2450,10 +2508,20 @@ export class CompositeTools {
     // extension will read, and it can neither grant nor refuse anything.
     const emergencyNotes = await this.landEmergencyAudit(store, run, timeout(input));
     const { normalized, sha256: justificationHash } = normalizeJustification(input.justification);
+    // G4: re-judge BEFORE the early-return gates below. A human who has just
+    // written the required_clamp values expects the run to be released, and the
+    // gates — pinned ceiling, prior deny, extension interval — all read the
+    // record; judging afterwards meant this call refused on a park the same call
+    // would have lifted. `judgeBudget("wait")` is the landing allowlist, so it
+    // reports rather than throws, and it is the op that actually unparks.
+    const rejudged = await this.judgeBudget(store, run, "wait");
+    if (rejudged.warning) {
+      await appendLedger(store.runPath, "extension request pre-judgment", [rejudged.warning]).catch(() => undefined);
+    }
     let registry = await store.read();
     const record = registry.budget ?? seedBudget(undefined, registry.created_at);
     const clampReading = await readClamp(store.runPath);
-    const metering = await meterRun(registry, record, clampReading.clamp);
+    const metering = rejudged.metering;
     const pending = record.extensions.find((entry) => entry.state === "pending");
     if (pending) {
       if (pending.justification_sha256 !== justificationHash) {
@@ -2516,8 +2584,7 @@ export class CompositeTools {
       const waitMinutes = Math.ceil((MIN_EXTENSION_INTERVAL_MS - (Date.now() - settledAt)) / 60_000);
       throw new McpContractError("budget_extension_too_soon", `Extension ${previous.ordinal} settled less than ${Math.round(MIN_EXTENSION_INTERVAL_MS / 60_000)} minutes ago.`, "budget", `Wait about ${waitMinutes} more minutes and land work in the meantime; the frequency covenant exists so that repeated extensions stay visible.`, false, true);
     }
-    const step = stepCap(record);
-    const requested = Math.min(input.requested_tokens ?? step, step);
+    const requested = requestedAxes(record, input.requested_tokens, input.requested_minutes);
     const ordinal = record.extensions.length + 1;
     const auditPath = budgetAuditPath(store.runPath, ordinal);
     const auditWorkerId = await store.nextAuditWorkerId(registry);
@@ -2526,14 +2593,15 @@ export class CompositeTools {
       `done: ${normalized.done}`,
       `remaining: ${normalized.remaining}`,
       `why more: ${normalized.why_more}`,
-      `requested: +${requested} tokens (step cap +${step})`,
+      `requested: +${requested.tokens} tokens (step cap +${stepCap(record)}), +${requested.minutes} min (step cap +${minutesStepCap(record)})`,
       `audit: ${auditPath} (clean session ${auditWorkerId} on the slow profile)`,
     ]);
     registry = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
       const current = next.budget ?? seedBudget(undefined, next.created_at);
       current.extensions = [...current.extensions, {
         ordinal,
-        requested_tokens: requested,
+        requested_tokens: requested.tokens,
+        requested_minutes: requested.minutes,
         justification_sha256: justificationHash,
         audit_path: auditPath,
         audit_worker_id: auditWorkerId,
@@ -2551,7 +2619,7 @@ export class CompositeTools {
     const swept = await sweepSettlements(store, run, registry, sweepWarnings);
     if (sweepWarnings.length) await appendLedger(store.runPath, `extension ${ordinal} settlement sweep`, sweepWarnings).catch(() => undefined);
     const facts = machineFacts(swept);
-    await writeAtomic(auditPath, renderAuditInput(run, ordinal, record, normalized, requested, metering, facts));
+    await writeAtomic(auditPath, renderAuditInput(run, ordinal, store.runPath, record, normalized, requested, metering, facts));
     try {
       await this.runAuditor(run, ordinal, auditPath, auditWorkerId, timeout(input));
     } catch (error) {
@@ -2622,10 +2690,13 @@ export class CompositeTools {
     const granted = verdict.verdict === "deny"
       ? 0
       : Math.min(verdict.granted_tokens ?? pending.requested_tokens, pending.requested_tokens);
-    // A grant moves both dimensions. Wall clock keeps accruing while a run is
-    // parked, so a token-only grant would leave a minutes-parked run parked
-    // forever — the cadence would become the wall this design refuses to be.
-    const grantedMinutes = granted > 0 ? Math.max(1, Math.floor(record.granted_minutes * BUDGET_STEP_FRACTION)) : 0;
+    // A grant moves both dimensions (BUD-010). Wall clock keeps accruing while a
+    // run is parked, so a token-only grant would leave a minutes-parked run
+    // parked forever — the cadence would become the wall this design refuses to
+    // be. The minutes figure is the one this extension recorded as requested; an
+    // extension recorded before that field existed falls back to its step, which
+    // is exactly what the old unconditional expression computed.
+    const grantedMinutes = granted > 0 ? (pending.requested_minutes ?? minutesStepCap(record)) : 0;
     const denyScaffold = verdict.verdict === "deny" ? await scaffoldClamp(store.runPath) : undefined;
     const deniedFingerprint = verdict.verdict === "deny" ? await clampFingerprint(store.runPath) : undefined;
     // GATED T1. Under `notify` an approved ceiling belongs in the human-visible
@@ -2654,6 +2725,7 @@ export class CompositeTools {
         entry.state = "settled";
         entry.verdict = verdict.verdict;
         entry.granted_tokens = granted;
+        entry.granted_minutes = grantedMinutes;
         entry.settled_at = nowIso();
       }
       current.granted_tokens += granted;
@@ -2712,6 +2784,11 @@ export class CompositeTools {
     // ceiling stays parked, and the reason is recomputed rather than guessed.
     const judged = await this.judgeBudget(store, run, "wait");
     const fresh = await store.read();
+    const freshRecord = fresh.budget ?? settledRecord;
+    // The response and the inspect that follows it read the SAME assembler over
+    // the SAME post-judgment record, which is what keeps them from disagreeing
+    // about whether an approved figure is in force (friction 09470253737e9da6).
+    const approval = this.budgetApprovalState(store.runPath, freshRecord, judged.metering, await readClamp(store.runPath));
     return {
       ok: true,
       tool: "herdr_track",
@@ -2723,17 +2800,14 @@ export class CompositeTools {
       data: {
         budget: fresh.budget,
         metering: judged.metering,
-        audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted },
+        approval,
+        audit: { ordinal: pending.ordinal, state: "settled", path: pending.audit_path, verdict: verdict.verdict, granted_tokens: granted, granted_minutes: grantedMinutes },
         ledger_path: budgetLedgerPath(store.runPath),
         ...emergencyObservation,
         ...((closeWarning || judged.warning || denyScaffold?.warning || clampWarnings.length) ? { warnings: [closeWarning, judged.warning, denyScaffold?.warning, ...clampWarnings].filter((value): value is string => typeof value === "string") } : {}),
         next_step: verdict.verdict === "deny"
           ? `Denied. Escalate to the human with ${budgetLedgerPath(store.runPath)} and ${pending.audit_path}; no tool op raises the ceiling from here. ${clampSchemaGuidance(store.runPath)}`
-          : clampOutcome?.outcome === "skipped" && clampOutcome.reason === "pinned"
-            ? `Granted +${granted} tokens in the registry, but ${budgetClampPath(store.runPath)} holds a human ceiling, so the effective token cap did not move. Escalate to the human; only they change that file.`
-            : judged.parked
-              ? `Granted +${granted} tokens, and the run is still parked: read data.budget.park_reason.`
-              : `Granted +${granted} tokens; the run is active again.`,
+          : `Granted +${granted} tokens and +${grantedMinutes} min in the registry; applied on the token axis: ${approval.applied.tokens}, on the wall-clock axis: ${approval.applied.minutes}. ${approval.release_condition}`,
       },
     };
   }

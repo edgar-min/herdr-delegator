@@ -87,6 +87,47 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   re-authoring under a new one. The recovery names both profiles and the two ways
   forward: match the lane, or dispatch under a `separation` that binds a new lane.
   (SPEC ASN-014c; friction `17b7fd5328871a88`)
+- The budget reports whether an approved grant is IN FORCE, per axis, instead of only
+  what the auditor decided. A settled extension carries `applied` on both axes —
+  `applied`, `awaiting-clamp`, `pinned`, `write-owed`, `none` — recorded beside the
+  verdict and naming the cause when the granted figure is not the ceiling. A
+  `full`-policy run could previously read verdict `grant`, `granted_tokens` 600000,
+  `cap_tokens` 400000, and `parked: approval-required` all at once, with nothing
+  saying which figure was in force. `budget_extend` and `inspect` now assemble one
+  block from one implementation — verdict, per-axis `granted`, `effective_cap`,
+  `approval_floor`, `usage`, `applied`, `usable`, the park reason, one
+  `release_condition`, and `required_clamp` naming the exact clamp field and value a
+  human must write — so a response and the inspect after it cannot disagree, and
+  every `budget_parked` refusal carries the same value instead of naming the file and
+  leaving the number to be derived. `usable` stays an independent observation
+  (axis usage < axis cap), so a grant can read `awaiting-clamp` on an axis that is
+  still usable. `budget_extend` re-judges the budget BEFORE its pinned/denied/interval
+  gates, so the call made right after a human writes the clamp is the one that lifts
+  the park. (SPEC BUD-017; friction `09470253737e9da6`)
+- `budget_extend` accepts `requested_minutes`. The wall clock is what a
+  coordination-heavy run exhausts first and it had no extension path at all; both axes
+  now share one covenant — at most half of what that axis has already been granted,
+  an over-ambitious ask truncated to that step rather than refused, and an omitted
+  axis still moving by its own step because a grant moves both dimensions. Both
+  requested and granted minutes are recorded on the extension and rendered into the
+  auditor's document. (SPEC BUD-008, BUD-010; friction `2c8f859d4875bbc0`)
+- Under `full` a verdict alone raises neither axis. Wall clock is held at the run's
+  new `minutes_floor` exactly as tokens are held at `seed_tokens`, so a `full` run can
+  no longer be parked for approval on tokens while its minutes rise with no approval
+  at all. Migration preserves rather than retracts: a registry written before the
+  field is read with `max(seed_minutes, granted_minutes)` projected in memory and
+  materializes it once, inside the first guarded mutation's transaction; a read never
+  writes, so `inspect` stays safe on an older registry. The server still has no path
+  by which it writes `max_minutes`. (SPEC BUD-013, BUD-018)
+- Both audit documents name the run directory as the filesystem root the auditor reads
+  from, and say that a session-scoped `local://` reference resolves to nothing for a
+  clean session. (SPEC BUD-009; friction `3e341d75e2c338db`)
+- Registry schema version 5 carries the fields above — an extension's
+  `requested_minutes`, `granted_minutes` and `applied`, the budget's `minutes_floor`,
+  and an assignment's `references` and `reported_boundary`. A server older than 3.9.0
+  reads a v5 registry as `registry_version_unsupported` and names the respawn, rather
+  than reporting a healthy tool-owned file as malformed. (SPEC BUD-017, BUD-018,
+  ASN-005d, ASN-011b)
 
 ## [3.8.0] - 2026-09-02
 
