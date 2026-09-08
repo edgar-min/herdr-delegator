@@ -127,9 +127,10 @@ export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unre
 // on `approval-required`). The audit verdict is the decision; this is its
 // application. `applied` — the axis ceiling carries the granted figure.
 // `awaiting-clamp` — the human still has to raise the clamp for it to take
-// effect (every `full`-policy grant starts here, and so does an unreadable
-// clamp). `pinned` — a human ceiling on that axis is below the granted figure
-// and no tool op raises it. `write-owed` — the server's own clamp write did not
+// effect (where a `full`-policy clamp does not already carry the granted
+// figure, and wherever the clamp is unreadable). `pinned` — a human ceiling on
+// that axis is below the granted figure and no tool op raises it.
+// `write-owed` — the server's own clamp write did not
 // land and is retried at the next guarded op. `none` — nothing was granted on
 // that axis, or the verdict was not a grant. It is never a park reason and
 // never a cap: `usable` (usage < effective cap at the observed moment) is the
