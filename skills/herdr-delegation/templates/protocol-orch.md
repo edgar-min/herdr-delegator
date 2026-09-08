@@ -109,7 +109,9 @@ each exactly `- <path> sha256:<64 lowercase hex>`, the hash over the file's exac
 The path is relative to the RUN directory, with no `..`, no empty segment, no leading
 `/` and no backslash, and must name a regular file inside the run directory — no
 symlink, no hardlinked file, no directory, no two bullets naming the same file — of at
-most 262144 bytes. Split a larger document and pin each part. Preflight and add verify
+most 262144 bytes. Split a larger document and pin each part, naming the parts so the
+reading order is unambiguous from the paths alone; bullets carry no ordering of their
+own beyond the order you write them in. Preflight and add verify
 every hash and refuse before the assignment ID is consumed; after dispatch a document
 that moved is reported as drift rather than recalled, because the worker already holds
 the hashes, so a correction is a new assignment. Reload mounted servers before the first
@@ -125,8 +127,9 @@ than set it — two literal lines at column 1, the first with no heading marker:
 
 `failed` replaces `completed`, and `blocked` is recognized as a REPORTED boundary that
 settles nothing and leaves the assignment live. Exactly one recognized status line per
-block, lowercase key and lowercase value. Several valid blocks resolve to the latest, so
-a worker corrects a malformed attempt by appending a correct block below it. The mounted
+block, lowercase key and lowercase value. Several valid blocks resolve to the last one in
+file order, so a worker corrects a malformed attempt by appending a correct block below
+it. The mounted
 tool's schema and returned errors remain authoritative for anything this summary and the
 code could disagree about.
 
