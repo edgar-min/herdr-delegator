@@ -781,6 +781,13 @@ while leaving the wall clock alone means writing only \`granted_tokens\`, and a
 truncated to the request; zero or a negative figure is not a partial grant and
 leaves this document unparsed, so use \`deny\` to approve nothing.
 
+Write each figure as plain decimal digits — no sign, no padding, no separators,
+no units. This block is read as an exact trailing match or not at all, and an
+unparsed document grants nothing and leaves the run parked for another attempt:
+a repeated axis line, a key other than these two, a figure that is not plain
+digits, a \`partial\` without \`granted_tokens\`, a wrong audit number in the
+header, or anything at all after the block all read as no verdict.
+
 Both lines are ignored on \`grant\` and on \`deny\`, where the disposition
 already fixes both axes.
 
