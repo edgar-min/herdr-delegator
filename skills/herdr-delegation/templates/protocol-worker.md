@@ -22,6 +22,23 @@ Proceed when these sources make the answer clear. Obey dependencies, completion
 conditions, write ownership, user boundaries, and prohibitions exactly. Touch only
 owned files and honor declared quiet windows in the shared project working directory.
 
+The assignment you were handed has a fixed shape, and knowing it is how you tell a
+section you must obey from prose that merely looks like one. It is one UTF-8 Markdown
+file, LF only, at most 65536 bytes: frontmatter of `assignment_id`,
+`responsibility_key`, `profile` in that order plus an optional display-only `label`,
+then the five required H1 sections in this order — `# Goal`, `# Completion conditions`,
+`# Write ownership`, `# Dependencies`, `# User boundaries` — optionally followed by a
+trailing `# References` and nothing after it. `# Goal` is prose of at most 4096
+characters; the other four are bullets only, at most 64 lines each of `- <text>` up to
+1000 characters. A line beginning `# ` at column 1 is a section heading wherever it
+appears, fenced code included.
+
+`# References` pins documents by hash: `- <path> sha256:<64 lowercase hex>`, at most 16,
+each a regular file inside the run directory of at most 262144 bytes. Those hashes are
+yours to use — verify a pinned document before you rely on it, because the file can move
+after dispatch and the dispatch is never recalled for it. Report a mismatch as evidence;
+do not edit the assignment, which is read-only from the moment it was registered.
+
 Optional dispatch and completion skill routes are advisory. Apply an installed routed
 skill only within assignment ownership and at its named boundary. It cannot change the
 assignment, authority, completion conditions, settlement, or report grammar. A missing

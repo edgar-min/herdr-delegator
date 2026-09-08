@@ -14,7 +14,7 @@ import { ContractError as LegacyContractError, type WorkerResult } from "../io.g
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type Separation, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, minutesStepCap, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, policyFloor, projectApplied, readAuditDocument, readClamp, refreshApplied, releaseCondition, renderAuditInput, renderEmergencyAuditInput, requestedAxes, requiredClamp, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, usableAxes, writeClampMaxTokens, type AppliedAxes, type BudgetApprovalView, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
@@ -1291,6 +1291,12 @@ export async function sweepSettlements(
     const undispatched = current.assignments[assignmentId].prompted_at === undefined;
     current = await settleIfReported(store, current, current.lanes[workerId], current.assignments[assignmentId], warnings);
     const settled = current.assignments[assignmentId].state;
+    // The pins of the assignment THIS call observed, checked whether or not the
+    // call settled it. The drift check used to run on the lane's active id after
+    // the sweep, so a settlement emptied that slot and the very assignment being
+    // settled was the one assignment whose references nobody looked at (I7).
+    const observedDrift = await observeReferenceDrift(store, current, current.assignments[assignmentId]);
+    if (observedDrift) warnings.push(observedDrift);
     if (settled === before) continue;
     const promoted = current.lanes[workerId].active_assignment_id;
     warnings.push(`settlement_swept: assignment ${assignmentId} on lane ${workerId} settled as ${settled} from its reported completion block${undispatched ? ", settled without a recorded dispatch (no prompted_at was ever stamped, so no elapsed_ms is claimed)" : ""}${promoted ? `; queued head ${promoted} promoted` : ""}.`);
@@ -1298,17 +1304,23 @@ export async function sweepSettlements(
   // A block appended AFTER the assignment already settled. It reaches no
   // settlement path at all — the sweep skips terminal records and the lane no
   // longer holds them — so without this pass a worker that re-reported would
-  // see silence and conclude the run had lost its report (C9). The scan is
-  // bounded to each lane's own last settlement, so it costs one report read per
-  // lane at most, and it changes nothing.
+  // see silence and conclude the run had lost its report (C9).
+  //
+  // "After terminal" is a claim about WHEN, so it is decided by the report bytes
+  // settlement recorded, not by counting blocks. Two valid blocks that were both
+  // present when the assignment settled — a worker that corrected itself before
+  // anyone looked — are a superseded block, not a later append, and counting
+  // them reported a post-terminal change that never happened (I8).
   for (const lane of Object.values(current.lanes)) {
     const settledId = lane.last_completed_assignment_id;
-    if (!settledId || !ASSIGNMENT_TERMINAL_STATES[current.assignments[settledId]?.state]) continue;
+    const record = settledId ? current.assignments[settledId] : undefined;
+    if (!settledId || !record || !ASSIGNMENT_TERMINAL_STATES[record.state] || !record.report_sha256) continue;
     let report: Buffer;
     try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); } catch { continue; }
+    if (sha256(report) === record.report_sha256) continue;
     const settleable = scanCompletionBlocks(report.toString("utf8"), settledId).filter((candidate) => !candidate.heading && candidate.status !== undefined);
-    if (settleable.length < 2) continue;
-    warnings.push(`completion_block_after_terminal: a2a/${lane.worker_id}-report.md carries ${settleable.length} valid [Assignment Completion: ${settledId}] blocks and the assignment is already ${current.assignments[settledId].state}. The extra block changed nothing: the recorded settlement stands and its queue promotion happened once.`);
+    if (!settleable.length) continue;
+    warnings.push(`completion_block_after_terminal: a2a/${lane.worker_id}-report.md has changed since ${settledId} settled as ${record.state} — the settlement recorded a different report hash — and it still carries ${settleable.length} valid [Assignment Completion: ${settledId}] block(s), the latest at line ${settleable[settleable.length - 1].line}. Anything appended since changed nothing: the recorded settlement stands and its queue promotion happened once.`);
   }
   return current;
 }
@@ -1462,18 +1474,24 @@ export async function observeReferenceDrift(store: DelegationStore, registry: De
  * profile the lifecycle registry recorded at launch, which is the same value
  * `ensure_worker` compares against.
  */
-export async function assertLaneProfile(store: DelegationStore, registry: DelegationRegistry, artifact: AssignmentArtifact): Promise<void> {
-  const predicted = await store.predictLane(registry, artifact.responsibility_key);
+export async function assertLaneProfile(store: DelegationStore, registry: DelegationRegistry, artifact: AssignmentArtifact, separation?: Separation): Promise<void> {
+  // The lane THIS call would bind, separation included. Comparing against the
+  // unseparated primary refused the separated dispatch the refusal itself
+  // recommends as the recovery, so the recovery was unusable (I6).
+  const predicted = await store.predictLane(registry, artifact.responsibility_key, separation);
   if (!predicted.lane_reuse) return;
   const lifecycle = await readRegistry(path.join(store.runPath, "a2a", "herdr-workers.json")).catch(() => undefined);
   const record = Object.values(lifecycle?.workers ?? {}).find((worker) => worker.worker_id === predicted.worker_id);
   const launched = record?.selected_profile;
   if (!launched || launched === artifact.profile) return;
+  const separated = separation !== undefined;
   throw new McpContractError(
     "model_profile_mismatch",
-    `${artifact.assignment_id} declares profile "${artifact.profile}", but responsibility "${artifact.responsibility_key}" runs on lane ${predicted.worker_id}, which was launched under profile "${launched}".`,
+    `${artifact.assignment_id} declares profile "${artifact.profile}", but ${separated ? `the separated lane this call would reuse (${predicted.worker_id})` : `responsibility "${artifact.responsibility_key}" runs on lane ${predicted.worker_id}, which`} was launched under profile "${launched}".`,
     "validate",
-    `A live lane's launch profile is fixed for its lifetime. Either set "profile: ${launched}" in the artifact frontmatter to run this on the existing lane, or keep the profile and dispatch it with a \`separation\`, which binds a lane of its own. Nothing was registered: the assignment ID is still free.`,
+    separated
+      ? `A live lane's launch profile is fixed for its lifetime, and this call's separation matches that lane. Either set "profile: ${launched}" in the artifact frontmatter, or use a separation that no live lane already carries, so a fresh lane is bound. Nothing was registered: the assignment ID is still free.`
+      : `A live lane's launch profile is fixed for its lifetime. Either set "profile: ${launched}" in the artifact frontmatter to run this on the existing lane, or keep the profile and call \`add\` with a \`separation\` that no live lane carries: that binds a lane of its own and is compared against that lane, not this one. \`preflight\` accepts no separation, so it always compares against the primary lane and will keep refusing — the separated \`add\` is the call that proceeds. Nothing was registered: the assignment ID is still free.`,
   );
 }
 /**
@@ -1686,22 +1704,21 @@ export class CompositeTools {
         // with no hint that its report said otherwise (friction
         // ffd8390346e69cae). It is the ORCH's whole-run view, so it is also the
         // surface where an unparsable block most needs to surface.
+        const opening = await store.read();
         const sweepWarnings: string[] = [];
-        const registry = await sweepSettlements(store, run, await store.read(), sweepWarnings);
+        const registry = await sweepSettlements(store, run, opening, sweepWarnings);
         let orchestrator: unknown;
         try { await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
         const budget = await this.observeBudget(store, registry);
         const inboundChannels = await observeInboundChannels(store);
-        const drift: string[] = [];
-        for (const lane of Object.values(registry.lanes)) {
-          const observed = await observeReferenceDrift(store, registry, registry.assignments[lane.active_assignment_id ?? ""]);
-          if (observed) drift.push(observed);
-        }
-        const observations = [...sweepWarnings, ...drift];
-        // A sweep that settled something moved the revision, so the reported
-        // revision is the post-sweep one and a close may be issued from it
-        // directly.
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: sweepWarnings.length ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget, inbound_channels: inboundChannels, ...(observations.length ? { settlement_sweep: observations } : {}) } };
+        // `effect` follows what this call actually persisted, not what it
+        // observed. A sweep that only WARNED wrote nothing, and reporting it as
+        // `confirmed` told the caller its registry had moved when the revision
+        // proves it had not (Q15, verification defect (a)). Reference drift is
+        // reported by the sweep itself now, for the assignment it observed —
+        // including one it settled in the same pass (I7).
+        const persisted = registry.revision !== opening.revision;
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: persisted ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget, inbound_channels: inboundChannels, ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}) } };
       }
       if (input.action === "budget_extend") return await this.extendBudget(input, run, store);
       const runtime = await loadFacts(this.adapter);
@@ -1788,6 +1805,15 @@ export class CompositeTools {
           "close",
           `Settle every lane before track closure. An idle lane still holding a non-terminal assignment is settled as a session and unsettled as work: closing it would strand that assignment in its current state with no live lane left to observe a settlement from. Where the cause named above is an unparsable completion block, the fix is in the worker's report, not in the registry: have the lane append the exact two lines quoted, then retry. This call's sweep advanced the registry to revision ${registry.revision}; pass that as expected_registry_revision on the retry.`,
         );
+      }
+      // The normal close path had no drift observation at all: only the refusal
+      // branch checked pins, so a run that closed cleanly closed silently over a
+      // referenced document that had moved (I7). Every assignment this run holds
+      // a record for is checked, because a close is the last moment anything can
+      // be said about them.
+      for (const assignment of Object.values(registry.assignments)) {
+        const observed = await observeReferenceDrift(store, registry, assignment);
+        if (observed) closeSweep.push(observed);
       }
       const closeCandidates: { lane: WorkerLaneRecord; liveSequence: number }[] = [];
       for (const lane of Object.values(registry.lanes)) if (lane.state === "idle") {
@@ -3250,7 +3276,7 @@ export class CompositeTools {
         // the assignment ID unconsumed and the artifact re-authorable in place.
         const addArtifact = await store.assignmentFile(input.assignment_id, input.responsibility_key, input.instructions_sha256);
         const preAdd = await store.read();
-        if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment);
+        if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment, input.separation);
         const addReferences = addArtifact.assignment.references ?? [];
         assertReferencesPinned(input.assignment_id, await observeReferences(store.runPath, addReferences));
         const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
@@ -3345,7 +3371,12 @@ export class CompositeTools {
       }
       if (assignment.state === "completed" || assignment.state === "failed") {
         const settlementRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch");
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment) } };
+        // A terminal assignment returned early still owes its pins an
+        // observation: this branch used to return before any drift check, so the
+        // one call an ORCH makes to read a settled assignment was also the one
+        // that never mentioned that its referenced documents had moved (I7).
+        const terminalDrift = await observeReferenceDrift(store, registry, assignment);
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment, terminalDrift) } };
       }
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");

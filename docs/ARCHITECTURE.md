@@ -196,6 +196,15 @@ close a track while its assignment stayed `working` — `herdr_track inspect` an
 its own precondition, and it refuses a lane holding a non-terminal active assignment
 even when the lane is `idle`, because a closed lane can no longer be observed settling.
 
+That makes "inspect is read-only" a claim about the budget, not about the call: an
+inspect never judges or unparks a budget and writes no budget field, while its sweep
+may settle an assignment, record a first `blocked` observation, and materialize a
+pre-v5 registry in the same transaction. The response says which happened rather than
+leaving it to be inferred — `effect: "confirmed"` and a new revision when the call
+persisted something, `effect: "none"` and an unchanged revision when it only observed.
+Each observation also re-checks the pins of the assignment it observed, including one
+it settled in the same pass, so a settlement cannot swallow a reference drift.
+
 ## Responsibility routing
 
 For `herdr_assignment.add`:

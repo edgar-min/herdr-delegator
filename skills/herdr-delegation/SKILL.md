@@ -55,9 +55,25 @@ born ORCH in `plan.md`.
 
 Preserve settled user language. For call shape, limits, grammar, and recoverable
 failures, follow the mounted `herdr_track` schema and its error text, not this prose.
-The immutable-assignment grammar is not yours to teach or to use: no assignment exists
-before birth, and the born ORCH reads it from the mounted `herdr_assignment` schema and
-its own `protocol-orch.md`.
+
+Authoring assignments is not yours: none exists before birth, and the born ORCH reads
+the full contract from the mounted `herdr_assignment` schema's `action` description and
+from its own `protocol-orch.md`. Know the shape anyway, so a mandate you distill can be
+carried out inside it. One UTF-8 Markdown file per assignment, LF only, at most 65536
+bytes; frontmatter `assignment_id`, `responsibility_key`, `profile`, optional `label`;
+then the five required H1 sections in order — `# Goal`, `# Completion conditions`,
+`# Write ownership`, `# Dependencies`, `# User boundaries` — optionally followed by a
+trailing `# References`. `# Goal` is prose of at most 4096 characters; the other four
+are bullets only, at most 64 lines each of `- <text>` up to 1000 characters; and a `# `
+at column 1 starts a section even inside fenced code. `# References` pins documents by
+hash — at most 16 bullets of `- <path> sha256:<64 lowercase hex>`, each a regular file
+inside the run directory of at most 262144 bytes, no symlink or hardlink — which is how
+detail too large for the artifact reaches a worker. A worker settles by appending two
+literal lines at column 1 to its own report: `[Assignment Completion: <assignment_id>]`
+then `status: completed` (or `failed`; `blocked` is recognized and settles nothing).
+
+What that means for the mandate you write: a scope whose `shape_of_success` cannot be
+stated as bounded bullets is a scope the ORCH cannot dispatch without splitting it.
 
 ## Open once
 

@@ -48,8 +48,8 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   the defect is a line, the bound it violated, and the exact text that satisfies the
   rule — including the trap that a `# ` at column 1 splits a section even inside a
   fenced code block. The section, Goal, bullet, and artifact-size bounds are single
-  constants shared by the parser, the published schema, and the documents, so the
-  three cannot drift. (SPEC ASN-004, ASN-004a, ASN-004b, ASN-005; friction
+  constants the parser and the published schema both read, and the documents are
+  reviewed against them rather than restating them independently. (SPEC ASN-004, ASN-004a, ASN-004b, ASN-005; friction
   `2f772405d442c6f3`, `171183a6663fabb1`)
 - `herdr_assignment`'s `action` field publishes the whole authoring contract in its
   schema description: frontmatter, the five sections and their bounds, the fenced-code
@@ -85,11 +85,14 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   `herdr_worker inspect`, and `herdr_track close` — never a recall, because the worker
   already holds the pinned hashes. Compatibility: the artifact grammar is not
   versioned, so a server older than 3.9.0 rejects an artifact carrying `# References`
-  as "missing or extra sections". That refusal's recovery now names the server
-  respawn instead of inviting deletion of a healthy section. Reload mounted servers
-  (`/reload-plugins`) before authoring the first `# References` artifact on a shared
-  working tree. (SPEC ASN-004, ASN-005a, ASN-005b, ASN-005c, ASN-005d;
-  friction `171183a6663fabb1`)
+  with its own legacy five-section message — text no current code can rewrite, because
+  the refusal comes from a process built before this release. The operator contract is
+  the fix: reload mounted servers (`/reload-plugins`) before authoring the first
+  `# References` artifact on a shared working tree, and never delete a healthy
+  `# References` section to satisfy an old reader. A section-count refusal from a
+  3.9.0-or-later server is a different situation and now says so: that server
+  recognizes the section, so its recovery names the observed headings, not a respawn.
+  (SPEC ASN-004, ASN-005a, ASN-005b, ASN-005c, ASN-005d; friction `171183a6663fabb1`)
 - `add` makes the registered artifact read-only (`0444`) immediately after
   registration, so an edit to a dispatched assignment fails on the write rather than
   silently diverging from the hash the registry holds. A `chmod` that cannot be
@@ -178,6 +181,59 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 
 ### Fixed
 
+- `herdr_track inspect` reports the `effect` it actually had. It runs the settlement
+  sweep, so it may persist — a settlement, a first `blocked` observation, and the
+  legacy-to-v5 materialization that rides the same transaction — but it reported
+  `confirmed` whenever the sweep produced any observation at all, including a warning
+  that wrote nothing, which told a caller its registry had moved while the revision
+  proved it had not. `effect` now follows the revision: `confirmed` with the new
+  revision when the call wrote, `none` with the unchanged revision when it only
+  observed. The documents say the matching thing: "read-only" is a claim about the
+  BUDGET — inspect never judges or unparks it and writes no budget field — not about
+  the whole call. (SPEC ASN-011f, ASN-011g)
+- The profile check judges the lane the call would actually bind, separation included.
+  It predicted the unseparated primary lane, so the separated dispatch its own recovery
+  text recommended was refused by the same gate that recommended it — the recovery was
+  unusable. A separation no live lane carries now predicts a fresh lane and passes,
+  while a separation matching a live separated lane is compared against THAT lane and
+  says so. The refusal also states that `preflight` accepts no separation and will keep
+  refusing, so the separated `add` is the call that proceeds. (SPEC ASN-014c; friction
+  `17b7fd5328871a88`)
+- An observation re-checks the pins of the assignment it observed, including one it
+  settled in the same call. The drift check ran on the lane's active assignment after
+  the sweep, so a settlement emptied that slot and the one assignment nobody checked
+  was the one being settled — a reference that had moved was hidden by the settlement
+  that consumed it. `wait`'s terminal early return and the successful `close` path had
+  no drift check at all and now carry one. (SPEC ASN-005c, ASN-011g)
+- `completion_block_after_terminal` is decided by the report bytes settlement recorded
+  rather than by counting valid blocks. A worker that corrected a malformed block
+  before anyone looked left two valid blocks in the report; the sweep settled from the
+  latest — correctly — and then warned that an extra block had changed nothing after
+  the fact, which had not happened. The warning now fires only when the report no
+  longer hashes to what the settlement recorded. (SPEC ASN-011g)
+- The compatibility note about `# References` no longer claims this release changed an
+  older server's refusal text. A server built before 3.9.0 emits its own five-section
+  message and nothing here can rewrite it; the fix is to respawn those servers, and
+  never to delete a healthy `# References` section. A section-count refusal from a
+  current server is a different situation and now says so — that server recognizes the
+  section, so its recovery names the observed headings instead of a respawn. (SPEC
+  ASN-005d; friction `171183a6663fabb1`)
+- Overstated guarantees corrected where they promised more than the code does:
+  `profile` follows the configured-profile grammar rather than being a lowercase
+  coordinate; the completion header's leading whitespace is tolerated by the parser
+  while the status line's is not, and the documents now teach column 1 as the canonical
+  form and say which half the parser enforces; and shared numeric constants are
+  described as one source the parser and schema read and the documents are reviewed
+  against, not as something that "cannot drift". (SPEC ASN-011)
+- The dispatch-time surfaces carry the whole authoring contract, which C6 required and
+  two of the three lacked. `protocol-orch.md` now states the file bounds, frontmatter
+  order, section grammar and bullet limits, the fenced-`# ` trap, the full `References`
+  grammar with its path and size rules, and the literal completion block it judges;
+  `protocol-worker.md` states the artifact shape a worker reads its assignment through
+  and that the pinned hashes are its own to verify; `SKILL.md` keeps the creator out of
+  authoring but carries the shape and what it implies for a mandate. Both templates'
+  new digests are appended, nothing removed. (SPEC ASN-004, ASN-005a; friction
+  `2f772405d442c6f3`)
 - `herdr_track inspect` and `herdr_track close` run the settlement sweep, like
   `herdr_assignment wait` and `herdr_worker inspect` already did. They were the last
   two consumers reading the registry raw, and that gap had a concrete cost: an idle

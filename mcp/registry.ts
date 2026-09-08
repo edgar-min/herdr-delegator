@@ -446,10 +446,16 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
     );
   }
   if (sections.length !== ASSIGNMENT_SECTIONS.length && !withReferences) {
-    const observed = sections.map((section) => section.split("\n", 1)[0]).join(" | ");
+    const observed = sections.map((section) => section.split("\n", 1)[0]);
+    // This refusal comes from a server that KNOWS about `# References`, so it is
+    // never evidence of a stale reader: the artifact's section structure is
+    // wrong here and now, and the fix is the observed headings. The old-reader
+    // case is a different situation with a different symptom — a server built
+    // before 3.9.0 emits its own five-section message — and conflating the two
+    // sent authors to reload a server that had already told them the truth (I9).
     throw artifactInvalid(
-      `Assignment Markdown has ${sections.length} H1 sections; it takes ${ASSIGNMENT_SECTIONS.length}, or ${ASSIGNMENT_SECTIONS.length + 1} with a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}". Observed headings: ${observed}.`,
-      `${SECTION_SHAPE} If this artifact DOES carry a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, the mounted server predates it (the section shipped in 3.9.0): respawn the plugin with /reload-plugins and retry the identical call rather than deleting the section.`,
+      `Assignment Markdown has ${sections.length} H1 sections; it takes ${ASSIGNMENT_SECTIONS.length}, or ${ASSIGNMENT_SECTIONS.length + 1} with a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" as the last. Observed headings: ${observed.join(" | ")}.`,
+      `${SECTION_SHAPE} Fix the headings listed above; this server recognizes "# ${ASSIGNMENT_REFERENCES_SECTION}", so its presence is not what was refused.`,
     );
   }
   const sectionValues = sections.map((section, index) => {
@@ -712,7 +718,7 @@ export class DelegationStore {
   /**
    * The next worker ordinal nothing in this run has taken. Shared by every path
    * that needs one, so a predicted coordinate and the coordinate a later `add`
-   * actually binds cannot drift apart.
+   * actually binds are decided by the same rule.
    */
   private async nextWorkerId(registry: DelegationRegistry): Promise<string> {
     const reserved = await this.reservedWorkerOrdinals(registry);
@@ -743,12 +749,19 @@ export class DelegationStore {
    * prediction — an intervening `add` on another responsibility can take the
    * predicted ordinal — so `lane_reuse` reports which branch produced it.
    */
-  async predictLane(registry: DelegationRegistry, responsibility: string): Promise<{ worker_id: string; report_path: string; lane_reuse: boolean }> {
+  async predictLane(registry: DelegationRegistry, responsibility: string, separation?: Separation): Promise<{ worker_id: string; report_path: string; lane_reuse: boolean }> {
     if (!RESPONSIBILITY_RE.test(responsibility)) throw new McpContractError("invalid_assignment", "Responsibility key is invalid.", "validate", "Use a canonical responsibility key.");
     const live = (registry.responsibilities[responsibility]?.worker_ids ?? [])
       .map((id) => registry.lanes[id])
       .filter((lane): lane is WorkerLaneRecord => !!lane && lane.state !== "closed" && lane.state !== "failed");
-    const reused = live.find((candidate) => candidate.separation === undefined);
+    // The same rule `select` applies, separation included: a separated `add`
+    // reuses only a lane carrying that exact separation, so predicting the
+    // unseparated primary for it named a lane the call would never bind — which
+    // is how the profile gate came to refuse the separated dispatch it had just
+    // recommended as the recovery.
+    const reused = separation
+      ? live.find((candidate) => JSON.stringify(candidate.separation) === JSON.stringify(separation))
+      : live.find((candidate) => candidate.separation === undefined);
     const workerId = reused?.worker_id ?? await this.nextWorkerId(registry);
     return { worker_id: workerId, report_path: path.join(this.runPath, "a2a", `${workerId}-report.md`), lane_reuse: reused !== undefined };
   }

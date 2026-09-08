@@ -16,7 +16,8 @@ export const MAX_ASSIGNMENT_LABEL = 48;
 export const ASSIGNMENT_LABEL_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,46}[A-Za-z0-9])?$/;
 // The canonical assignment artifact's grammar, as bounded numbers, so the parser
 // that enforces them, the schema description that publishes them, and the
-// documents that teach them cannot drift apart (friction 2f772405d442c6f3: the
+// documents that teach them read one source rather than restating it (friction
+// 2f772405d442c6f3: the
 // five-section and Goal limits were discoverable only by failing a preflight).
 export const MAX_ASSIGNMENT_ARTIFACT_BYTES = 64 * 1024;
 export const MAX_ASSIGNMENT_GOAL = 4_096;
@@ -721,10 +722,11 @@ const urgent = z.boolean().optional().describe("Insert this assignment at the HE
 // The whole authoring contract, published where an ORCH reads it BEFORE writing a
 // file rather than after a preflight refuses one (friction 2f772405d442c6f3,
 // 171183a6663fabb1, 0b2c5548cb73bf25). Every number here is the constant the
-// parser enforces, so the text cannot drift from the behavior.
+// parser enforces, so the text and the behavior are checked against one
+// source rather than restated independently.
 export const ASSIGNMENT_GRAMMAR_GUIDANCE = `The canonical assignment is one UTF-8 Markdown file at <run>/a2a/assignments/<assignment_id>.md, LF line endings only, at most ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes.
 
-Frontmatter: "---", then exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally "label: <display-only label>", then "---", then a blank line. One space after each colon, no quoting, no trailing space. No other key, no repeated key, no blank line inside the block. Each value has its own published grammar: assignment_id on the assignment_id field of this same schema, responsibility_key and profile as bounded lowercase coordinates, label on ASN-003a. A refusal quotes the offending line and the pattern it had to match.
+Frontmatter: "---", then exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally "label: <display-only label>", then "---", then a blank line. One space after each colon, no quoting, no trailing space. No other key, no repeated key, no blank line inside the block. Each value has its own published grammar: assignment_id on the assignment_id field of this same schema, responsibility_key a bounded lowercase coordinate, profile the configured-profile grammar (letters, digits, ".", "_" or "-", beginning alphanumeric, up to 64 characters — not lowercase-only), label on ASN-003a. A refusal quotes the offending line and the pattern it had to match.
 
 Body: the ${ASSIGNMENT_SECTIONS.length} required H1 sections, all of them, in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each heading followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it. "# Goal" is free prose of at most ${MAX_ASSIGNMENT_GOAL} characters. The other four are Markdown bullets only: at least one and at most ${MAX_ASSIGNMENT_SECTION_LINES} lines each, every line "- <text>" of 1 to ${MAX_ASSIGNMENT_BULLET} characters, with no blank lines, no wrapped continuation lines, no nested indentation and no sub-headings. An empty bullet section is refused: a section with nothing in it states nothing.
 

@@ -87,16 +87,48 @@ worker can execute without chat history. Run the tool's preflight and accept its
 canonical hash; after dispatch, never rewrite the assignment — a successful add makes
 the file read-only, and a correction is a NEW assignment.
 
-The artifact's grammar and its bounds are published in the mounted assignment tool's
-schema; read them there before writing the file rather than after a preflight refuses
-one. Two parts of it decide how you author. First, a line beginning `# ` at column 1
-starts a section wherever it appears, including inside a fenced code block, so indent
-any fence that contains one. Second, detail that does not fit the goal's bound belongs
-in a document pinned by hash in the artifact's optional trailing references section,
-not in prose the worker has to reconstruct: preflight and add verify every pinned hash
-and refuse before the assignment ID is consumed, and after dispatch a document that
-moved is reported as drift rather than recalled, because the worker already holds the
-hashes.
+The authoring contract, in full, because it decides the file before you write it. The
+artifact is one UTF-8 Markdown file at `<run>/a2a/assignments/<assignment_id>.md`, LF
+line endings only, at most 65536 bytes. Frontmatter is `---`, then `assignment_id`,
+`responsibility_key`, `profile` in that order, optionally `label`, then `---`, then a
+blank line — one space after each colon, no other key, no repeated key, no blank line
+inside the block. The body is the five required H1 sections, all of them, in this order:
+`# Goal`, `# Completion conditions`, `# Write ownership`, `# Dependencies`,
+`# User boundaries`, each heading followed by one blank line, optionally followed by a
+trailing `# References` section and nothing after it. `# Goal` is prose of at most 4096
+characters. Each of the other four is bullets only: at least one and at most 64 lines,
+every line `- <text>` of 1 to 1000 characters, no blank lines, no wrapped continuation
+lines, no nested indentation, no sub-headings.
+
+One trap decides how you write examples: a line beginning `# ` at column 1 starts a
+section wherever it appears, including inside a fenced code block, because sections are
+split before anything interprets fences. Indent such a fence by two spaces.
+
+`# References` is how detail that does not fit gets to the worker: at most 16 bullets,
+each exactly `- <path> sha256:<64 lowercase hex>`, the hash over the file's exact bytes.
+The path is relative to the RUN directory, with no `..`, no empty segment, no leading
+`/` and no backslash, and must name a regular file inside the run directory — no
+symlink, no hardlinked file, no directory, no two bullets naming the same file — of at
+most 262144 bytes. Split a larger document and pin each part. Preflight and add verify
+every hash and refuse before the assignment ID is consumed; after dispatch a document
+that moved is reported as drift rather than recalled, because the worker already holds
+the hashes, so a correction is a new assignment. Reload mounted servers before the first
+`# References` artifact on a shared working tree: a server built before this protocol
+rejects the section with its own five-section message, and the section is not what is
+wrong.
+
+Settlement is what the worker appends to its own lane report, and you judge it rather
+than set it — two literal lines at column 1, the first with no heading marker:
+
+    [Assignment Completion: <assignment_id>]
+    status: completed
+
+`failed` replaces `completed`, and `blocked` is recognized as a REPORTED boundary that
+settles nothing and leaves the assignment live. Exactly one recognized status line per
+block, lowercase key and lowercase value. Several valid blocks resolve to the latest, so
+a worker corrects a malformed attempt by appending a correct block below it. The mounted
+tool's schema and returned errors remain authoritative for anything this summary and the
+code could disagree about.
 
 ## Supervise by judgment, delegate evidence
 
