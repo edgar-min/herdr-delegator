@@ -152,7 +152,13 @@ function validBudgetExtension(value: unknown, index: number): value is BudgetExt
     (value.state === "pending" || value.state === "settled" || value.state === "abandoned") &&
     (value.verdict === undefined || BUDGET_VERDICTS.includes(value.verdict as BudgetVerdict)) &&
     (value.granted_tokens === undefined || validCount(value.granted_tokens)) &&
-    (value.granted_minutes === undefined || validCount(value.granted_minutes)) &&
+    // A recorded minutes grant may not exceed what that extension asked for:
+    // the verdict's `granted_minutes` lever is truncated to the request before
+    // it is written, so a record above it could only come from a hand edit. The
+    // bound is checked only where the request was recorded — an extension
+    // written before `requested_minutes` existed has nothing to compare
+    // against, and inventing a comparison would reject a healthy registry.
+    (value.granted_minutes === undefined || (validCount(value.granted_minutes) && (typeof value.requested_minutes !== "number" || Number(value.granted_minutes) <= value.requested_minutes))) &&
     validAppliedStates(value.applied) &&
     validCount(value.retries, 64) &&
     typeof value.requested_at === "string" && value.requested_at.length <= 64 &&

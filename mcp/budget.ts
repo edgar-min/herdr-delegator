@@ -769,8 +769,20 @@ file, with nothing after it:
 
 verdict: grant
 
-Use \`grant\`, \`partial\`, or \`deny\` on that line. For \`partial\`, add one
-more line \`granted_tokens: <integer>\` no greater than the requested increase.
+Use \`grant\`, \`partial\`, or \`deny\` on that line.
+
+A \`grant\` approves the whole request on BOTH axes; a \`deny\` approves nothing
+on either. A \`partial\` is per axis, and it needs one line for every axis it
+cuts: \`granted_tokens: <integer>\` and/or \`granted_minutes: <integer>\`, each
+greater than zero and no greater than that axis's requested increase above. An
+axis you leave out of a \`partial\` is approved in full — so cutting the spend
+while leaving the wall clock alone means writing only \`granted_tokens\`, and a
+\`partial\` needs at least \`granted_tokens\`. A figure above the request is
+truncated to the request; zero or a negative figure is not a partial grant and
+leaves this document unparsed, so use \`deny\` to approve nothing.
+
+Both lines are ignored on \`grant\` and on \`deny\`, where the disposition
+already fixes both axes.
 
 Then ring the orchestrator once, and only after the block is written:
 \`herdr_message {action: "wake_orch_audit", track_id: "${run.track_id}", run_id: "${run.run_id}"}\`.
@@ -783,21 +795,49 @@ orchestrator, and do not edit anything else in this run.
 `;
 }
 
-const VERDICT_BLOCK = /\[Budget Audit Verdict:\s*(\d+)\]\s*\n\s*\nverdict:\s*(grant|partial|deny)[ \t]*(?:\n[ \t]*granted_tokens:[ \t]*(\d{1,15})[ \t]*)?\s*$/;
+// Both figures are optional trailing lines, in either order, at most once each.
+// The whole block is still an exact trailing match or nothing: an auditor that
+// invents a third key, repeats one, or writes a non-integer leaves this
+// document unparsed and the run parked, which is the same fail-closed reading
+// the token axis has always had.
+const VERDICT_BLOCK = /\[Budget Audit Verdict:\s*(\d+)\]\s*\n\s*\nverdict:\s*(grant|partial|deny)[ \t]*((?:\n[ \t]*granted_(?:tokens|minutes):[ \t]*\d{1,15}[ \t]*)*)\s*$/;
+const GRANTED_LINE = /^[ \t]*granted_(tokens|minutes):[ \t]*(\d{1,15})[ \t]*$/;
 
 /**
  * Verdict parsing mirrors the assignment completion block: an exact trailing
  * block, or nothing. A malformed or absent verdict is never read generously —
  * the run stays parked and the audit is retried.
+ *
+ * A `partial` is per axis (friction 2c8f859d4875bbc0): it MUST carry
+ * `granted_tokens`, MAY carry `granted_minutes`, and an axis it omits is
+ * approved in full. `grant` and `deny` ignore both figures, because the
+ * disposition already fixes both axes — which is also what keeps every audit
+ * document written before this lever existed parsing exactly as it did.
  */
-export function parseVerdict(document: string, ordinal: number): { verdict: BudgetVerdict; granted_tokens?: number } | undefined {
+export function parseVerdict(document: string, ordinal: number): { verdict: BudgetVerdict; granted_tokens?: number; granted_minutes?: number } | undefined {
   const match = VERDICT_BLOCK.exec(document.replace(/```\s*$/, "").trimEnd());
   if (!match || Number(match[1]) !== ordinal) return undefined;
   const verdict = match[2];
   if (verdict !== "partial") return { verdict: verdict === "grant" ? "grant" : "deny" };
-  const granted = match[3] === undefined ? undefined : Number(match[3]);
-  if (granted === undefined || !Number.isSafeInteger(granted) || granted <= 0) return undefined;
-  return { verdict: "partial", granted_tokens: granted };
+  let tokens: number | undefined;
+  let minutes: number | undefined;
+  for (const line of match[3].split("\n")) {
+    if (!line.trim()) continue;
+    const figure = GRANTED_LINE.exec(line);
+    if (!figure) return undefined;
+    const value = Number(figure[2]);
+    if (!Number.isSafeInteger(value) || value <= 0) return undefined;
+    // A repeated key is two answers to one question, so it is no answer.
+    if (figure[1] === "tokens") {
+      if (tokens !== undefined) return undefined;
+      tokens = value;
+    } else {
+      if (minutes !== undefined) return undefined;
+      minutes = value;
+    }
+  }
+  if (tokens === undefined) return undefined;
+  return { verdict: "partial", granted_tokens: tokens, ...(minutes === undefined ? {} : { granted_minutes: minutes }) };
 }
 
 export async function readAuditDocument(auditPath: string): Promise<{ document: string; sha256: string } | undefined> {

@@ -2687,16 +2687,29 @@ export class CompositeTools {
       await this.parkForAudit(store, run, pending.ordinal, `audit ${pending.ordinal} has no verdict block yet (attempt ${retries}${rerun ? `; ${rerun}` : "; auditor re-prompted"})`);
       return { ok: true, tool: "herdr_track", action: "budget_extend", run, effect: "none", retryable: true, registry_revision: retried.revision, data: { budget: retried.budget, audit: { ordinal: pending.ordinal, state: "pending", path: pending.audit_path, retries, attempts_before_abandon: MAX_AUDIT_LANDING_ATTEMPTS, ...(rerun ? { auditor: rerun } : { auditor: "re-prompted" }) }, ...emergencyObservation, next_step: `The auditor has not appended its verdict yet. Re-send the identical budget_extend to land audit ${pending.ordinal}; the run stays parked until a verdict exists, and after ${MAX_AUDIT_LANDING_ATTEMPTS} attempts the audit is abandoned instead of pending forever.` } };
     }
-    const granted = verdict.verdict === "deny"
-      ? 0
-      : Math.min(verdict.granted_tokens ?? pending.requested_tokens, pending.requested_tokens);
-    // A grant moves both dimensions (BUD-010). Wall clock keeps accruing while a
-    // run is parked, so a token-only grant would leave a minutes-parked run
-    // parked forever — the cadence would become the wall this design refuses to
-    // be. The minutes figure is the one this extension recorded as requested; an
-    // extension recorded before that field existed falls back to its step, which
-    // is exactly what the old unconditional expression computed.
-    const grantedMinutes = granted > 0 ? (pending.requested_minutes ?? minutesStepCap(record)) : 0;
+    // What the verdict moves, per axis (BUD-010). A `grant` approves the whole
+    // request and a `deny` approves nothing, so on both of those the verdict's
+    // figures are ignored — the disposition already fixes both axes. Only a
+    // `partial` carries figures, and it carries them PER AXIS: an axis it names
+    // moves by that figure, truncated to the request rather than refused, and an
+    // axis it omits is approved in full. Before this, a `partial` cut the tokens
+    // and silently granted the wall clock in full, because the grammar had no
+    // minutes lever at all (friction 2c8f859d4875bbc0).
+    //
+    // The minutes request is the figure this extension recorded; an extension
+    // recorded before that field existed falls back to its step, which is
+    // exactly what the old unconditional expression computed.
+    const requestedMinutes = pending.requested_minutes ?? minutesStepCap(record);
+    const granted = verdict.verdict === "partial"
+      ? Math.min(verdict.granted_tokens ?? pending.requested_tokens, pending.requested_tokens)
+      : verdict.verdict === "grant" ? pending.requested_tokens : 0;
+    // Wall clock keeps accruing while a run is parked, so a token-only grant
+    // would leave a minutes-parked run parked forever — the cadence would become
+    // the wall this design refuses to be. That is why an omitted axis is full
+    // approval rather than zero.
+    const grantedMinutes = verdict.verdict === "partial"
+      ? Math.min(verdict.granted_minutes ?? requestedMinutes, requestedMinutes)
+      : verdict.verdict === "grant" ? requestedMinutes : 0;
     const denyScaffold = verdict.verdict === "deny" ? await scaffoldClamp(store.runPath) : undefined;
     const deniedFingerprint = verdict.verdict === "deny" ? await clampFingerprint(store.runPath) : undefined;
     // GATED T1. Under `notify` an approved ceiling belongs in the human-visible

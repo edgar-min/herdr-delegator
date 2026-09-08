@@ -221,6 +221,8 @@ A grant is a decision, not automatically a ceiling. `budget_extend` and `inspect
 
 Either axis can be extended. `requested_minutes` exists because the wall clock is what a coordination-heavy run exhausts first, and it used to have no extension path at all. Each axis is capped at half of what it has already been granted; an ask above that is truncated to the step rather than refused, and an axis you omit still moves by its own step, because a grant moves both dimensions. Under `full` a verdict raises neither axis on its own: tokens are held at the seed and wall clock at the run's minutes floor until you write the clamp.
 
+The auditor answers per axis as well. A `grant` approves the whole request and a `deny` approves nothing; a `partial` names the axes it cuts — `granted_tokens`, and optionally `granted_minutes` — and approves in full any axis it leaves out, so trimming the spend while leaving the wall clock alone is exactly what writing only `granted_tokens` means. A figure above the request is truncated to it; a zero or repeated figure leaves the audit document unparsed rather than reading as a grant of nothing, because `deny` is how nothing is approved. Both figures are ignored on `grant` and `deny`, where the disposition already fixes both axes.
+
 ### `herdr_assignment`
 
 - `preflight`: assignment/responsibility IDs; validates the canonical draft's grammar before immutability, returns its server-computed SHA-256 and `authoring` skill routes, and never mutates state.

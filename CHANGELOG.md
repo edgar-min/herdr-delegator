@@ -125,6 +125,18 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   axis still moving by its own step because a grant moves both dimensions. Both
   requested and granted minutes are recorded on the extension and rendered into the
   auditor's document. (SPEC BUD-008, BUD-010; friction `2c8f859d4875bbc0`)
+- A `partial` verdict cuts each axis separately. The verdict block takes an optional
+  `granted_minutes` line beside `granted_tokens`, and an axis a `partial` does not
+  name is approved in full — so trimming spend without touching the wall clock is
+  writing only `granted_tokens`, and trimming the wall clock is now possible at all.
+  Until this, `partial` could only cut tokens while the minutes moved by the full
+  request, which left the auditor no lever on the axis a coordination-heavy run
+  actually exhausts. A figure above that axis's recorded request is truncated to it; a
+  non-positive or repeated figure leaves the document unparsed rather than reading as
+  a grant of nothing, since `deny` is how nothing is approved; and `grant`/`deny`
+  ignore both figures, so every audit document written before the line parses and
+  settles exactly as it did. No registry key moved. (SPEC BUD-010; friction
+  `2c8f859d4875bbc0`)
 - Under `full` a verdict alone raises neither axis. Wall clock is held at the run's
   new `minutes_floor` exactly as tokens are held at `seed_tokens`, so a `full` run can
   no longer be parked for approval on tokens while its minutes rise with no approval
