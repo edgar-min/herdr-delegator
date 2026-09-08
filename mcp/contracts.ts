@@ -121,21 +121,29 @@ export const MAX_JUSTIFICATION_ITEM = 500;
 export const BUDGET_POLICIES = ["full", "notify"] as const;
 export const BUDGET_VERDICTS = ["grant", "partial", "deny"] as const;
 export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unreadable", "approval-required", "denied"] as const;
-// Whether an approved grant is IN FORCE on one axis, which is a different
-// question from what the auditor decided (friction 09470253737e9da6: verdict
-// `grant`, granted_tokens 600000, effective cap still 400000, run still parked
-// on `approval-required`). The audit verdict is the decision; this is its
-// application. `applied` — the axis ceiling carries the granted figure.
+// How an approved grant was APPLIED on one axis, which is a different question
+// from what the auditor decided (friction 09470253737e9da6: verdict `grant`,
+// granted_tokens 600000, effective cap still 400000, run still parked on
+// `approval-required`). The audit verdict is the decision; this is its
+// application. `applied` — the axis ceiling carried the granted figure.
 // `awaiting-clamp` — the human still has to raise the clamp for it to take
 // effect (where a `full`-policy clamp does not already carry the granted
 // figure, and wherever the clamp is unreadable). `pinned` — a human ceiling on
 // that axis is below the granted figure and no tool op raises it.
-// `write-owed` — the server's own clamp write did not
-// land and is retried at the next guarded op. `none` — nothing was granted on
-// that axis, or the verdict was not a grant. It is never a park reason and
-// never a cap: `usable` (usage < effective cap at the observed moment) is the
-// separate observation, so a grant may read `awaiting-clamp` while the axis is
-// still usable because the human's ceiling was already high enough.
+// `write-owed` — the server's own clamp write did not land and is retried at
+// the next guarded op. `none` — nothing was granted on that axis, or the
+// verdict was not a grant.
+//
+// TENSE MATTERS (integration review I4). On a disposed extension `applied` and
+// `none` are terminal application HISTORY: they record how that grant landed at
+// its settlement, and a later clamp change does not rewrite them, so an axis
+// recorded `applied` may since have been capped below the figure it applied.
+// The three transient states describe an outstanding application condition and
+// are re-derived at every observation. Never read any of them as the current
+// permission to spend: `effective_cap`, `usable` (axis usage < axis effective
+// cap at the observed moment) and `park_reason` are what say whether the run can
+// proceed right now, which is also why a grant may read `awaiting-clamp` on an
+// axis that is perfectly usable because the human's ceiling was already high.
 export const BUDGET_APPLIED_STATES = ["applied", "awaiting-clamp", "pinned", "write-owed", "none"] as const;
 // The emergency carve-out's own audit vocabulary (BUD-016, friction
 // 8917760a9545c642). It is deliberately disjoint from BUDGET_VERDICTS: the two
@@ -495,10 +503,13 @@ export type BudgetExtension = {
   /** Minutes this extension actually moved, recorded on the same footing as `granted_tokens`. */
   granted_minutes?: number;
   /**
-   * Whether the grant is IN FORCE per axis, recorded separately from the
-   * verdict above. `applied`/`none` are terminal; the three transient states
-   * are re-derived at every observation from the live clamp and policy, and the
-   * next guarded mutation writes the derivation back.
+   * How the grant was applied per axis, recorded separately from the verdict
+   * above. `applied`/`none` are terminal application HISTORY on a disposed
+   * extension and a later clamp change does not rewrite them; the three
+   * transient states describe an outstanding condition, are re-derived at every
+   * observation from the live clamp and policy, and the next guarded mutation
+   * writes the derivation back. Current permission to spend is `effective_cap`,
+   * `usable` and `park_reason`, never this field.
    */
   applied?: { tokens: BudgetAppliedState; minutes: BudgetAppliedState };
   /** True once the server proved the auditor session was closed and its tab gone. */

@@ -101,8 +101,8 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   re-authoring under a new one. The recovery names both profiles and the two ways
   forward: match the lane, or dispatch under a `separation` that binds a new lane.
   (SPEC ASN-014c; friction `17b7fd5328871a88`)
-- The budget reports whether an approved grant is IN FORCE, per axis, instead of only
-  what the auditor decided. A settled extension carries `applied` on both axes —
+- The budget reports how an approved grant was APPLIED, per axis, instead of only what
+  the auditor decided. A settled extension carries `applied` on both axes —
   `applied`, `awaiting-clamp`, `pinned`, `write-owed`, `none` — recorded beside the
   verdict and naming the cause when the granted figure is not the ceiling. A
   `full`-policy run could previously read verdict `grant`, `granted_tokens` 600000,
@@ -110,14 +110,35 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   saying which figure was in force. `budget_extend` and `inspect` now assemble one
   block from one implementation — verdict, per-axis `granted`, `effective_cap`,
   `approval_floor`, `usage`, `applied`, `usable`, the park reason, one
-  `release_condition`, and `required_clamp` naming the exact clamp field and value a
-  human must write — so a response and the inspect after it cannot disagree, and
-  every `budget_parked` refusal carries the same value instead of naming the file and
-  leaving the number to be derived. `usable` stays an independent observation
-  (axis usage < axis cap), so a grant can read `awaiting-clamp` on an axis that is
-  still usable. `budget_extend` re-judges the budget BEFORE its pinned/denied/interval
-  gates, so the call made right after a human writes the clamp is the one that lifts
-  the park. (SPEC BUD-017; friction `09470253737e9da6`)
+  `release_condition`, and `required_clamp` naming the clamp field and value a human
+  writes — so the two read the same semantics from the same inputs, and every
+  `budget_parked` refusal carries the same value instead of naming the file and
+  leaving the number to be derived. A later observation may of course read
+  differently: metering and the clamp move on. On a settled extension `applied` and
+  `none` are terminal application history rather than current effect — a clamp
+  lowered afterwards does not rewrite them — so `effective_cap`, `usable` and
+  `park_reason` are what say whether the run may proceed now. `usable` stays an
+  independent observation (axis usage < axis cap), so a grant can read
+  `awaiting-clamp` on an axis that is still usable. `budget_extend` re-judges the
+  budget BEFORE its pinned/denied/interval gates, so the call made right after a
+  human writes the clamp is the one that lifts the park. (SPEC BUD-017; friction
+  `09470253737e9da6`)
+- `release_condition` no longer promises a release the values beside it cannot
+  deliver. Release is a conjunction over both axes at one judgment, and a recorded
+  approval at or below the spend already judged applies without lifting anything, so
+  each `required_clamp` entry now carries `releases_at` — the lowest ceiling on that
+  axis that would also clear the current judgment, published as arithmetic and never
+  as the server choosing a human's ceiling — and the sentence names the further
+  extension or the higher ceiling as the remaining route. A `denied` park says what
+  is true of it alone: only a human clamp change reopens the ladder. Audit documents
+  and the ledger now call the sum of approved figures a `granted total` and keep the
+  word `cap` for an effective ceiling, which under `full` or a pin are different
+  numbers. And "read-only" is stated of the budget state alone: an observation never
+  judges, unparks, moves a cap or rewrites an applied state, while the settlement
+  sweep `herdr_track inspect` and `close` run is a registry write that may also
+  materialize a legacy registry at the current schema and reports `effect:
+  "confirmed"` with the new revision. (SPEC BUD-010, BUD-017, BUD-018; friction
+  `09470253737e9da6`)
 - `budget_extend` accepts `requested_minutes`. The wall clock is what a
   coordination-heavy run exhausts first and it had no extension path at all; both axes
   now share one covenant — at most half of what that axis has already been granted,

@@ -526,41 +526,89 @@ export function usableAxes(metering: BudgetMetering): { tokens: boolean; minutes
   return { tokens: metering.judged_tokens < metering.cap_tokens, minutes: metering.elapsed_minutes < metering.cap_minutes };
 }
 
-export type RequiredClamp = { field: "max_tokens" | "max_minutes"; value: number };
+export type RequiredClamp = {
+  field: "max_tokens" | "max_minutes";
+  /** The recorded approval this write would APPLY: the granted figure, nothing more. */
+  value: number;
+  /**
+   * The lowest ceiling on this axis that also clears the current judgment, with
+   * one step of headroom above the observed usage. It is an observation, not a
+   * demand and not an approval: the ceiling is the human's number to choose, and
+   * this is only what the arithmetic says would still be releasing by the time
+   * they write it. It exists because `value` alone can be BELOW the usage
+   * already judged, in which case writing it applies the approval and the park
+   * stands.
+   */
+  releases_at: number;
+};
 
 /**
- * The exact clamp field and VALUE a human must write to release this park, for
+ * The exact clamp field and VALUE a human must write to apply an approval, for
  * every axis that is over its ceiling while an approved figure sits above it.
  * The missing half of the old recovery text: it named the file and the verb and
  * left the reader to derive the number (friction 09470253737e9da6). An axis
  * whose ceiling already carries the granted figure is omitted — there is nothing
  * to write, and the route is another extension.
+ *
+ * `value` and `releases_at` are deliberately separate. Applying the approval and
+ * releasing the park are different acts, and the first does not imply the second
+ * whenever spend has already passed the approved figure.
  */
 export function requiredClamp(record: BudgetRecord, metering: BudgetMetering): RequiredClamp[] {
   const required: RequiredClamp[] = [];
   if (metering.judged_tokens >= metering.cap_tokens && record.granted_tokens > metering.cap_tokens) {
-    required.push({ field: "max_tokens", value: record.granted_tokens });
+    required.push({
+      field: "max_tokens",
+      value: record.granted_tokens,
+      releases_at: Math.max(record.granted_tokens, metering.judged_tokens + stepCap(record)),
+    });
   }
   if (metering.elapsed_minutes >= metering.cap_minutes && record.granted_minutes > metering.cap_minutes) {
-    required.push({ field: "max_minutes", value: record.granted_minutes });
+    required.push({
+      field: "max_minutes",
+      value: record.granted_minutes,
+      releases_at: Math.max(record.granted_minutes, metering.elapsed_minutes + minutesStepCap(record)),
+    });
   }
   return required;
 }
 
 /**
- * One line naming what releases the run and WHERE that happens. `inspect` is
- * read-only, so nothing an observation reports can itself unpark: the transition
- * belongs to the next guarded op that judges the budget (Q11).
+ * What releases the run, WHERE that happens, and — the part the first version
+ * got wrong — whether the values it just named are actually enough (integration
+ * review I3). Release is a conjunction over BOTH axes at the next judgment, and
+ * a recorded approval below the spend already judged applies without releasing
+ * anything. `inspect` never performs the transition: an observation reports the
+ * condition, and a guarded op judges it (Q11).
  */
-export function releaseCondition(runPath: string, record: BudgetRecord, required: readonly RequiredClamp[]): string {
+export function releaseCondition(runPath: string, record: BudgetRecord, required: readonly RequiredClamp[], metering: BudgetMetering): string {
+  const clamp = budgetClampPath(runPath);
   const nextOp = "the next guarded op that judges the budget (assignment add or wait, worker close, track close, or budget_extend, which re-judges before its own gates) — never from inspect, which only reads";
-  if (record.state !== "parked") return `Nothing is pending: the run is active, and the ceiling is re-judged at ${nextOp}.`;
-  if (required.length) {
-    return `A human writes ${required.map((entry) => `${entry.field} ${entry.value}`).join(" and ")} into ${budgetClampPath(runPath)}, and the park lifts at ${nextOp}.`;
+  const bothAxes = `The run resumes only where BOTH axes are strictly under their effective caps at that judgment (now ${metering.judged_tokens}/${metering.cap_tokens} tokens and ${metering.elapsed_minutes}/${metering.cap_minutes} min).`;
+  if (record.state !== "parked") return `Nothing is pending: the run is active, and both axes are re-judged at ${nextOp}. ${bothAxes}`;
+  // The ladder ends at the human here, so no extension is a route out.
+  if (record.park_reason === "denied") {
+    return `Only a human changing ${clamp} releases the next extension attempt; a re-worded justification does not, and the release is judged at ${nextOp}. ${bothAxes}`;
   }
-  if (record.park_reason === "clamp-unreadable") return `A human repairs ${budgetClampPath(runPath)} so it parses, and the park lifts at ${nextOp}.`;
-  if (record.park_reason === "audit-unavailable") return `A fresh budget_extend lands a verdict, or a human raises ${budgetClampPath(runPath)}; either way the park lifts at ${nextOp}.`;
-  return `Spend falls back under the effective cap, or a granted extension raises it; the park lifts at ${nextOp}.`;
+  if (record.park_reason === "clamp-unreadable") return `A human repairs ${clamp} so it parses, and the park lifts at ${nextOp}. ${bothAxes}`;
+  if (required.length) {
+    // Insufficient means the approval is at or below the spend it would cap, so
+    // writing it leaves the axis still over. `releases_at` carries a step of
+    // headroom on top and is therefore no test of sufficiency.
+    const usageOf = (entry: RequiredClamp): number => (entry.field === "max_tokens" ? metering.judged_tokens : metering.elapsed_minutes);
+    const short = required.filter((entry) => entry.value <= usageOf(entry));
+    const writes = required.map((entry) => `${entry.field} ${entry.value}`).join(" and ");
+    if (short.length === required.length) {
+      // Every named value is already at or below the spend it would cap.
+      return `Writing ${writes} into ${clamp} applies the recorded approval but does NOT release this park: spend has already passed those figures. Releasing needs either a further extension — which obeys the published interval and the half-step covenant — or a human ceiling above the usage judged at that moment, which the arithmetic currently puts at ${short.map((entry) => `${entry.field} ${entry.releases_at}`).join(" and ")}; the ceiling is the human's to choose, and the park is judged at ${nextOp}. ${bothAxes}`;
+    }
+    if (short.length) {
+      return `A human writes ${writes} into ${clamp}; that applies every recorded approval, but ${short.map((entry) => `${entry.field}`).join(" and ")} is already at or below the spend it would cap, so releasing also needs a further extension or a ceiling above the usage judged at that moment — currently at least ${short.map((entry) => `${entry.field} ${entry.releases_at}`).join(" and ")}, a number the human chooses. Judged at ${nextOp}. ${bothAxes}`;
+    }
+    return `A human writes ${writes} into ${clamp}, and the park lifts at ${nextOp}. ${bothAxes}`;
+  }
+  if (record.park_reason === "audit-unavailable") return `A fresh budget_extend lands a verdict, or a human raises ${clamp}; either way the park lifts at ${nextOp}. ${bothAxes}`;
+  return `Spend falls back under the effective cap, or a granted extension raises it; the park lifts at ${nextOp}. ${bothAxes}`;
 }
 
 /**
@@ -729,7 +777,7 @@ facts below, then append your verdict to this file.
 ## Request
 
 - requested increase: ${requested.tokens} tokens (step cap ${stepCap(record)}) and ${requested.minutes} min (step cap ${minutesStepCap(record)})
-- current cap: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes})
+- current granted total: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes}) — the approved figures, which the effective cap below may sit under
 - extensions already granted: ${granted}
 ${capLine}\
 - doorbell policy: ${record.doorbell_policy}
@@ -781,15 +829,21 @@ while leaving the wall clock alone means writing only \`granted_tokens\`, and a
 truncated to the request; zero or a negative figure is not a partial grant and
 leaves this document unparsed, so use \`deny\` to approve nothing.
 
-Write each figure as plain decimal digits — no sign, no padding, no separators,
-no units. This block is read as an exact trailing match or not at all, and an
-unparsed document grants nothing and leaves the run parked for another attempt:
-a repeated axis line, a key other than these two, a figure that is not plain
-digits, a \`partial\` without \`granted_tokens\`, a wrong audit number in the
-header, or anything at all after the block all read as no verdict.
+Write each figure as plain decimal digits, without a sign, separators or units.
+Leading zeros are read as the number they spell rather than refused, but write
+the plain form: it is what every other surface quotes back.
 
-Both lines are ignored on \`grant\` and on \`deny\`, where the disposition
-already fixes both axes.
+This block is read as an exact trailing match or not at all, and an unparsed
+document grants nothing and leaves the run parked for another attempt. It reads
+as no verdict when the header carries the wrong audit number, when anything at
+all follows the block, when a line is neither of these two keys, or when a
+figure is not digits. On a \`partial\` it also reads as no verdict when
+\`granted_tokens\` is missing, when either key appears twice, or when a figure
+is zero — a \`partial\` grants something on the axis it names, and \`deny\` is
+how nothing is approved.
+
+On \`grant\` and on \`deny\` the disposition already fixes both axes, so a
+syntactically matched figure line is ignored rather than judged.
 
 Then ring the orchestrator once, and only after the block is written:
 \`herdr_message {action: "wake_orch_audit", track_id: "${run.track_id}", run_id: "${run.run_id}"}\`.
@@ -802,11 +856,15 @@ orchestrator, and do not edit anything else in this run.
 `;
 }
 
-// Both figures are optional trailing lines, in either order, at most once each.
-// The whole block is still an exact trailing match or nothing: an auditor that
-// invents a third key, repeats one, or writes a non-integer leaves this
-// document unparsed and the run parked, which is the same fail-closed reading
-// the token axis has always had.
+// Both figures are optional trailing lines, in either order. The block itself is
+// an exact trailing match or nothing: a third key, a non-digit figure, or
+// anything after the block leaves this document unparsed and the run parked,
+// which is the same fail-closed reading the token axis has always had. The
+// per-figure rules — uniqueness and a positive value — belong to `partial`
+// alone and are applied below, because a `grant` or `deny` disposition already
+// fixes both axes and never reads a figure. Digits are read as the number they
+// spell, padding included; the rendered guidance recommends the plain form
+// rather than refusing a padded one.
 const VERDICT_BLOCK = /\[Budget Audit Verdict:\s*(\d+)\]\s*\n\s*\nverdict:\s*(grant|partial|deny)[ \t]*((?:\n[ \t]*granted_(?:tokens|minutes):[ \t]*\d{1,15}[ \t]*)*)\s*$/;
 const GRANTED_LINE = /^[ \t]*granted_(tokens|minutes):[ \t]*(\d{1,15})[ \t]*$/;
 
@@ -1028,7 +1086,7 @@ prospective, and it is the entire sanction available:
 
 - ${meteringLedgerLine(metering)}
 - park at registration: ${record.state}${record.park_reason ? ` (${record.park_reason})` : ""}${record.park_detail ? ` — ${record.park_detail}` : ""}
-- cap: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes}); extensions recorded: ${record.extensions.length}
+- granted total: ${record.granted_tokens} tokens / ${record.granted_minutes} min (seed ${record.seed_tokens} / ${record.seed_minutes}); extensions recorded: ${record.extensions.length}
 ${machineFacts.map((fact) => `- ${fact}`).join("\n")}
 
 ## What to judge

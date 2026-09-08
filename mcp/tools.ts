@@ -2201,7 +2201,7 @@ export class CompositeTools {
       applied,
       usable: usableAxes(metering),
       ...(required.length ? { required_clamp: required } : {}),
-      release_condition: releaseCondition(runPath, record, required),
+      release_condition: releaseCondition(runPath, record, required, metering),
     };
   }
 
@@ -2449,7 +2449,7 @@ export class CompositeTools {
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
       "budget",
-      `${recovery}${carveOutClause} ${releaseCondition(store.runPath, { ...record, state: "parked", park_reason: reason }, required)} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
+      `${recovery}${carveOutClause} ${releaseCondition(store.runPath, { ...record, state: "parked", park_reason: reason }, required, metering)} ${clampSchemaGuidance(store.runPath)}${clampScaffold?.warning ? ` Warning: ${clampScaffold.warning}` : ""}${warnings.length ? ` Warning: ${warnings.join(" | ")}` : ""}`,
       false,
       true,
     );
@@ -2825,7 +2825,7 @@ export class CompositeTools {
       if (outcome.outcome === "failed") clampWarnings.push(outcome.warning);
     }
     await appendLedger(store.runPath, `extension ${pending.ordinal} verdict ${verdict.verdict}`, [
-      `granted: +${granted} tokens, +${grantedMinutes} min -> cap ${settledRecord.granted_tokens} tokens / ${settledRecord.granted_minutes} min`,
+      `granted: +${granted} tokens, +${grantedMinutes} min -> granted total ${settledRecord.granted_tokens} tokens / ${settledRecord.granted_minutes} min (the effective cap follows only where the clamp and policy allow)`,
       `verdict read from ${pending.audit_path} sha256=${audit?.sha256 ?? "unreadable"}`,
       "recorded server-side; the orchestrator never wrote this entry",
       ...(clampOutcome ? [clampWriteLedgerLine(store.runPath, clampOutcome, previousCeiling)] : []),
