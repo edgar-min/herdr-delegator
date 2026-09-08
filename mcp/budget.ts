@@ -38,7 +38,8 @@ import {
 //   budget-audit-N.md  server-seeded request plus the clean auditor's verdict
 // The registry (a2a/delegation.json) holds the machine truth; the ledger is the
 // legible trail a human is handed on a deny. Both are written from the same
-// guarded call, so they cannot drift.
+// guarded call, so neither is reconstructed from the other and a divergence
+// would take a failed write rather than a stale reader.
 // ---------------------------------------------------------------------------
 
 export type BudgetClamp = { path: string; max_tokens?: number; max_minutes?: number; note?: string };
@@ -578,37 +579,51 @@ export function requiredClamp(record: BudgetRecord, metering: BudgetMetering): R
  * got wrong — whether the values it just named are actually enough (integration
  * review I3). Release is a conjunction over BOTH axes at the next judgment, and
  * a recorded approval below the spend already judged applies without releasing
- * anything. `inspect` never performs the transition: an observation reports the
- * condition, and a guarded op judges it (Q11).
+ * anything. Every promise here is guarded twice: an approval must exceed the
+ * spend it caps, and NO other axis may be left over its own ceiling — an axis
+ * whose granted figure already equals its cap contributes no `required_clamp`
+ * entry at all, so it is invisible in that list while still holding the park.
+ * `inspect` never performs the transition: an observation reports the condition,
+ * and a guarded op judges it (Q11).
  */
 export function releaseCondition(runPath: string, record: BudgetRecord, required: readonly RequiredClamp[], metering: BudgetMetering): string {
   const clamp = budgetClampPath(runPath);
   const nextOp = "the next guarded op that judges the budget (assignment add or wait, worker close, track close, or budget_extend, which re-judges before its own gates) — never from inspect, which only reads";
-  const bothAxes = `The run resumes only where BOTH axes are strictly under their effective caps at that judgment (now ${metering.judged_tokens}/${metering.cap_tokens} tokens and ${metering.elapsed_minutes}/${metering.cap_minutes} min).`;
+  const bothAxes = `Release is a conjunction: BOTH axes must be strictly under their effective caps at one judgment (now ${metering.judged_tokens}/${metering.cap_tokens} tokens and ${metering.elapsed_minutes}/${metering.cap_minutes} min), and usage keeps accruing, so every figure here is a floor read at ${metering.observed_at} rather than a promise about a later moment.`;
+  const ladder = "a further extension, which obeys the published interval and the half-step covenant";
   if (record.state !== "parked") return `Nothing is pending: the run is active, and both axes are re-judged at ${nextOp}. ${bothAxes}`;
+  // Insufficient means the approval is at or below the spend it would cap, so
+  // writing it leaves that axis still over. `releases_at` carries a step of
+  // headroom on top and is therefore no test of sufficiency.
+  const usageOf = (field: RequiredClamp["field"]): number => (field === "max_tokens" ? metering.judged_tokens : metering.elapsed_minutes);
+  const short = required.filter((entry) => entry.value <= usageOf(entry.field));
+  // Axes over their ceiling that these writes would not clear — including an
+  // axis with no entry, whose approved figure is already its cap.
+  const uncleared: string[] = [];
+  if (metering.judged_tokens >= metering.cap_tokens && !required.some((entry) => entry.field === "max_tokens" && entry.value > metering.judged_tokens)) uncleared.push("the token axis");
+  if (metering.elapsed_minutes >= metering.cap_minutes && !required.some((entry) => entry.field === "max_minutes" && entry.value > metering.elapsed_minutes)) uncleared.push("the wall-clock axis");
+  const higherCeiling = short.length
+    ? ` A ceiling above the usage judged at that moment would, and the arithmetic currently puts that at ${short.map((entry) => `${entry.field} ${entry.releases_at}`).join(" and ")} — the number is the human's to choose, not the server's to set.`
+    : ` A human ceiling above the usage judged at that moment would release it; the number is theirs to choose.`;
   // The ladder ends at the human here, so no extension is a route out.
   if (record.park_reason === "denied") {
-    return `Only a human changing ${clamp} releases the next extension attempt; a re-worded justification does not, and the release is judged at ${nextOp}. ${bothAxes}`;
+    return `Only a human changing ${clamp} releases the next extension attempt; a re-worded justification does not, and the release is judged at ${nextOp}.${uncleared.length ? ` Writing a recorded approval alone leaves ${uncleared.join(" and ")} over its ceiling.` : ""} ${bothAxes}`;
   }
-  if (record.park_reason === "clamp-unreadable") return `A human repairs ${clamp} so it parses, and the park lifts at ${nextOp}. ${bothAxes}`;
+  if (record.park_reason === "clamp-unreadable") {
+    return `A human repairs ${clamp} so it parses; the run then resumes at ${nextOp} only if the repaired ceilings are themselves above the usage judged there, since a ceiling that parses can still be lower than the spend. ${bothAxes}`;
+  }
   if (required.length) {
-    // Insufficient means the approval is at or below the spend it would cap, so
-    // writing it leaves the axis still over. `releases_at` carries a step of
-    // headroom on top and is therefore no test of sufficiency.
-    const usageOf = (entry: RequiredClamp): number => (entry.field === "max_tokens" ? metering.judged_tokens : metering.elapsed_minutes);
-    const short = required.filter((entry) => entry.value <= usageOf(entry));
     const writes = required.map((entry) => `${entry.field} ${entry.value}`).join(" and ");
-    if (short.length === required.length) {
-      // Every named value is already at or below the spend it would cap.
-      return `Writing ${writes} into ${clamp} applies the recorded approval but does NOT release this park: spend has already passed those figures. Releasing needs either a further extension — which obeys the published interval and the half-step covenant — or a human ceiling above the usage judged at that moment, which the arithmetic currently puts at ${short.map((entry) => `${entry.field} ${entry.releases_at}`).join(" and ")}; the ceiling is the human's to choose, and the park is judged at ${nextOp}. ${bothAxes}`;
+    if (uncleared.length) {
+      const cause = short.length === required.length
+        ? `spend has already passed ${required.length > 1 ? "those figures" : "that figure"}`
+        : `${uncleared.join(" and ")} stays at or over its ceiling`;
+      return `Writing ${writes} into ${clamp} applies the recorded approval but does NOT release this park: ${cause}. Releasing needs ${ladder}, or a higher human ceiling.${higherCeiling} Judged at ${nextOp}. ${bothAxes}`;
     }
-    if (short.length) {
-      return `A human writes ${writes} into ${clamp}; that applies every recorded approval, but ${short.map((entry) => `${entry.field}`).join(" and ")} is already at or below the spend it would cap, so releasing also needs a further extension or a ceiling above the usage judged at that moment — currently at least ${short.map((entry) => `${entry.field} ${entry.releases_at}`).join(" and ")}, a number the human chooses. Judged at ${nextOp}. ${bothAxes}`;
-    }
-    return `A human writes ${writes} into ${clamp}, and the park lifts at ${nextOp}. ${bothAxes}`;
+    return `Writing ${writes} into ${clamp} applies the recorded approval, and on the arithmetic read now that also clears every axis, so the park lifts at ${nextOp}. A higher ceiling remains the human's choice. ${bothAxes}`;
   }
-  if (record.park_reason === "audit-unavailable") return `A fresh budget_extend lands a verdict, or a human raises ${clamp}; either way the park lifts at ${nextOp}. ${bothAxes}`;
-  return `Spend falls back under the effective cap, or a granted extension raises it; the park lifts at ${nextOp}. ${bothAxes}`;
+  if (record.park_reason === "audit-unavailable") return `A fresh budget_extend can land a verdict, which re-judges the budget — a deny leaves the run parked as \`denied\`, and even a grant releases nothing unless it lifts both ceilings above the usage judged then. A human raising ${clamp} above that usage is the other route, and either way the release is judged at ${nextOp}. ${bothAxes}`;
+  return `Either spend falls back under the effective cap, or ${ladder} raises it — budget_extend stays permitted while parked, though a human pin on the token ceiling refuses it — or a human raises ${clamp} above the usage judged then; there is no recorded approval left to apply, and the release is judged at ${nextOp}. ${bothAxes}`;
 }
 
 /**

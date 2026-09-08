@@ -166,8 +166,11 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   no longer be parked for approval on tokens while its minutes rise with no approval
   at all. Migration preserves rather than retracts: a registry written before the
   field is read with `max(seed_minutes, granted_minutes)` projected in memory and
-  materializes it once, inside the first guarded mutation's transaction; a read never
-  writes, so `inspect` stays safe on an older registry. The server still has no path
+  materializes it once, inside the first guarded mutation's transaction. A budget read
+  never writes — `inspect` neither judges nor unparks — while the settlement sweep in
+  that same call may write the registry and materialize the projection with it, in
+  which case the call reports `effect: "confirmed"` with the new revision — and
+  `effect: "none"` where it only observed. The server still has no path
   by which it writes `max_minutes`. (SPEC BUD-013, BUD-018)
 - Both audit documents name the run directory as the filesystem root the auditor reads
   from, and say that a session-scoped `local://` reference resolves to nothing for a

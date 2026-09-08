@@ -594,8 +594,11 @@ export class DelegationStore {
    * `max(seed_minutes, granted_minutes)`: under the pre-v5 asymmetric rule the
    * minutes cap simply followed `granted_minutes`, so preserving that figure
    * keeps every minute an older server already allowed and cannot park a run
-   * the old rule left running. Nothing is written here — `inspect` must be safe
-   * to run — and the first guarded mutation persists the same value through
+   * the old rule left running. Nothing is written by this read —
+   * a budget observation neither judges nor unparks, so `inspect` is safe to run,
+   * though the settlement sweep in that same call may write and carry this
+   * projection to disk with it, in which case the call reports the effect it
+   * actually had — and the first guarded mutation persists the same value through
    * `transaction` below.
    */
   async read(): Promise<DelegationRegistry> {

@@ -2469,8 +2469,8 @@ export class CompositeTools {
       ? ` If this registration is itself the repair of an operational failure that blocks the run — not work you want to continue — re-send the identical add with \`emergency: {failure, why_now}\`: it passes this park once and buys registration only, and it creates a post-hoc audit debt at ${path.join(store.runPath, "emergency-audit-<n>.md")} that a clean auditor judges. No second emergency add is admissible until that verdict lands, an \`unjustified\` verdict closes the carve-out for this run permanently, and nothing already dispatched can be recalled.`
       : "";
     // The release condition is stated once, from the same helper the responses
-    // use, so a refusal and an inspect of the same moment cannot disagree about
-    // what unparks the run or about where that transition happens.
+    // use, so a refusal and an inspect read the same rule for the same inputs;
+    // a later observation may still differ, because usage and the clamp move on.
     throw new McpContractError(
       "budget_parked",
       `This run is budget-parked (${reason}) and ${action} would start new work.`,
