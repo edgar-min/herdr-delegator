@@ -67,6 +67,7 @@ const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
     "ca753da3d8cf88f8b82141a3e39e81f34d2fb7130b582a2c200f340dee145a5f",
     "cbac8e71bfe47fc0e9f79675ffb34a2afe6cfc28cf3c9dc85fb1ba1a0544f011",
     "cc887b4ec3a45e05aec752c7fdd39dd45cad488c9cf1673773ceeb7df8ae8d10",
+    "d17d529ad67abb3050b653287da5963db844f728785ed335f6e7315df07b8aa0",
     "ddbd8536ae5e7cea0f5adbc9a91fbaf4b20aa70edd76a39c3f7eebc89811bb57",
   ],
 };

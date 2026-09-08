@@ -111,7 +111,7 @@ allowed and never required. Anything else settles nothing — a `##` before the 
 `Status:`, a capitalized value, an indented status line, two status lines in one block,
 or any other value — and the tool then reports the cause and the correction. Fix it by
 appending a correct block below, never by editing what you already wrote: several valid
-blocks resolve to the LATEST, so the correction is what decides. A block the tool did
+blocks resolve to the LAST one in file order, so the correction you append below decides. A block the tool did
 not recognize moved no boundary, so the ring below belongs to the corrected block, not
 to the attempt.
 
