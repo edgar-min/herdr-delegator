@@ -79,9 +79,24 @@ or lifecycle state through peer files.
 ## Completion
 
 Before completion, verify every observable condition in the assignment and apply any
-routed completion skill. End the report with the tool-recognized completion block from
-the dispatch contract. Its exact grammar, accepted status, and wake call shape belong
-to the mounted schema and returned error text, not duplicated prose.
+routed completion skill. Then end the report with the completion block the tool
+recognizes — two literal lines, each starting at column 1:
+
+    [Assignment Completion: <assignment_id>]
+    status: completed
+
+No heading marker before the header line. Lowercase `status:`, lowercase value, and
+exactly one recognized status line in the block. `failed` replaces `completed` when the
+assignment could not be met. Blank lines around the block are allowed and never
+required. Anything else settles nothing — a `##` before the header, `Status:`, a
+capitalized value, an indented status line, two status lines in one block, or any other
+value — and the tool then reports the cause and the correction. Fix it by appending a
+correct block below, never by editing what you already wrote: several valid blocks
+resolve to the LATEST, so the correction is what decides.
+
+`status: blocked` is recognized as a REPORTED boundary and settles nothing. It records
+that you stopped; a later `completed` or `failed` block is what settles. Use it only
+alongside the batched decision request that names what you need.
 
 After appending the block, ring ORCH once. This is one case of the general rule: ring
 ORCH exactly once after appending any report block that changes your boundary state —

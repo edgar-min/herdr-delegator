@@ -55,6 +55,20 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   schema description: frontmatter, the five sections and their bounds, the fenced-code
   trap, `# References`, the 0444 seal, and the completion-block grammar. The grammar
   was previously discoverable only by failing a preflight. (SPEC ASN-004b)
+- The worker protocol writes the completion block out literally instead of deferring
+  its grammar to "the mounted schema and returned error text". A responsibility worker
+  is a Herdr agent with no assignment tool mounted, so that deferral pointed a worker
+  at something it cannot read — which is how a lane came to append `Status: completed`
+  and believe it had reported. It now shows the two literal lines, names every
+  near-miss that settles nothing, says that a correction is appended below rather than
+  edited in place, and states that a reported `blocked` boundary settles nothing. The
+  ORCH protocol gains the authoring rules that decide how an assignment is written —
+  the fenced-`# ` trap and pinning oversized detail by hash instead of paraphrasing it
+  — and a settlement rule that a worker's block is evidence to read, never a state to
+  set by editing its report. Both templates' new digests are appended to the
+  allowlist, nothing removed, so runs created on earlier text keep loading and
+  reviving under the historical-digest warning. (SPEC ASN-011, ASN-011b; friction
+  `0b2c5548cb73bf25`, `89bc054958c59c88`)
 
 ### Added
 

@@ -84,7 +84,19 @@ ladder. A trivially fixed plan may skip this review when `plan.md` records that 
 Before dispatch, ensure the assignment states the complete goal, observable completion
 conditions, exact write ownership, dependencies, and user boundaries in language the
 worker can execute without chat history. Run the tool's preflight and accept its
-canonical hash; after dispatch, never rewrite the assignment.
+canonical hash; after dispatch, never rewrite the assignment — a successful add makes
+the file read-only, and a correction is a NEW assignment.
+
+The artifact's grammar and its bounds are published in the mounted assignment tool's
+schema; read them there before writing the file rather than after a preflight refuses
+one. Two parts of it decide how you author. First, a line beginning `# ` at column 1
+starts a section wherever it appears, including inside a fenced code block, so indent
+any fence that contains one. Second, detail that does not fit the goal's bound belongs
+in a document pinned by hash in the artifact's optional trailing references section,
+not in prose the worker has to reconstruct: preflight and add verify every pinned hash
+and refuse before the assignment ID is consumed, and after dispatch a document that
+moved is reported as drift rather than recalled, because the worker already holds the
+hashes.
 
 ## Supervise by judgment, delegate evidence
 
@@ -139,6 +151,13 @@ the integration boundary, executed by a delegate, never by you. Record why the e
 satisfies each completion condition, any accepted warning, and any recovery required.
 A tool-accepted completion proves report shape and identity, not correctness.
 
+A worker's completion block is evidence you read, not a state you set. When a lane
+reports a boundary and the tool does not settle it, the refusal names the cause and the
+exact correction: relay that through an `[ORCH Response]` and let the worker append a
+correct block. Never edit a worker's report to make a settlement parse, and never treat
+a reported blocked boundary as terminal — it settles nothing and leaves the assignment
+live.
+
 Completion does not close a responsibility lane. Keep its session for later work with
 the same responsibility. Close a lane or track only when the mounted close operation's
 fresh observation proves the target settled, attributable, and safe.
@@ -154,8 +173,14 @@ Budget is a justification cadence, not permission to hide work or kill context. 
 `plan.md`, lane reports, and verification evidence current so a clean auditor can judge
 progress against machine observations. A park is a visible wait: settle in-flight work
 through the tool's permitted operations, justify further work through the mounted tool,
-and take a denial to the user with its durable record. Never edit human-owned budget
-controls or server-owned budget records.
+and take a denial to the user with its durable record. Justify the axis that is actually
+binding — spend and wall clock are separate ceilings and either can be extended. A
+granted figure is a decision, not a ceiling: read the per-axis `applied` state to see
+whether it is in force, and when it is not, hand the user the exact clamp field and
+value the response names rather than a paraphrase. Writing that value is the user's act
+alone, and the park lifts at the next guarded operation that judges the budget, never
+from an observation. Never edit human-owned budget controls or server-owned budget
+records.
 
 Prefer revival that resumes the recorded birth session and preserves context. A clean
 rebirth loses context and requires the user's written approval plus sufficient durable
