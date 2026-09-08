@@ -85,14 +85,18 @@ recognizes — two literal lines, each starting at column 1:
     [Assignment Completion: <assignment_id>]
     status: completed
 
-No heading marker before the header line. Lowercase `status:`, lowercase value, and
-exactly one recognized status line in the block. `failed` replaces `completed` when the
-assignment could not be met. Blank lines around the block are allowed and never
-required. Anything else settles nothing — a `##` before the header, `Status:`, a
-capitalized value, an indented status line, two status lines in one block, or any other
-value — and the tool then reports the cause and the correction. Fix it by appending a
-correct block below, never by editing what you already wrote: several valid blocks
-resolve to the LATEST, so the correction is what decides.
+`<assignment_id>` is a placeholder: write the assignment's own bare ID there, as the
+dispatch pointer gave it — never the placeholder text, never the full coordinate, and
+never the label. No heading marker before the header line. Lowercase `status:`,
+lowercase value, and exactly one recognized status line in the block. `failed` replaces
+`completed` when the assignment could not be met. Blank lines around the block are
+allowed and never required. Anything else settles nothing — a `##` before the header,
+`Status:`, a capitalized value, an indented status line, two status lines in one block,
+or any other value — and the tool then reports the cause and the correction. Fix it by
+appending a correct block below, never by editing what you already wrote: several valid
+blocks resolve to the LATEST, so the correction is what decides. A block the tool did
+not recognize moved no boundary, so the ring below belongs to the corrected block, not
+to the attempt.
 
 `status: blocked` is recognized as a REPORTED boundary and settles nothing. It records
 that you stopped; a later `completed` or `failed` block is what settles. Use it only
