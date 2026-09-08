@@ -210,12 +210,16 @@ progress against machine observations. A park is a visible wait: settle in-fligh
 through the tool's permitted operations, justify further work through the mounted tool,
 and take a denial to the user with its durable record. Justify the axis that is actually
 binding — spend and wall clock are separate ceilings and either can be extended. A
-granted figure is a decision, not a ceiling: read the per-axis `applied` state to see
-whether it is in force, and when it is not, hand the user the exact clamp field and
-value the response names rather than a paraphrase. Writing that value is the user's act
-alone, and the park lifts at the next guarded operation that judges the budget, never
-from an observation. Never edit human-owned budget controls or server-owned budget
-records.
+granted figure is a decision, not a ceiling: the per-axis `applied` state records how
+that grant landed at the moment it was disposed of, and it is history rather than
+permission — lowering a clamp afterwards does not rewrite it. For what the run may do
+now, read `effective_cap`, `usable` and `park_reason`. Where a park is waiting on the
+user, hand them the exact clamp field and value the response names rather than a
+paraphrase, and say plainly which of the two figures it is: applying the recorded
+approval is not the same as buying a release when spend has already passed it. Writing
+that value is the user's act alone, and the park lifts at the next guarded operation
+that judges the budget, never from an observation. Never edit human-owned budget
+controls or server-owned budget records.
 
 Prefer revival that resumes the recorded birth session and preserves context. A clean
 rebirth loses context and requires the user's written approval plus sufficient durable
