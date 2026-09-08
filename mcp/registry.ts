@@ -370,9 +370,38 @@ function parseReferences(value: string): { path: string; sha256: string }[] {
   return references;
 }
 
+/**
+ * Body line numbers where a `# ` heading sits INSIDE an open fenced code block.
+ *
+ * This is the exact shape of friction 171183a6663fabb1, and it needs its own
+ * detector because the symptom is indistinguishable from an authoring mistake by
+ * the time the split has run: sections are split on `^# ` before anything
+ * interprets fences, so one fenced heading silently becomes one extra section.
+ * At six sections that is a legal count (the optional trailing `# References`),
+ * so the artifact used to fail on a positional heading mismatch and never hear
+ * the word "fence" — while two fenced headings, being seven sections, did.
+ *
+ * Line numbers are file-relative, because that is what the author edits.
+ */
+function fencedHeadingLines(text: string, bodyOffset: number): number[] {
+  const lines = text.split("\n");
+  const firstBodyLine = text.slice(0, bodyOffset).split("\n").length;
+  const hits: number[] = [];
+  let fence: string | undefined;
+  for (let index = firstBodyLine - 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const delimiter = /^(```+|~~~+)/.exec(line);
+    if (delimiter) {
+      if (fence === undefined) fence = delimiter[1];
+      else if (delimiter[1].startsWith(fence[0]) && delimiter[1].length >= fence.length) fence = undefined;
+      continue;
+    }
+    if (fence !== undefined && line.startsWith("# ")) hits.push(index + 1);
+  }
+  return hits;
+}
 function parseAssignmentMarkdown(text: string, assignmentId: string, responsibility: string): AssignmentArtifact {
   if (text.includes("\r")) throw artifactInvalid("Assignment Markdown contains a CR byte.", "Rewrite the file with LF line endings only; a CRLF artifact would hash differently on every platform that touched it.");
-  if (Buffer.byteLength(text) > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw artifactInvalid(`Assignment Markdown is ${Buffer.byteLength(text)} bytes; the limit is ${MAX_ASSIGNMENT_ARTIFACT_BYTES}.`, `Keep the artifact under ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes. Detail that does not fit belongs in a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, not in the assignment body.`);
   const frontmatterEnd = text.indexOf("\n---\n", 4);
   if (!text.startsWith("---\n") || frontmatterEnd < 0) throw artifactInvalid("Assignment Markdown has no closing frontmatter delimiter.", "The file begins with \"---\" on line 1, then assignment_id, responsibility_key and profile on one line each, then \"---\", then a blank line. Example:\n---\nassignment_id: A-001\nresponsibility_key: my-lane\nprofile: task\n---");
   const frontmatter = text.slice(4, frontmatterEnd).split("\n");
@@ -396,18 +425,31 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
     : undefined;
   if (parsedAssignmentId !== assignmentId || parsedResponsibility !== responsibility) throw artifactInvalid(`Assignment frontmatter declares ${parsedAssignmentId}/${parsedResponsibility} but this call names ${assignmentId}/${responsibility}.`, "Call the coordinate the artifact declares, or fix the frontmatter. The filename, the frontmatter, and the call must agree: nothing infers one from another.");
 
-  const body = text.slice(frontmatterEnd + 5).trim();
+  const bodyOffset = frontmatterEnd + 5;
+  const body = text.slice(bodyOffset).trim();
   const sections = body.split(/\n(?=# )/);
   // Exactly the five canonical sections, optionally followed by `# References`
   // as the LAST section and nothing after it (Q4). The split is positional, so
   // the optional section can only ever be trailing — which is also what makes
   // it safe: nothing between the five is reinterpreted.
   const withReferences = sections.length === ASSIGNMENT_SECTIONS.length + 1;
+  const positional = sections.every((section, index) => section.startsWith(`# ${index < ASSIGNMENT_SECTIONS.length ? ASSIGNMENT_SECTIONS[index] : ASSIGNMENT_REFERENCES_SECTION}\n`));
+  // The fence trap is diagnosed BEFORE the count and the positional check,
+  // because a fenced heading is what made those two fire in the first place and
+  // neither of them can name it. One fenced heading lands on six sections — a
+  // legal count — so it used to be reported as a misplaced `# References`.
+  const fenced = sections.length === ASSIGNMENT_SECTIONS.length && positional ? [] : fencedHeadingLines(text, bodyOffset);
+  if (fenced.length) {
+    throw artifactInvalid(
+      `Assignment Markdown has ${fenced.length} line(s) beginning "# " inside a fenced code block, at file line(s) ${fenced.join(", ")}, and each one started a new section: the artifact parsed as ${sections.length} H1 sections instead of ${ASSIGNMENT_SECTIONS.length}.`,
+      `Sections are split on a leading "# " before anything interprets fences (friction 171183a6663fabb1), so a fence cannot protect a heading. Indent the fence and its contents by two spaces — the indented block still renders as code and no line inside it begins at column 1 — or drop the "# " from those lines. ${SECTION_SHAPE}`,
+    );
+  }
   if (sections.length !== ASSIGNMENT_SECTIONS.length && !withReferences) {
     const observed = sections.map((section) => section.split("\n", 1)[0]).join(" | ");
     throw artifactInvalid(
       `Assignment Markdown has ${sections.length} H1 sections; it takes ${ASSIGNMENT_SECTIONS.length}, or ${ASSIGNMENT_SECTIONS.length + 1} with a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}". Observed headings: ${observed}.`,
-      `${SECTION_SHAPE} A line beginning "# " at column 1 starts a section wherever it appears — including inside a fenced code block, because the split runs before anything knows about fences (friction 171183a6663fabb1). Indent such a fence so no line inside it starts at column 1. If this artifact DOES carry a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, the mounted server predates it (the section shipped in 3.9.0): respawn the plugin with /reload-plugins and retry the identical call rather than deleting the section.`,
+      `${SECTION_SHAPE} If this artifact DOES carry a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section, the mounted server predates it (the section shipped in 3.9.0): respawn the plugin with /reload-plugins and retry the identical call rather than deleting the section.`,
     );
   }
   const sectionValues = sections.map((section, index) => {
@@ -421,7 +463,6 @@ function parseAssignmentMarkdown(text: string, assignmentId: string, responsibil
   const goal = sectionValues[0].trim();
   if (!goal) throw artifactInvalid('Section "# Goal" is empty.', "Write the goal as prose in the Goal section. It is the one section a worker reads first, so an empty one dispatches an assignment that states no objective.");
   if (goal.length > MAX_ASSIGNMENT_GOAL) throw artifactInvalid(`Section "# Goal" is ${goal.length} characters; the limit is ${MAX_ASSIGNMENT_GOAL}.`, `Shorten the goal to at most ${MAX_ASSIGNMENT_GOAL} characters. Detail belongs in "# Completion conditions" as bounded bullets, or in a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section.`);
-  if (goal.includes("\n# ")) throw artifactInvalid('Section "# Goal" contains a nested H1 heading.', 'Keep the goal one H1-free section: no line inside it begins "# " at column 1.');
   return {
     assignment_id: assignmentId,
     responsibility_key: responsibility,
@@ -592,20 +633,42 @@ export class DelegationStore {
     } finally { await releaseLock(this.lockPath, owner); }
   }
 
-  async assignmentFile(assignmentId: string, responsibility: string, expectedHash: string): Promise<AssignmentFile> {
-    if (!ASSIGNMENT_RE.test(assignmentId) || !RESPONSIBILITY_RE.test(responsibility) || !SHA256_RE.test(expectedHash)) throw new McpContractError("invalid_assignment", "Assignment coordinates or hash are invalid.", "validate", "Use canonical IDs and a lowercase SHA-256 hash.");
-    const artifactPath = path.join(this.runPath, "a2a", "assignments", `${assignmentId}.md`);
+  /**
+   * The bytes at a canonical assignment coordinate, or a refusal that says which
+   * kind of wrong it is.
+   *
+   * Both readers used to fold every rejection into `assignment_artifact_missing`,
+   * so an artifact that was merely too large was reported as missing or unsafe
+   * with no size, no bound, and no fix — and the parser's own size refusal, which
+   * has all three, was unreachable because this guard ran first. The size gate
+   * must stay here (it is what keeps the read bounded), so the honest error
+   * belongs here too: `missing` now means absent, non-canonical, symlinked, or
+   * not a regular file, and nothing else.
+   */
+  private async canonicalArtifactBytes(artifactPath: string, assignmentId: string, missingRecovery: string): Promise<Buffer> {
     try {
       if (await realpath(artifactPath) !== artifactPath) throw new Error("non-canonical artifact");
       const file = await lstat(artifactPath);
-      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw new Error("unsafe artifact");
-      const bytes = await readFile(artifactPath);
-      if (sha256(bytes) !== expectedHash) throw new McpContractError("assignment_hash_mismatch", "Immutable assignment Markdown hash does not match the request.", "validate", "Use the exact file hash; never overwrite a submitted assignment.");
-      return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: expectedHash };
+      if (!file.isFile() || file.isSymbolicLink()) throw new Error("unsafe artifact");
+      if (file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) {
+        throw artifactInvalid(
+          `Assignment Markdown for ${assignmentId} is ${file.size} bytes; the limit is ${MAX_ASSIGNMENT_ARTIFACT_BYTES}.`,
+          `Keep the artifact at or under ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes. Shorten "# Goal" and the bullet sections, and move the detail that does not fit into a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section — for example:\n# ${ASSIGNMENT_REFERENCES_SECTION}\n\n- spec/design.md sha256:<64 lowercase hex>`,
+        );
+      }
+      return await readFile(artifactPath);
     } catch (error: unknown) {
       if (error instanceof McpContractError) throw error;
-      throw new McpContractError("assignment_artifact_missing", "Canonical assignment Markdown is missing or unsafe.", "validate", "Create the ORCH-owned bounded assignment file.");
+      throw new McpContractError("assignment_artifact_missing", "Canonical assignment Markdown is missing, not a regular file, a symlink, or not at its canonical path.", "validate", missingRecovery);
     }
+  }
+
+  async assignmentFile(assignmentId: string, responsibility: string, expectedHash: string): Promise<AssignmentFile> {
+    if (!ASSIGNMENT_RE.test(assignmentId) || !RESPONSIBILITY_RE.test(responsibility) || !SHA256_RE.test(expectedHash)) throw new McpContractError("invalid_assignment", "Assignment coordinates or hash are invalid.", "validate", "Use canonical IDs and a lowercase SHA-256 hash.");
+    const artifactPath = path.join(this.runPath, "a2a", "assignments", `${assignmentId}.md`);
+    const bytes = await this.canonicalArtifactBytes(artifactPath, assignmentId, "Create the ORCH-owned bounded assignment file.");
+    if (sha256(bytes) !== expectedHash) throw new McpContractError("assignment_hash_mismatch", "Immutable assignment Markdown hash does not match the request.", "validate", "Use the exact file hash; never overwrite a submitted assignment.");
+    return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: expectedHash };
   }
 
   /**
@@ -616,16 +679,8 @@ export class DelegationStore {
   async preflight(assignmentId: string, responsibility: string): Promise<AssignmentFile> {
     if (!ASSIGNMENT_RE.test(assignmentId) || !RESPONSIBILITY_RE.test(responsibility)) throw new McpContractError("invalid_assignment", "Assignment coordinates are invalid.", "validate", "Use canonical assignment and responsibility IDs.");
     const artifactPath = path.join(this.runPath, "a2a", "assignments", `${assignmentId}.md`);
-    try {
-      if (await realpath(artifactPath) !== artifactPath) throw new Error("non-canonical artifact");
-      const file = await lstat(artifactPath);
-      if (!file.isFile() || file.isSymbolicLink() || file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) throw new Error("unsafe artifact");
-      const bytes = await readFile(artifactPath);
-      return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: sha256(bytes) };
-    } catch (error: unknown) {
-      if (error instanceof McpContractError) throw error;
-      throw new McpContractError("assignment_artifact_missing", "Canonical assignment Markdown is missing or unsafe.", "validate", "Create the ORCH-owned bounded assignment file before preflight.");
-    }
+    const bytes = await this.canonicalArtifactBytes(artifactPath, assignmentId, "Create the ORCH-owned bounded assignment file before preflight.");
+    return { path: artifactPath, assignment: parseAssignmentMarkdown(bytes.toString("utf8"), assignmentId, responsibility), instructionsHash: sha256(bytes) };
   }
 
 

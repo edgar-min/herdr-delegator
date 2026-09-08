@@ -188,6 +188,14 @@ The artifact becomes immutable when its SHA-256 is submitted as `instructions_sh
 
 Settlement requires an exact `[Assignment Completion: A-NNN]` block — column 1, no heading marker — with one lowercase `status: completed|failed` line in the bound worker report; the block carries the bare ID, never the coordinate and never the label. Several valid blocks for one assignment resolve to the LATEST; `status: blocked` is recorded as `reported_boundary` and settles nothing; a block after the terminal state changes nothing. Every candidate that does not settle reports its cause, its report line, and the exact correction. Settlement and the wait and dispatch progress writers re-verify assignment existence, lane binding, active-id, and terminality inside their write transaction, so a lost race is reported rather than overwritten. MCP stores the full report hash and completion timestamp in `delegation.json`.
 
+Every observation point runs the same settlement sweep: `herdr_assignment add` and
+`wait`, `herdr_worker inspect`, and — since the sweep's absence there let an idle lane
+close a track while its assignment stayed `working` — `herdr_track inspect` and
+`herdr_track close`. A doorbell is still never a trigger. `close` sweeps after its
+`expected_registry_revision` check, so a settlement the call performs cannot invalidate
+its own precondition, and it refuses a lane holding a non-terminal active assignment
+even when the lane is `idle`, because a closed lane can no longer be observed settling.
+
 ## Responsibility routing
 
 For `herdr_assignment.add`:

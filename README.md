@@ -209,11 +209,11 @@ Completion returns the lane to `idle`, promotes its FIFO head exactly once, and 
 
 - `open`: run coordinates, canonical project `cwd`, and a bounded `mandate` (`intent`, `constraints`, `shape_of_success`, optional `budget`). The single atomic birth; the opening session is retired for that track.
 - `init`: run coordinates, canonical project `cwd`, optional sibling `reset_of` — legacy layout for reset siblings and handoff targets.
-- `inspect`: bounded run, registry, ORCH, and budget observation.
+- `inspect`: bounded run, registry, ORCH, and budget observation. It runs the settlement sweep first, like `wait` and `herdr_worker inspect`, so whoever looks learns the truth: a lane that reported completion settles here, and a report whose block does not parse says so in `data.settlement_sweep`. The revision it returns is the post-sweep one, so a `close` can be issued from it directly.
 - `start_orchestrator`: legacy spawn; refused on a run `open` manages.
 - `budget_extend`: a bounded justification (`done`, `remaining`, `why_more`), optional `requested_tokens` and `requested_minutes`.
 - `revive`: optional `mode` — `resume` reconnects the recorded birth session, `rebirth` starts generation+1 with the user's written approval.
-- `close`: requires a fresh registry revision and safely closes a fully settled track.
+- `close`: requires a fresh registry revision and safely closes a fully settled track. It sweeps settlements after checking that revision, and refuses a lane whose active assignment is still non-terminal even when the lane itself is idle — closing that lane would strand the assignment with no live lane left to settle it. The refusal names, per lane, why it is unsettled, and the revision to retry from.
 
 Declare the `budget` seed rather than leaving it out: `tokens` and `minutes` are your estimate of what this mandate's scope should take, not a ceiling to wish for, and crossing the estimate parks the run until the ORCH justifies an extension — it never kills a session. An undeclared seed falls back to 500,000 tokens and 30 minutes, which is deliberately tight: the fallback exists so the audit cadence still means something, not so a real track fits inside it, and a nontrivial run that declares nothing will park early. A park is not a dead end for the repair of whatever broke the run: one `add` may carry an `emergency` claim, which passes the park once and buys that one registration — dispatched as usual, which is the point — and nothing else: no cap moves, the park stands, and a queued head already waiting is still not promoted. It owes a post-hoc audit that a clean session judges before the next extension (`docs/SPEC.md` BUD-016).
 

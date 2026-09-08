@@ -1679,12 +1679,29 @@ export class CompositeTools {
       }
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
       if (input.action === "inspect") {
-        const registry = await store.read();
+        // The sweep runs here for the same reason it runs on `herdr_worker
+        // inspect` and `wait`: whoever looks learns the truth. `inspect` was the
+        // one observation point that read the registry raw, so a lane that had
+        // reported completion — or reported it malformed — was shown as working
+        // with no hint that its report said otherwise (friction
+        // ffd8390346e69cae). It is the ORCH's whole-run view, so it is also the
+        // surface where an unparsable block most needs to surface.
+        const sweepWarnings: string[] = [];
+        const registry = await sweepSettlements(store, run, await store.read(), sweepWarnings);
         let orchestrator: unknown;
         try { await loadFacts(this.adapter); orchestrator = await inspectOrchestrator({ operation: "inspect_orch", track_id: input.track_id, run_id: input.run_id }); } catch (error) { orchestrator = { unavailable: error instanceof Error ? error.message : String(error) }; }
         const budget = await this.observeBudget(store, registry);
         const inboundChannels = await observeInboundChannels(store);
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget, inbound_channels: inboundChannels } };
+        const drift: string[] = [];
+        for (const lane of Object.values(registry.lanes)) {
+          const observed = await observeReferenceDrift(store, registry, registry.assignments[lane.active_assignment_id ?? ""]);
+          if (observed) drift.push(observed);
+        }
+        const observations = [...sweepWarnings, ...drift];
+        // A sweep that settled something moved the revision, so the reported
+        // revision is the post-sweep one and a close may be issued from it
+        // directly.
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: sweepWarnings.length ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, data: { registry, orchestrator, totals: trackTotals(registry), budget, inbound_channels: inboundChannels, ...(observations.length ? { settlement_sweep: observations } : {}) } };
       }
       if (input.action === "budget_extend") return await this.extendBudget(input, run, store);
       const runtime = await loadFacts(this.adapter);
@@ -1700,8 +1717,16 @@ export class CompositeTools {
       if (input.action === "revive") return await this.reviveTrack(input, run, store, runtime);
       const forced = await this.authorizeClose(store, run, runtime.facts);
       const closeJudgment = await this.judgeBudget(store, run, "close");
-      const registry = await store.read();
-      if (registry.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
+      const opening = await store.read();
+      if (opening.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
+      // The sweep runs AFTER the revision check, so the caller's freshness claim
+      // is judged against the revision it actually read, and a settlement this
+      // call performs cannot invalidate its own precondition. It runs at all
+      // because close was the last consumer reading the registry raw: an idle
+      // lane whose worker had reported was closed as settled while its
+      // assignment stayed `working` forever (friction ffd8390346e69cae).
+      const closeSweep: string[] = [];
+      const registry = await sweepSettlements(store, run, opening, closeSweep);
       // A lane that never reached a live session is never-born, not unsettled:
       // `select` stamps `starting` before `ensure_worker` runs, so a rejected
       // dispatch used to leave a worker-less `starting` lane that no close path
@@ -1710,7 +1735,18 @@ export class CompositeTools {
       // with the rest of the lanes.
       const neverBorn = (lane: WorkerLaneRecord): boolean =>
         lane.state === "starting" && !lane.official_session_id && !lane.official_session_path;
-      const unsafe = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed" && !neverBorn(lane));
+      // Two independent reasons a lane blocks a close, and the second one used to
+      // be invisible: an IDLE lane still holding a non-terminal active assignment
+      // is settled as a session and unsettled as work. Closing it strands the
+      // assignment in `working` with its lane closed — unreachable by any later
+      // settlement, because settlement needs a live lane to observe.
+      const liveLane = Object.values(registry.lanes).filter((lane) => lane.state !== "idle" && lane.state !== "closed" && lane.state !== "failed" && !neverBorn(lane));
+      const unsettledWork = Object.values(registry.lanes).filter((lane) => {
+        if (liveLane.includes(lane)) return false;
+        const assignment = registry.assignments[lane.active_assignment_id ?? ""];
+        return assignment !== undefined && !ASSIGNMENT_TERMINAL_STATES[assignment.state];
+      });
+      const unsafe = [...liveLane, ...unsettledWork];
       if (unsafe.length) {
         // The refusal now carries WHY each lane is still live (C11). A lane that
         // is unsettled because its worker's completion block does not parse is
@@ -1721,20 +1757,25 @@ export class CompositeTools {
         for (const lane of unsafe) {
           const assignmentId = lane.active_assignment_id;
           if (!assignmentId) { diagnosis.push(`${lane.worker_id} is ${lane.state} and holds no assignment`); continue; }
+          const held = registry.assignments[assignmentId];
+          // The lane state alone was never the whole story: an idle lane and a
+          // working assignment is the exact combination that used to close
+          // silently, so both are named.
+          const where = `${lane.worker_id} is ${lane.state} holding ${assignmentId}${held ? ` in assignment state ${held.state}` : " (unregistered)"}`;
           let report: Buffer | undefined;
           try { report = await readFile(path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`)); } catch { /* unreadable report reads as no candidate */ }
           const candidates = report ? scanCompletionBlocks(report.toString("utf8"), assignmentId) : [];
           const settleable = candidates.filter((candidate) => !candidate.heading && candidate.status !== undefined && candidate.status !== "blocked");
-          if (settleable.length) { diagnosis.push(`${lane.worker_id} is ${lane.state} with a valid completion block for ${assignmentId} at report line ${settleable[settleable.length - 1].line}; inspect the lane so the settlement is observed, then retry the close`); continue; }
+          if (settleable.length) { diagnosis.push(`${where}, whose report carries a valid completion block at line ${settleable[settleable.length - 1].line} that this call's sweep could not act on; inspect the lane, then retry the close`); continue; }
           const malformed = candidates.filter((candidate) => candidate.defects.length > 0);
           if (malformed.length) {
-            diagnosis.push(`${lane.worker_id} is ${lane.state} and its report carries ${malformed.length} unparsable completion candidate(s) for ${assignmentId}: ${malformed.map((candidate) => `line ${candidate.line} — ${candidate.defects.join("; and ")}`).join(" | ")}. ${completionExample(assignmentId)}`);
+            diagnosis.push(`${where}, whose report carries ${malformed.length} unparsable completion candidate(s): ${malformed.map((candidate) => `line ${candidate.line} — ${candidate.defects.join("; and ")}`).join(" | ")}. ${completionExample(assignmentId)}`);
             continue;
           }
           const blocked = candidates.some((candidate) => candidate.status === "blocked");
           diagnosis.push(blocked
-            ? `${lane.worker_id} is ${lane.state} and ${assignmentId} reported the boundary "blocked", which settles nothing; it needs a "status: completed" or "status: failed" block`
-            : `${lane.worker_id} is ${lane.state} on ${assignmentId} with no completion candidate in its report at all`);
+            ? `${where}, which reported the boundary "blocked"; that settles nothing, so it needs a "status: completed" or "status: failed" block. ${completionExample(assignmentId)}`
+            : `${where}, with no completion candidate in its report at all. ${completionExample(assignmentId)}`);
         }
         const drift: string[] = [];
         for (const lane of Object.values(registry.lanes)) {
@@ -1743,9 +1784,9 @@ export class CompositeTools {
         }
         throw new McpContractError(
           "track_not_settled",
-          `${unsafe.length} responsibility lane(s) are still active or blocked: ${diagnosis.join(" || ")}${drift.length ? ` || ${drift.join(" || ")}` : ""}`,
+          `${unsafe.length} responsibility lane(s) are not settled${liveLane.length ? `; ${liveLane.length} still live` : ""}${unsettledWork.length ? `; ${unsettledWork.length} idle but still holding a non-terminal assignment` : ""}: ${diagnosis.join(" || ")}${closeSweep.length ? ` || settlement sweep this call ran: ${closeSweep.join(" || ")}` : ""}${drift.length ? ` || ${drift.join(" || ")}` : ""}`,
           "close",
-          "Settle every lane before track closure. Where the cause named above is an unparsable completion block, the fix is in the worker's report, not in the registry: have the lane append the exact two lines quoted, then inspect the lane so the settlement is observed.",
+          `Settle every lane before track closure. An idle lane still holding a non-terminal assignment is settled as a session and unsettled as work: closing it would strand that assignment in its current state with no live lane left to observe a settlement from. Where the cause named above is an unparsable completion block, the fix is in the worker's report, not in the registry: have the lane append the exact two lines quoted, then retry. This call's sweep advanced the registry to revision ${registry.revision}; pass that as expected_registry_revision on the retry.`,
         );
       }
       const closeCandidates: { lane: WorkerLaneRecord; liveSequence: number }[] = [];
@@ -1785,7 +1826,7 @@ export class CompositeTools {
       // went over (A-009 §9.4). A close is the one moment the final judgment is
       // already in hand, so it is written down instead of recomputed later.
       await appendLedger(store.runPath, "closed", [meteringLedgerLine(closeJudgment.metering)]).catch(() => undefined);
-      return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes), ...(forced ? { forced_close: { closed_by: forced.closedBySessionId, closed_at: forced.closedAt, approved_generation: forced.generation, approval: { path: forced.approval.path, sha256: forced.approval.sha256, reason: forced.approval.reason }, dead_orch_evidence: forced.evidence } } : {}) } };
+      return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: closed.revision, data: { closed_workers: Object.keys(closed.lanes), ...(closeSweep.length ? { settlement_sweep: closeSweep } : {}), ...(forced ? { forced_close: { closed_by: forced.closedBySessionId, closed_at: forced.closedAt, approved_generation: forced.generation, approval: { path: forced.approval.path, sha256: forced.approval.sha256, reason: forced.approval.reason }, dead_orch_evidence: forced.evidence } } : {}) } };
     } catch (error) { return resultError("herdr_track", input.action, run, error); }
   }
 

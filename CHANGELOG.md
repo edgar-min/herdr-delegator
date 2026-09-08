@@ -155,6 +155,37 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
   than reporting a healthy tool-owned file as malformed. (SPEC BUD-017, BUD-018,
   ASN-005d, ASN-011b)
 
+### Fixed
+
+- `herdr_track inspect` and `herdr_track close` run the settlement sweep, like
+  `herdr_assignment wait` and `herdr_worker inspect` already did. They were the last
+  two consumers reading the registry raw, and that gap had a concrete cost: an idle
+  lane whose worker had appended `Status: completed` was closed as settled while its
+  assignment stayed `working` forever, with no observation anywhere saying the report
+  disagreed. `close` now also refuses a lane holding a non-terminal active assignment
+  even when the lane itself is idle — closing it strands that assignment with no live
+  lane left to settle it — and names, per lane, the lane state, the assignment state,
+  the cause, and the correction. The sweep runs after the
+  `expected_registry_revision` check so a settlement the call performs cannot
+  invalidate its own precondition, and both the refusal and the success result name
+  the post-sweep revision to retry from. (SPEC ASN-011f; friction
+  `ffd8390346e69cae`)
+- A `# ` heading inside a fenced code block is now reported as exactly that, with the
+  file line numbers and the indent-the-fence fix. One fenced heading splits the body
+  into six sections — a legal count, since `# References` is optional — so the
+  artifact was refused for a misplaced heading and never heard the word "fence"; only
+  two or more, landing on seven sections, reached the hint. The detector runs before
+  the count and position refusals, and the dead `goal.includes("\n# ")` check it
+  replaces is gone: sections split on `# ` before that line could ever see one.
+  (SPEC ASN-004c; friction `171183a6663fabb1`)
+- An oversized artifact is refused as `assignment_artifact_invalid` naming its
+  observed size, the 65536-byte bound, and the `# References` alternative. The bound
+  is enforced before the read, which is what keeps the read bounded, but both readers
+  folded that refusal into `assignment_artifact_missing` — "missing or unsafe", with
+  no size, no bound, and no fix — and so the parser's own well-worded size error was
+  unreachable. `assignment_artifact_missing` now means only absent, non-canonical,
+  symlinked, or not a regular file. (SPEC ASN-002)
+
 ## [3.8.0] - 2026-09-02
 
 ### Changed
