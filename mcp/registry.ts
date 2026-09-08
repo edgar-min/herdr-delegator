@@ -298,7 +298,7 @@ function artifactInvalid(what: string, fix: string): McpContractError {
   return new McpContractError("assignment_artifact_invalid", what, "validate", fix);
 }
 
-const SECTION_SHAPE = `The canonical assignment is exactly ${ASSIGNMENT_SECTIONS.length} H1 sections in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it.`;
+const SECTION_SHAPE = `The canonical assignment is the ${ASSIGNMENT_SECTIONS.length} required H1 sections, all of them, in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it.`;
 
 function parseListSection(value: string, heading: string): string[] {
   const shape = `Every line of "# ${heading}" is one Markdown bullet "- <text>" of 1 to ${MAX_ASSIGNMENT_BULLET} characters, at most ${MAX_ASSIGNMENT_SECTION_LINES} lines total: no blank lines, no wrapped continuation lines, no nested indentation, no sub-headings. Example:\n- one bounded claim, on one line`;
@@ -653,7 +653,7 @@ export class DelegationStore {
       if (file.size > MAX_ASSIGNMENT_ARTIFACT_BYTES) {
         throw artifactInvalid(
           `Assignment Markdown for ${assignmentId} is ${file.size} bytes; the limit is ${MAX_ASSIGNMENT_ARTIFACT_BYTES}.`,
-          `Keep the artifact at or under ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes. Shorten "# Goal" and the bullet sections, and move the detail that does not fit into a document pinned by hash in a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section — for example:\n# ${ASSIGNMENT_REFERENCES_SECTION}\n\n- spec/design.md sha256:<64 lowercase hex>`,
+          `Keep the whole file at or under ${MAX_ASSIGNMENT_ARTIFACT_BYTES} UTF-8 bytes, the trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section included. Shorten "# Goal" and the bullet sections, then move the detail that does not fit into a document INSIDE the run directory and pin it by its own SHA-256 — for example:\n# ${ASSIGNMENT_REFERENCES_SECTION}\n\n- spec/design.md sha256:<the 64 lowercase hex digits of that file's exact bytes>\n\nThe pinned path is relative to the run directory and must name a regular file there; the worker reads the document, and the hash is what proves it is the one you wrote this assignment against.`,
         );
       }
       return await readFile(artifactPath);
