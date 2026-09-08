@@ -13,7 +13,7 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
-## [3.9.0] - Unreleased
+## [3.9.0] - 2026-09-08
 
 ### Changed
 
