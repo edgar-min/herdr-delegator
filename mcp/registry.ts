@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireLock, readRegistry, releaseLock } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { resolveRunCoordinate, writeAtomic } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { ASSIGNMENT_LABEL_RE, ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, MAX_ASSIGNMENT_LABEL, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
+import { ASSIGNMENT_LABEL_RE, ASSIGNMENT_RE, BOUNDED_TOKEN_RE, BUDGET_APPLIED_STATES, BUDGET_PARK_REASONS, BUDGET_VERDICTS, DELEGATION_VERSION, MAX_ASSIGNMENT_LABEL, McpContractError, ORCH_BIRTH_ORIGINS, RESPONSIBILITY_RE, ROLE_RE, SHA256_RE, SUPPORTED_DELEGATION_VERSIONS, THINKING_LEVELS, WORKER_RE, nowIso, sha256, type AssignmentArtifact, type AssignmentRecord, type AssignmentState, type BudgetAppliedState, type BudgetExtension, type BudgetParkReason, type BudgetRecord, type BudgetVerdict, type DelegationRegistry, type OrchBirthOrigin, type OrchBirthRecord, type OrchCreatorRecord, type PinnedRolesRecord, type ResponsibilityRecord, type Separation, type WorkerLaneRecord } from "./contracts";
 
 const ASSIGNMENT_STATES: Record<AssignmentState, true> = {
   queued: true,
@@ -74,7 +74,7 @@ export function mountedBuild(): MountedBuild {
 // (221abf10d2280b47); `onlyKeys` tolerates their absence on a lane that has not
 // reported yet, and their presence on records written before the change.
 const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
-const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "created_at", "updated_at"] as const;
+const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "references", "reported_boundary", "created_at", "updated_at"] as const;
 const BIRTH_KEYS = ["generation", "official_session_id", "official_session_path", "pane_id", "origin", "approval_sha256", "born_at"] as const;
 
 function validOrchBirth(value: unknown, index: number): value is OrchBirthRecord {
@@ -124,8 +124,18 @@ function validPinnedRoles(value: unknown): value is PinnedRolesRecord {
     typeof value.observed_at === "string" && value.observed_at.length <= 64 &&
     typeof value.source === "string" && value.source.length >= 1 && value.source.length <= 80;
 }
-const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "approach_warned", "server_clamp_tokens", "started_at"] as const;
-const EXTENSION_KEYS = ["ordinal", "requested_tokens", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
+const BUDGET_KEYS = ["seed_tokens", "seed_minutes", "minutes_floor", "doorbell_policy", "granted_tokens", "granted_minutes", "extensions", "state", "park_reason", "park_detail", "parked_at", "denied_clamp_sha256", "approach_warned", "server_clamp_tokens", "started_at"] as const;
+const EXTENSION_KEYS = ["ordinal", "requested_tokens", "requested_minutes", "justification_sha256", "audit_path", "audit_worker_id", "state", "verdict", "granted_tokens", "granted_minutes", "applied", "audit_worker_closed", "retries", "requested_at", "settled_at"] as const;
+const APPLIED_KEYS = ["tokens", "minutes"] as const;
+
+/** Both axes, both from the closed vocabulary: a half-recorded application is not a state. */
+function validAppliedStates(value: unknown): boolean {
+  return value === undefined || (
+    isRecord(value) &&
+    exactKeys(value, APPLIED_KEYS) &&
+    APPLIED_KEYS.every((axis) => BUDGET_APPLIED_STATES.includes(value[axis] as BudgetAppliedState))
+  );
+}
 
 function validCount(value: unknown, max = Number.MAX_SAFE_INTEGER): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= max;
@@ -136,6 +146,7 @@ function validBudgetExtension(value: unknown, index: number): value is BudgetExt
     onlyKeys(value, EXTENSION_KEYS) &&
     value.ordinal === index + 1 &&
     validCount(value.requested_tokens) &&
+    (value.requested_minutes === undefined || validCount(value.requested_minutes)) &&
     typeof value.justification_sha256 === "string" && SHA256_RE.test(value.justification_sha256) &&
     typeof value.audit_path === "string" && value.audit_path.length <= 4096 &&
     (value.audit_worker_id === undefined || (typeof value.audit_worker_id === "string" && WORKER_RE.test(value.audit_worker_id))) &&
@@ -143,6 +154,8 @@ function validBudgetExtension(value: unknown, index: number): value is BudgetExt
     (value.state === "pending" || value.state === "settled" || value.state === "abandoned") &&
     (value.verdict === undefined || BUDGET_VERDICTS.includes(value.verdict as BudgetVerdict)) &&
     (value.granted_tokens === undefined || validCount(value.granted_tokens)) &&
+    (value.granted_minutes === undefined || validCount(value.granted_minutes)) &&
+    validAppliedStates(value.applied) &&
     validCount(value.retries, 64) &&
     typeof value.requested_at === "string" && value.requested_at.length <= 64 &&
     (value.settled_at === undefined || (typeof value.settled_at === "string" && value.settled_at.length <= 64));
@@ -158,6 +171,7 @@ function validBudget(value: unknown): value is BudgetRecord {
     onlyKeys(value, BUDGET_KEYS) &&
     validCount(value.seed_tokens) &&
     validCount(value.seed_minutes) &&
+    (value.minutes_floor === undefined || validCount(value.minutes_floor)) &&
     (value.doorbell_policy === "full" || value.doorbell_policy === "notify") &&
     validCount(value.granted_tokens) &&
     validCount(value.granted_minutes) &&
@@ -241,6 +255,25 @@ function validAdvisoryUnownedChanges(value: unknown): boolean {
     value.paths.length <= 64 &&
     value.paths.every((item) => typeof item === "string" && item.length >= 1 && Buffer.byteLength(item) <= 1_024) &&
     typeof value.truncated === "boolean"
+  );
+}
+
+/**
+ * SHAPE only, and bounded on every axis: at most 16 entries, each exactly a
+ * run-relative path and the hash the immutable assignment declared for it. Path
+ * SEMANTICS — containment, symlink and hardlink refusal, size, re-verification
+ * against the bytes on disk — belong to the tool layer that consumes them; what
+ * is fixed here is only that a stored reference can be compared later.
+ */
+function validReferences(value: unknown): boolean {
+  return value === undefined || (
+    Array.isArray(value) &&
+    value.length <= 16 &&
+    value.every((entry) =>
+      isRecord(entry) &&
+      exactKeys(entry, ["path", "sha256"]) &&
+      typeof entry.path === "string" && entry.path.length >= 1 && Buffer.byteLength(entry.path) <= 1_024 &&
+      typeof entry.sha256 === "string" && SHA256_RE.test(entry.sha256))
   );
 }
 function assertMode600(mode: number, coordinate: string): void {
@@ -363,9 +396,25 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
       (assignment.completed_at === undefined || typeof assignment.completed_at === "string") &&
       validOptionalSafeInteger(assignment.elapsed_ms) &&
       validTokenUsage(assignment.token_usage) &&
-      validAdvisoryUnownedChanges(assignment.advisory_unowned_changes);
+      validAdvisoryUnownedChanges(assignment.advisory_unowned_changes) &&
+      validReferences(assignment.references) &&
+      (assignment.reported_boundary === undefined || assignment.reported_boundary === "blocked");
     if (!validIdentity || !validSettlement) throw new McpContractError("delegation_registry_invalid", "An assignment record is malformed.", "storage", "Repair the assignment from its immutable artifact and verified settlement evidence.");
   }
+}
+
+/**
+ * In-memory only. A v5 record carries its own floor; a record written before v5
+ * gets `max(seed_minutes, granted_minutes)` so no minute an older server
+ * allowed is retracted, and a v5 record that somehow lacks it falls back to the
+ * seed, which is what a fresh run records.
+ */
+function projectMinutesFloor(registry: DelegationRegistry): void {
+  const budget = registry.budget;
+  if (!budget || budget.minutes_floor !== undefined) return;
+  budget.minutes_floor = registry.version >= DELEGATION_VERSION
+    ? budget.seed_minutes
+    : Math.max(budget.seed_minutes, budget.granted_minutes);
 }
 
 export type AssignmentFile = { path: string; assignment: AssignmentArtifact; instructionsHash: string };
@@ -395,11 +444,22 @@ export class DelegationStore {
     return { version: DELEGATION_VERSION, owner: "herdr-delegator", run_path: this.runPath, revision: 0, responsibilities: {}, lanes: {}, assignments: {}, created_at: now, updated_at: now };
   }
 
+  /**
+   * Reads and validates the registry, then projects the v5 `minutes_floor` into
+   * MEMORY for a record written before v5 (Q10). The projected value is
+   * `max(seed_minutes, granted_minutes)`: under the pre-v5 asymmetric rule the
+   * minutes cap simply followed `granted_minutes`, so preserving that figure
+   * keeps every minute an older server already allowed and cannot park a run
+   * the old rule left running. Nothing is written here — `inspect` must be safe
+   * to run — and the first guarded mutation persists the same value through
+   * `transaction` below.
+   */
   async read(): Promise<DelegationRegistry> {
     try {
       assertMode600((await stat(this.registryPath)).mode, this.registryPath);
       const value: unknown = JSON.parse(await readFile(this.registryPath, "utf8"));
       validateRegistry(value, this.runPath);
+      projectMinutesFloor(value);
       return value;
     } catch (error: unknown) {
       if (isRecord(error) && error.code === "ENOENT") return this.empty();
@@ -417,8 +477,11 @@ export class DelegationStore {
       registry.revision += 1;
       registry.updated_at = nowIso();
       // Writes always emit the current schema version, so an older file is
-      // upgraded the first time anything mutates it. Versions 2 and 3 only add
-      // optional fields, so the upgrade changes no existing field's meaning.
+      // upgraded the first time anything mutates it. Every upgrade only adds
+      // optional fields, so it changes no existing field's meaning — and this
+      // is also the one-shot materialize window for the v5 `minutes_floor` the
+      // read above projected, so the promotion and the value it implies land in
+      // the same atomic write instead of in two observable states.
       registry.version = DELEGATION_VERSION;
       // Validate before writing, not only on the next read. The fail-closed
       // gate is the same one, but running it here attributes a malformed record

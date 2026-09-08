@@ -39,10 +39,14 @@ export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 // no longer written but is still read (221abf10d2280b47); version 4 adds the
 // `abandoned` budget-extension state (183b6d4102ddfbfa) — an existing field
 // gaining a value, which is exactly the growth an older reader must refuse
-// loudly instead of calling malformed. Each upgrade only adds, so no existing
-// field changes meaning.
-export const DELEGATION_VERSION = 4 as const;
-export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3, 4] as const;
+// loudly instead of calling malformed. Version 5 adds the budget's approval
+// APPLICATION state (friction 09470253737e9da6, 2c8f859d4875bbc0): an
+// extension's `requested_minutes`, `granted_minutes` and per-axis `applied`,
+// the budget's `minutes_floor`, and an assignment's `references` and
+// `reported_boundary`. Each upgrade only adds, so no existing field changes
+// meaning.
+export const DELEGATION_VERSION = 5 as const;
+export const SUPPORTED_DELEGATION_VERSIONS = [1, 2, 3, 4, 5] as const;
 export const OBSERVATION_SOURCE = "herdr-delegator:observation";
 export const MESSAGE_BOUNDARIES = ["completed", "failed", "blocked", "decision-request"] as const;
 // Inter-run conversation (identity/comms redesign, decisions 10-12). A doorbell
@@ -101,6 +105,21 @@ export const MAX_JUSTIFICATION_ITEM = 500;
 export const BUDGET_POLICIES = ["full", "notify"] as const;
 export const BUDGET_VERDICTS = ["grant", "partial", "deny"] as const;
 export const BUDGET_PARK_REASONS = ["over-cap", "audit-unavailable", "clamp-unreadable", "approval-required", "denied"] as const;
+// Whether an approved grant is IN FORCE on one axis, which is a different
+// question from what the auditor decided (friction 09470253737e9da6: verdict
+// `grant`, granted_tokens 600000, effective cap still 400000, run still parked
+// on `approval-required`). The audit verdict is the decision; this is its
+// application. `applied` — the axis ceiling carries the granted figure.
+// `awaiting-clamp` — the human still has to raise the clamp for it to take
+// effect (every `full`-policy grant starts here, and so does an unreadable
+// clamp). `pinned` — a human ceiling on that axis is below the granted figure
+// and no tool op raises it. `write-owed` — the server's own clamp write did not
+// land and is retried at the next guarded op. `none` — nothing was granted on
+// that axis, or the verdict was not a grant. It is never a park reason and
+// never a cap: `usable` (usage < effective cap at the observed moment) is the
+// separate observation, so a grant may read `awaiting-clamp` while the axis is
+// still usable because the human's ceiling was already high enough.
+export const BUDGET_APPLIED_STATES = ["applied", "awaiting-clamp", "pinned", "write-owed", "none"] as const;
 // The emergency carve-out's own audit vocabulary (BUD-016, friction
 // 8917760a9545c642). It is deliberately disjoint from BUDGET_VERDICTS: the two
 // audits judge different questions, are written to different documents, and
@@ -278,6 +297,23 @@ export type AssignmentRecord = {
   advisory_unowned_changes?: AdvisoryUnownedChanges;
   ambiguous_operation?: "prompt" | "resume";
   ambiguous_state_change_seq?: number;
+  /**
+   * Files the immutable assignment pinned by hash in its optional trailing
+   * `# References` section (v5). The registry stores the SHAPE only — the
+   * run-relative path and the hash the artifact declared — so a later drift
+   * check has something to compare against; every path semantic (containment,
+   * symlink and hardlink refusal, size bound, re-verification) lives in the
+   * tool layer that reads them.
+   */
+  references?: { path: string; sha256: string }[];
+  /**
+   * A boundary the worker REPORTED and the machine did not act on (v5): a
+   * `status: blocked` completion block is recognized and recorded here, and it
+   * settles nothing. Assignment state, lane runtime state, `wait.until`
+   * semantics, and doorbell boundaries are untouched by it; a later
+   * `completed`/`failed` block is what settles (friction 89bc054958c59c88).
+   */
+  reported_boundary?: "blocked";
   created_at: string;
   updated_at: string;
 };
@@ -378,6 +414,7 @@ export type Mandate = {
 export type BudgetPolicy = (typeof BUDGET_POLICIES)[number];
 export type BudgetVerdict = (typeof BUDGET_VERDICTS)[number];
 export type BudgetParkReason = (typeof BUDGET_PARK_REASONS)[number];
+export type BudgetAppliedState = (typeof BUDGET_APPLIED_STATES)[number];
 export type EmergencyVerdict = (typeof EMERGENCY_VERDICTS)[number];
 
 /** Bounded self-justification for one extension: done, remaining, why more. */
@@ -416,12 +453,29 @@ export type EmergencyRequest = {
 export type BudgetExtension = {
   ordinal: number;
   requested_tokens: number;
+  /**
+   * The wall-clock side of the same request (v5, friction 2c8f859d4875bbc0: a
+   * run over its minutes axis had no extension path at all). Same covenant as
+   * the token axis — a request above half of what is already granted is
+   * TRUNCATED to the step, never refused — and an omitted axis falls back to
+   * its own step, so a grant still moves both dimensions.
+   */
+  requested_minutes?: number;
   justification_sha256: string;
   audit_path: string;
   audit_worker_id?: string;
   state: "pending" | "settled" | "abandoned";
   verdict?: BudgetVerdict;
   granted_tokens?: number;
+  /** Minutes this extension actually moved, recorded on the same footing as `granted_tokens`. */
+  granted_minutes?: number;
+  /**
+   * Whether the grant is IN FORCE per axis, recorded separately from the
+   * verdict above. `applied`/`none` are terminal; the three transient states
+   * are re-derived at every observation from the live clamp and policy, and the
+   * next guarded mutation writes the derivation back.
+   */
+  applied?: { tokens: BudgetAppliedState; minutes: BudgetAppliedState };
   /** True once the server proved the auditor session was closed and its tab gone. */
   audit_worker_closed?: boolean;
   retries: number;
@@ -432,6 +486,17 @@ export type BudgetExtension = {
 export type BudgetRecord = {
   seed_tokens: number;
   seed_minutes: number;
+  /**
+   * The `full`-policy minutes ceiling a verdict alone may not exceed — the
+   * symmetric counterpart of `seed_tokens` on the token axis (Q10). A new run
+   * seeds it from `seed_minutes`. A registry written before v5 has none, and is
+   * read with `max(seed_minutes, granted_minutes)` projected in memory so that
+   * minutes already valid under the older asymmetric rule stay valid; the first
+   * guarded mutation materializes that projection once, together with the v5
+   * promotion. Preserving a value the old rule already allowed is not a new
+   * approval, and nothing here parks a run that was not parked before.
+   */
+  minutes_floor?: number;
   doorbell_policy: BudgetPolicy;
   granted_tokens: number;
   granted_minutes: number;

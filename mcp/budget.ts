@@ -113,6 +113,9 @@ export function seedBudget(mandate: Mandate | undefined, startedAt: string): Bud
   return {
     seed_tokens: tokens,
     seed_minutes: minutes,
+    // The `full`-policy minutes ceiling starts at the seed, exactly as the
+    // token ceiling does: under `full` a verdict alone raises neither axis.
+    minutes_floor: minutes,
     doorbell_policy: seed?.doorbell_policy ?? "notify",
     granted_tokens: tokens,
     granted_minutes: minutes,
