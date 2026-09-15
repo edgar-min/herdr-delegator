@@ -40,6 +40,7 @@ const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
   "protocol-orch.md": [
     "063136989cd60980849d7fc984a6dbf6dc3a23ff715d9981be26b8f5ddc30e7f",
     "1b8deddb0fd43d6ccc40a0864f9991a6b133bc87e468c24cb354d06a3f4ce2c8",
+    "211dd1f432b50e5c1841d6073266cda66faeb223af7fa668e121a25bf4346459",
     "215c6d9298498edd08f0f094dd03710bec1cf9d85fc800ed29e67bcc3503cb9c",
     "239ee320be3a27befbedc80d736c7cc62561e0b76884d1dbaf5ce2b89e3f6fd6",
     "270ab6d10464e05b44e99aaab834ad692feafda46e15a86fba370d101a6a4302",

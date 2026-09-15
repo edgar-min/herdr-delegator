@@ -317,8 +317,8 @@ function field(value: unknown, names: readonly string[]): unknown {
 function stringField(value: unknown, names: readonly string[]): string | undefined { const found = field(value, names); return typeof found === "string" ? found : undefined; }
 function numberField(value: unknown, names: readonly string[]): number | undefined { const found = field(value, names); return typeof found === "number" && Number.isFinite(found) ? found : undefined; }
 // The public schema still accepts up to MAX_TIMEOUT_MS, but a single server-side
-// call is clamped under the 30s MCP client transport bound; a longer logical wait
-// is composed by repeating bounded `wait` calls.
+// probe is clamped under the 30s MCP client transport bound. A timeout ends the
+// ORCH turn; callers do not compose a longer vigil from repeated waits.
 function timeout(value: { wait?: { timeout_ms?: number } }): number { const candidate = value.wait?.timeout_ms ?? DEFAULT_TIMEOUT_MS; return Math.min(MAX_EFFECTIVE_WAIT_MS, Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, candidate))); }
 function runRef(input: { track_id: string; run_id: string }): RunRef { return { track_id: input.track_id, run_id: input.run_id }; }
 function laneState(raw: string | undefined): LaneState { if (raw === "blocked") return "blocked"; if (raw === "working" || raw === "prompted") return "working"; if (raw === "closed") return "closed"; if (raw === "failed") return "failed"; if (raw === "resume-needed") return "resume-needed"; return "idle"; }
@@ -3412,16 +3412,16 @@ export class CompositeTools {
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
       const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-      // The cursor this observation ends at. Handing it to the next wait makes
-      // that call's arguments differ from this one's, so a legitimate bounded
-      // poll does not read as a repeated identical call (friction
-      // 3b7947a6750ee7db), and the answer below says whether anything moved.
+      // The cursor this observation ends at. A later explicit recovery probe
+      // after a missing or inconsistent doorbell can hand it back to learn
+      // whether the worker moved. It is not permission to repeat a timed-out
+      // wait as a polling loop.
       const cursor = await laneWaitCursor(store, registry, registry.lanes[lane.worker_id]);
       const moved = input.wait?.cursor === undefined ? undefined : cursorMoved(input.wait.cursor, cursor);
       const cursorData = {
         wait_cursor: cursor,
         ...(moved === undefined ? {} : { moved_since_cursor: moved }),
-        ...(waitTimedOut ? { next_step: `The wait window elapsed without ${(input.wait?.until ?? ["idle", "done", "blocked"]).join("/")}. Prefer the worker's doorbell over polling: it rings when the report changes. If you do wait again, pass wait.cursor=${cursor} so the call is not an identical repeat, and spend the interval on your own work.` } : {}),
+        ...(waitTimedOut ? { next_step: `The wait window elapsed without ${(input.wait?.until ?? ["idle", "done", "blocked"]).join("/")}. End the turn and remain idle; the next doorbell will wake this session. Do not repeat wait, sleep, or inspect merely to occupy time. Use wait.cursor=${cursor} only if a later missing or inconsistent doorbell requires an explicit recovery probe.` } : {}),
       };
       return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: cursorData };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }

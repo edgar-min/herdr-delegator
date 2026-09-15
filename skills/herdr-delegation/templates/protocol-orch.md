@@ -160,10 +160,13 @@ Establish independent reproduction through input independence: have an executor 
 than the worker take the worker's outputs by hash into a separate temporary root and
 exercise them there. Do not run the check yourself merely to change executor identity.
 
-Dispatch with the mounted assignment tool. Prefer doorbell-driven settlement plus
-mounted read-only inspection over polling or sleeps. Treat a wait as a short state
-probe, not a vigil: size it to a boundary you expect imminently and return the
-previous cursor so a repeated probe is not identical.
+Dispatch with the mounted assignment tool. When no actionable ORCH work remains, end
+the turn and remain idle; the next doorbell will wake this session. Never call
+`wait`, `sleep`, a shell sleep command, or repeated inspection merely to occupy time
+while awaiting a worker, the human, or another run. Use `wait` only once as a short
+state probe when the awaited boundary is already expected to have occurred, or as
+explicit recovery after a missing or inconsistent doorbell. A timed-out wait ends the
+turn; never repeat it.
 
 Treat a doorbell only as notice that a named document changed. On receipt, apply the
 reading rule above to a lane report and use guarded observation to establish current

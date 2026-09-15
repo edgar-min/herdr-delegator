@@ -42,8 +42,8 @@ export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 300_000;
 // MCP clients abort a single call at 30s, so a longer schema-legal `wait.timeout_ms`
 // can only surface as a transport error. The server clamps every effective
-// single-call wait below that bound; longer logical waits are composed by
-// repeating bounded `wait` calls.
+// single-call probe below that bound; callers end the turn after a timeout rather
+// than composing a longer vigil from repeated waits.
 export const MAX_EFFECTIVE_WAIT_MS = 25_000;
 // The delegation registry's schema version. It is bumped whenever the schema
 // grows a field, so that a server process which predates the growth fails with a
@@ -647,16 +647,15 @@ const workerId = z.string().regex(WORKER_RE);
 const hash = z.string().regex(SHA256_RE);
 // A wait cursor is an observation coordinate, never a session token or a
 // promise: registry revision, lane state sequence, report bytes, and the moment
-// the observation was taken. Handing it back changes the next call's arguments —
-// which is what keeps a legitimate repeated bounded wait from reading as a loop
-// to the host (friction 3b7947a6750ee7db) — and lets the server say whether
-// anything actually moved since then. The server owns the format; a caller only
+// the observation was taken. An explicit later recovery probe can hand it back
+// to learn whether anything moved since then. It is not permission to extend a
+// timed-out wait into a polling loop. The server owns the format; a caller only
 // echoes it.
 const waitCursor = z.string().max(80).regex(WAIT_CURSOR_RE);
 const wait = z.object({
   until: z.array(z.enum(["idle", "done", "blocked"])).min(1).optional().describe("Agent states that satisfy the wait; an already-current state satisfies it immediately. Name the states that actually answer what you are waiting for — a blocked lane answers a readiness question but not a completion one."),
-  timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested wait budget. Size it to how long the awaited boundary plausibly needs: short for a state probe, longer only when awaiting a settlement you expect imminently, and repeat bounded waits instead of asking for the maximum. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms; a longer logical wait is achieved by repeating bounded wait calls.`),
-  cursor: waitCursor.optional().describe("The cursor the previous wait on this assignment returned (data.wait_cursor). Feeding it back makes the next call's arguments genuinely different from the last one's — a repeated bounded wait is a legitimate poll, but an identical repeated call looks like a loop to the host — and the result then reports whether anything moved since that observation. Omit it on the first wait."),
+  timeout_ms: z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(`Requested budget for one short state probe, used only when the awaited boundary is already expected to have occurred or as explicit recovery after a missing or inconsistent doorbell. A single server-side wait is clamped to ${MAX_EFFECTIVE_WAIT_MS} ms because MCP clients abort a call at 30000 ms. A timed-out wait ends the ORCH turn; do not repeat it or compose a longer vigil.`),
+  cursor: waitCursor.optional().describe("The observation coordinate returned by an earlier wait (data.wait_cursor). Supply it only on an explicit later recovery probe after a missing or inconsistent doorbell; the result then reports whether anything moved since that observation. Never use it to repeat a timed-out wait. Omit it on the first wait."),
 }).strict().optional();
 const run = { track_id: coordinate, run_id: coordinate };
 const separation = z.object({
