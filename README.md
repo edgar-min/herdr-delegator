@@ -3,7 +3,7 @@
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
 - Package/plugin: `herdr-delegator` 3.11.0 (Unreleased)
-- Creator skill: `herdr-delegation` 3.11.0; separate configuration and Jev-development skills are also packaged
+- Role skills: `herdr-create`, `herdr-orch`, `herdr-default-worker`, `herdr-task-worker`, `herdr-slow-worker` 3.11.0; separate configuration and Jev-development skills are also packaged
 - Delegation tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, `herdr_friction`; advisory tool: `herdr_jev`
 - Official runtime: OMP only
 - License: Apache-2.0
@@ -16,7 +16,7 @@ The package follows Agent Plugins 1.0.0:
 
 - `plugin.json` is the portable package manifest;
 - `mcp.json` declares one Bun stdio MCP server;
-- `skills/herdr-delegation/SKILL.md` hands off from the creator; standalone ORCH/worker skills are generated from its role templates, while `herdr-config` and `build-your-own-jev` serve configuration and development;
+- `skills/herdr-create/SKILL.md` opens a track and retires; `herdr-orch` and the three worker skills are the complete installed operating contracts a born session is pointed at, while `herdr-config` and `build-your-own-jev` serve configuration and development;
 - `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` is the bridge-only OMP client extension;
 - `package.json#omp.extensions` retains the namespaced entry solely for current OMP extension-module compatibility.
 
@@ -110,7 +110,7 @@ Project values override user values. A run-local configuration may override prof
 }
 ```
 
-Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. The built-in worker profiles are `default`, `task`, and `slow`; you may define more, and the layer that first defines a profile name must give it a `role` — a profile never inherits another profile's identity, so a misspelled name fails the layer instead of silently running on `@default`. Profiles select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
+Configure a planning-grade orchestrator role — decision quality matters more than cost for the session that plans, routes, and judges. Without an `orchestrator` entry the plugin falls back to `@default` so a vanilla install still resolves, but that fallback is not a recommendation. The worker profiles are `default`, `task`, and `slow`: those three, and only those three, have a packaged worker role skill, so a new run can only dispatch an assignment declaring one of them. The configuration parser and older run records still accept other profile names — permissive parsing and historical compatibility, not new role support — and on a current run an assignment naming one is refused at preflight and at `add`, before the ID is consumed or a lane is started, rather than silently borrowing another role's instructions. The layer that first defines a profile name must give it a `role`; a profile never inherits another profile's identity, so a misspelled name fails the layer instead of silently running on `@default`. Profiles select bounded OMP role aliases rather than concrete model IDs. Cost-efficient small mechanical work routes to host OMP task/subagents, not persistent responsibility lanes.
 
 Each profile may carry ORCH-facing selection `intent` (with legacy `guidance` as fallback) and a worker-facing `directive`. Selection criteria help choose a profile; only the selected profile's directive reaches that worker. Neither is a role or model identity.
 
@@ -126,13 +126,13 @@ A rule may add two optional fields. `trigger` is one line saying when the route 
 
 ### Complete role skills, separate advisory configuration
 
-The creator uses `herdr-delegation` to clarify the mandate, open the track and retire after a confirmed handoff. New marked-role runs give the ORCH `<run>/role-skills/orchestrator/SKILL.md` and each worker `<run>/role-skills/workers/<worker_id>/SKILL.md`: one complete operating-instruction artifact per role, separate from its mandate or assignment.
+Every role learns its whole job from one installed packaged skill. The creator uses `herdr-create` to clarify the mandate, open the track and retire after a confirmed handoff. A new run points its ORCH at the installed `skills/herdr-orch/SKILL.md`, and each dispatched lane at the packaged skill its assignment profile selects — `default` → `herdr-default-worker`, `task` → `herdr-task-worker`, `slow` → `herdr-slow-worker`. Nothing is generated into the run: no role artifact, no guidance document, no reading chain.
 
-The ORCH skill includes configured profile-selection metadata and ORCH advice. Each worker skill includes only its actual profile's directive and routes, including custom profiles. Advisory failure preserves the required role body with a warning; failure to write required instructions stops delivery. Rendering does not inspect installed skill bodies, and optional routed skills still resolve through the reader's runtime.
+Configured advisory criteria ride inline in the same prompt, and the audience split is unchanged: the ORCH sees its own directive, the worker-profile selection table and its own routes; a lane sees only its own profile's directive and matching routes. Empty or failed advice never removes a required duty — the packaged skill is complete on its own — while a missing or unreadable required skill, or a profile with no packaged skill, fails visibly before the prompt instead of silently borrowing another role's instructions.
 
-Historical unmarked roles keep their protocol/guidance read chain. Existing accepted protocol digests remain valid; unknown content still fails closed. ORCH open/revive and worker dispatch refresh applicable generated output, but regeneration does not prove that an already-prompted session consumed it.
+Historical runs keep the delivery their own accepted backing bytes describe: a marked role-template run still regenerates `<run>/role-skills/...` from its own body, and an older unmarked run keeps its protocol/guidance read chain. Which era a run belongs to is decided only after its backing record is read as a canonical regular file and accepted by the shipped-digest rule, so a missing, unreadable or tampered record refuses the call instead of falling through to a historical branch; accepted older text still loads with its named drift warning. No historical run file is rewritten, and pointing at a document is not proof that a session read it.
 
-Optional routes remain supported configuration, not mandatory dependencies of the built-in role skills. Review and approve configuration changes at their actual layer: changing a user-layer rule can affect other projects. No role-size comparison or model score alone establishes improved quality, time savings or reduced agent context.
+Optional routes remain supported configuration, not mandatory dependencies of the packaged role skills. Review and approve configuration changes at their actual layer: changing a user-layer rule can affect other projects. No file-size comparison or model score alone establishes improved quality, time savings or reduced agent context.
 
 ## Start (first run)
 
@@ -142,7 +142,7 @@ Optional routes remain supported configuration, not mandatory dependencies of th
 4. Invoke the bundled skill and let ORCH drive:
 
 ```text
-/skill:herdr-delegation
+/skill:herdr-create
 ```
 
 5. Optionally wire `skill_routing` rules to your trusted skills before the first real track — see above.
@@ -271,7 +271,7 @@ To promote friction upstream, open a [friction issue](https://github.com/edgar-m
 
 ### `herdr_jev`
 
-- `rank`: an `intent` plus candidate `paths`; returns every candidate ordered by the probability that it serves the intent, as file names only (`path_only`) or as chunk ranges. Nothing is dropped by a threshold.
+- `rank`: an `intent` plus candidate `paths`; returns every candidate ordered by the probability that it serves the intent, as file names only (`path_only`) or as chunk ranges. Nothing is dropped by a threshold. `top` bounds the input — how many of the given paths, in the order given, are read and chunked — and every path beyond it comes back in `unevaluated` with that reason; it is not an output top-K, and `path_only` ignores it because no file is read.
 - `judge`: fixed moments. `authoring` evaluates assignment wording; `settlement` compares completion claims with the report and available change evidence; `escalate` distinguishes human approval from autonomous decisions or further observation; `intake` compares a restatement with the canonical assignment; `plan` compares the canonical mandate and plan. Judgments are advisory, not acceptance or attribution.
 - `check`: `sentences` against `reference_paths`; per sentence the probability that some chunk supports it, plus the chunk or `none`.
 - `log`: `outcome` records a supported identifier-only outcome for a `request_id`; `summary` reports recorded decision/outcome counts for `request_ids`. Counts do not imply accuracy, approval or success.
@@ -289,6 +289,8 @@ pass the untouched result through.
 
 **Credentials.** `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment, or `NAME=value` in
 `<agent-dir>/herdr-delegator/.env` (mode 600, never logged, never echoed in a result).
+
+**Model.** The `jev.model` block value is resolved project layer > user layer > environment (`JEV_MODEL`) > built-in default, and that resolved model is what the MCP tool, the CLI, the host hooks and the judgments attached to server responses all send. An explicit per-call model option still wins where the API exposes one.
 
 **Actions** — the MCP interface above includes intake, plan and log. The existing CLI provides rank, check and the following judge commands; do not assume parity for the added MCP operations:
 
@@ -319,6 +321,8 @@ per question (`tool`, `stage`, `question_id`, `question_version`, `model`, proba
 identifier target such as `A-007:conditions[3]`) and later an `outcome` row for what actually happened
 (`opened:path:40-58`, `rewrote_intent`, `accepted`). Rows never carry document text or credentials, so the log
 can be read to calibrate thresholds without leaking what was judged.
+
+**What the dogfooding actually showed.** Semantic evidence selection and explicit abstention are the two behaviors that earned their cost in controlled use: a content-chunk judgment that removed a large read, and a no-answer that correctly rejected a false lead. Filename-only ranking ahead of a known authority or a direct symbol lookup did not: in a fixed comparison it missed the authoritative file twice while a deterministic comparator found it, so it is navigation, not content evidence. Composed `found`/complete labels overstated completeness and are read as partial until the actual sources are inspected. A purpose-retrieval wrapper and injecting track criteria into every retrieval were both prototyped and **not adopted**: the criteria arm cost +460/+610 tokens for zero coverage gain, and the wrapper did not beat the deterministic comparator. No total-agent token or time saving is measured or claimed anywhere in this project; costs here are per-call input tokens and visible bytes.
 
 **Define your own moment.** Built-in moments and yours share one shape, declared in the `jev` block:
 
@@ -400,6 +404,7 @@ bun run check
 - [Architecture](docs/ARCHITECTURE.md)
 - [Configuration schema](config.schema.json)
 - [Configuration example](config.example.json)
-- [Delegation skill](skills/herdr-delegation/SKILL.md)
+- [Track creation skill](skills/herdr-create/SKILL.md)
+- [Orchestrator skill](skills/herdr-orch/SKILL.md)
 - [Build your own Jev judgment](skills/build-your-own-jev/SKILL.md)
 - [Skill disposition](docs/SKILL-DISPOSITION.md)

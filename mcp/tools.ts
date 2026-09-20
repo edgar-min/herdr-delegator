@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { materializeGuidance, materializeWorkerGuidance, materializeWorkerRoleSkill } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
+import { materializeGuidance, materializeWorkerGuidance, materializeWorkerRoleSkill, requireBackingRecord, workerPackagedDelivery } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -993,6 +993,20 @@ function frictionHintFor(tool: ToolName, code: string, retryable: boolean): stri
   if (count < FRICTION_HINT_THRESHOLD) return undefined;
   return `Error '${code}' has recurred ${count} times this session. If the contract itself — not this call's input — is the obstacle, record it once via herdr_friction {action:"report"} after resolving or abandoning this path; do not report every error.`;
 }
+
+/**
+ * Required-delivery input failures: the run's backing record, the packaged
+ * role skill, and the profile that selects one. They are refusals about input,
+ * not about the work already registered, so a caller that has already changed
+ * registry state reports the retained state instead of letting the generic
+ * `effect: "none"` imply nothing happened.
+ */
+const DELIVERY_INPUT_CODES: Record<string, true> = {
+  backing_record_unavailable: true,
+  role_skill_unavailable: true,
+  worker_profile_unsupported: true,
+  run_init_conflict: true,
+};
 
 function resultError(tool: ToolName, action: string, run: RunRef, error: unknown): McpResult {
   const failure = (code: string, phase: ErrorPhase, message: string, recovery: string, ambiguous: boolean, retryable: boolean): McpResult => {
@@ -2048,10 +2062,14 @@ export class CompositeTools {
       `creator verification: ${stampedCreator.verified === false ? "unverified (omp_fact_bridge_mismatch)" : "attested"}`,
       "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
-    // Advisory delivery surface, never a gate: the document is rendered (or
-    // degrades to a document naming its own failure) before the spawn, and only
-    // a failed write is reported — open proceeds either way.
-    const guidance = await materializeGuidance(store.runPath);
+    // Advisory delivery surface, never a gate: on a pre-packaged run the
+    // document is rendered (or degrades to a document naming its own failure)
+    // before the spawn, and only a failed write is reported — open proceeds
+    // either way. A packaged run materializes nothing: its advisory criteria
+    // ride inline in the first prompt.
+    const guidance = (await requireBackingRecord(store.runPath, "protocol-orch.md")).packaged
+      ? { warning: undefined }
+      : await materializeGuidance(store.runPath);
 
     const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
@@ -2153,8 +2171,12 @@ export class CompositeTools {
       retired = retirement.observation;
     }
     // A revived ORCH — resumed or reborn — must see the configuration that is
-    // current now, not the rendering its first birth got. Best-effort as at open.
-    const guidance = await materializeGuidance(store.runPath);
+    // current now, not the rendering its first birth got. Best-effort as at
+    // open, and skipped entirely on a packaged run, which carries its criteria
+    // inline instead of in a run artifact.
+    const guidance = (await requireBackingRecord(store.runPath, "protocol-orch.md")).packaged
+      ? { warning: undefined }
+      : await materializeGuidance(store.runPath);
 
     const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id });
     const observedSession = stringField(started.orchestrator, ["session_id"]);
@@ -3104,6 +3126,20 @@ export class CompositeTools {
     const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
     const artifactPath = path.join(store.runPath, "a2a", "assignments", `${assignmentId}.md`);
     const reportPath = path.join(store.runPath, "a2a", `${workerId}-report.md`);
+    // The lane's profile and its display-only label both live in the canonical
+    // assignment artifact rather than mirrored in the registry, so one read
+    // serves both. An unreadable artifact leaves the profile unknown, which
+    // delivers only unscoped advisory rules — an advisory lookup never widens
+    // delivery on a failed read, and never blocks the dispatch it decorates.
+    const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
+    const laneProfile = artifact?.assignment.profile;
+    // Required instructions are resolved BEFORE any prompt-side state change:
+    // on a packaged run the profile selects an installed skill, so an unknown
+    // profile or an unreadable package fails here, with the assignment still
+    // registered and the lane still idle, rather than after the lane has been
+    // marked working. The advisory half degrades to a warning either way.
+    const packagedWorker = await workerPackagedDelivery(store.runPath, laneProfile);
+    if (packagedWorker?.warning) warnings.push(packagedWorker.warning);
     const promptedAt = nowIso();
     let registry = await store.mutate(timeoutMs, (next) => {
       next.assignments[assignmentId].state = "prompting";
@@ -3116,36 +3152,27 @@ export class CompositeTools {
     // to be delivered and cannot be recalled, and the worker holds the hashes.
     const dispatchDrift = await observeReferenceDrift(store, registry, registry.assignments[assignmentId]);
     if (dispatchDrift) warnings.push(dispatchDrift);
-    // The lane's profile and its display-only label both live in the canonical
-    // assignment artifact rather than mirrored in the registry, so one read
-    // serves both. An unreadable artifact leaves the profile unknown, which
-    // delivers only unscoped rules — an advisory lookup never widens delivery
-    // on a failed read, and never blocks the dispatch it decorates.
-    const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
-    const laneProfile = artifact?.assignment.profile;
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
-    // The lane's own documents, materialized at dispatch — including FIFO
-    // promotion — so they carry the configuration current now. A run whose
-    // protocol document is a marked role template gets one generated worker
-    // skill that already contains this lane's advisory text; a run created
-    // before role skills keeps the protocol-plus-guidance pair it was created
-    // with. Absence stays a no-op on that legacy path: an unknown profile, a
-    // profile the configuration gives neither a directive nor a route, and a
-    // failed render or write all name no path, so the pointer omits the clause.
-    const laneRoleSkill = await materializeWorkerRoleSkill(store.runPath, workerId, laneProfile);
+    // A marked role-template run keeps generating one worker skill from its own
+    // body, and a run created before role skills keeps the protocol-plus-
+    // guidance pair it was created with, where absence stays a no-op: an
+    // unknown profile, a profile with neither directive nor route, and a failed
+    // render or write all name no path, so the pointer omits the clause.
+    const laneRoleSkill: { path?: string; warning?: string } = packagedWorker
+      ? {}
+      : await materializeWorkerRoleSkill(store.runPath, workerId, laneProfile);
     if (laneRoleSkill.warning) warnings.push(laneRoleSkill.warning);
-    const laneGuidance = !laneRoleSkill.path && laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
+    const laneGuidance = !packagedWorker && !laneRoleSkill.path && laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
     if (laneGuidance.warning) warnings.push(laneGuidance.warning);
     // The pointer is the worker's first display surface, so it names the full
     // coordinate — A-001 exists in dozens of runs and only <track>/<run>/<id>
     // tells them apart — and the artifact's label when it has one. Identity
     // stays numeric where it is parsed: the completion block the worker must
     // append carries the bare ID, never the coordinate and never the label.
-    const roleDocument = laneRoleSkill.path
-      ? `worker skill ${laneRoleSkill.path}`
-      : `worker protocol ${workerProtocolPath}`;
-    const wakeReference = laneRoleSkill.path ? "your worker skill" : "protocol-worker.md";
-    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; ${roleDocument}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per ${wakeReference}.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
+    const roleSkillPath = packagedWorker?.skillPath ?? laneRoleSkill.path;
+    const roleDocument = roleSkillPath ? `worker skill ${roleSkillPath}` : `worker protocol ${workerProtocolPath}`;
+    const wakeReference = roleSkillPath ? "your worker skill" : "protocol-worker.md";
+    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; ${roleDocument}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per ${wakeReference}.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}${packagedWorker?.advisory ? `\n\n${packagedWorker.advisory}` : ""}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
@@ -3235,8 +3262,19 @@ export class CompositeTools {
       warnings.push(`Promoted assignment ${headId} not dispatched: lane ${workerId} lacks canonical agent or pane coordinates.`);
       return undefined;
     }
-    warnings.push(`Promoted queued assignment ${headId} dispatched to ${workerId}.`);
-    return this.promptAssignment(store, run, workerId, headId, agentName, paneId, until, timeoutMs, warnings);
+    // A promoted head is secondary work of the caller's own boundary, so a
+    // required-delivery input failure here must not erase that boundary's
+    // honest result: the head stays queued, nothing was prompted, and the
+    // caller reports both facts as a warning.
+    try {
+      const dispatched = await this.promptAssignment(store, run, workerId, headId, agentName, paneId, until, timeoutMs, warnings);
+      warnings.push(`Promoted queued assignment ${headId} dispatched to ${workerId}.`);
+      return dispatched;
+    } catch (error) {
+      if (!(error instanceof LegacyContractError) || !DELIVERY_INPUT_CODES[error.code]) throw error;
+      warnings.push(`Promoted assignment ${headId} was NOT dispatched and remains queued on ${workerId}: ${error.message} ${error.recovery}`);
+      return undefined;
+    }
   }
 
   async assignment(input: HerdrAssignmentInput): Promise<McpResult> {
@@ -3258,10 +3296,15 @@ export class CompositeTools {
           return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound, ...registeredJev } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
-        // Both authoring-time refusals, before anything is registered: the
-        // profile a live lane cannot run (friction 17b7fd5328871a88) and a
-        // `# References` bullet whose document is unpinnable or has moved on.
+        // Three authoring-time refusals, before anything is registered: the
+        // profile a live lane cannot run (friction 17b7fd5328871a88), a
+        // `# References` bullet whose document is unpinnable or has moved on,
+        // and — on a packaged run — a profile or installed role skill that
+        // could never be delivered. The last one is read-only capability, not
+        // a new schema: it resolves exactly what dispatch will resolve, so the
+        // refusal arrives while the assignment ID is still unconsumed.
         await assertLaneProfile(store, registry, artifact.assignment);
+        await workerPackagedDelivery(store.runPath, artifact.assignment.profile);
         const references = artifact.assignment.references ? await observeReferences(store.runPath, artifact.assignment.references) : [];
         assertReferencesPinned(input.assignment_id, references);
         const predicted = await store.predictLane(registry, input.responsibility_key);
@@ -3303,12 +3346,17 @@ export class CompositeTools {
         // assignment behind a completed one (friction bbc360a158e3a3bf).
         const sweepWarnings: string[] = [];
         await sweepSettlements(store, run, await store.read(), sweepWarnings);
-        // Both pre-commit refusals again, on the path an ORCH may reach without
+        // The same pre-commit refusals on the path an ORCH may reach without
         // ever calling preflight. They run BEFORE `select`, so a refusal leaves
-        // the assignment ID unconsumed and the artifact re-authorable in place.
+        // the assignment ID unconsumed, the artifact unsealed and re-authorable
+        // in place, and no lane started. The packaged-delivery capability is
+        // checked here too: registering an assignment whose profile or role
+        // skill can never be delivered would make an immutable record of work
+        // nobody can dispatch.
         const addArtifact = await store.assignmentFile(input.assignment_id, input.responsibility_key, input.instructions_sha256);
         const preAdd = await store.read();
         if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment, input.separation);
+        await workerPackagedDelivery(store.runPath, addArtifact.assignment.profile);
         const addReferences = addArtifact.assignment.references ?? [];
         assertReferencesPinned(input.assignment_id, await observeReferences(store.runPath, addReferences));
         const addJev = await jevAttachment(async () => compactAuthoring(await judgeAuthoring({ file: addArtifact.path })));
@@ -3372,7 +3420,31 @@ export class CompositeTools {
         if (!agentName || !paneId) throw new McpContractError("worker_identity_conflict", "Ensured worker lacks canonical agent or pane coordinates.", "attest", "Inspect the lifecycle registry before prompting.");
         const warnings: string[] = [...sweepWarnings];
         const until = input.wait?.until ?? ["idle", "done", "blocked"];
-        registry = await this.promptAssignment(store, run, lane.worker_id, input.assignment_id, agentName, paneId, until, timeout(input), warnings);
+        // The capability gate above ran before `select`, so reaching this point
+        // and still failing on required delivery input means the package or the
+        // backing record was lost in between. The registration, the seal and
+        // possibly a live lane are real, so the failure reports the retained
+        // state rather than the generic `effect: "none"`, which would read as
+        // "nothing happened" for work the registry is now holding.
+        try {
+          registry = await this.promptAssignment(store, run, lane.worker_id, input.assignment_id, agentName, paneId, until, timeout(input), warnings);
+        } catch (error) {
+          if (!(error instanceof LegacyContractError) || !DELIVERY_INPUT_CODES[error.code]) throw error;
+          const retained = await store.read();
+          const failed = resultError("herdr_assignment", input.action, run, error);
+          return {
+            ...failed,
+            effect: "confirmed",
+            registry_revision: retained.revision,
+            worker: retained.lanes[lane.worker_id],
+            assignment: { assignment_id: input.assignment_id, state: retained.assignments[input.assignment_id].state },
+            data: {
+              ...(failed.data ?? {}),
+              ...addData.data,
+              retained_effect: `${input.assignment_id} is registered and sealed on lane ${lane.worker_id} in state ${retained.assignments[input.assignment_id].state}; no prompt was sent and the lane was not told about it. Repair the named delivery input, then dispatch the retained assignment through herdr_assignment wait or the next guarded call — do not re-add it.`,
+            },
+          };
+        }
         // BUD-004 stands through the carve-out: an admitted emergency buys THIS
         // registration and nothing more, so a promoted head — which is new work
         // nobody claimed an emergency for — stays queued while the run is parked.
@@ -3396,7 +3468,7 @@ export class CompositeTools {
       if (assignment.state === "queued") {
         const queuedWarnings: string[] = [];
         const dispatched = budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
-        if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
+        if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" }, ...(queuedWarnings.length ? { data: { warnings: queuedWarnings } } : {}) };
         const fresh = dispatched.assignments[input.assignment_id];
         const dispatchSettlement = settlementObservation(fresh, queuedWarnings.length ? queuedWarnings.join(" | ") : undefined);
         const dispatchRoutes = fresh.state === "completed" || fresh.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];

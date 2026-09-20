@@ -6,15 +6,17 @@ The plugin combines Jev judgments with role-specific operating skills. A judgmen
 
 | Reader | Instructions | Delivery |
 |---|---|---|
-| Creator outside the new run | `skills/herdr-delegation/SKILL.md` | Decide whether to create a track; use run-independent rank/check/escalate, distill WHAT/WHY, make one initial open, then retire to the born ORCH. |
-| Born ORCH | `skills/herdr-delegation/templates/protocol-orch.md` | A marked run produces `role-skills/orchestrator/SKILL.md`, combining the standalone role body with advisory ORCH configuration and profile-selection information. |
-| Responsibility worker | `skills/herdr-delegation/templates/protocol-worker.md` | A marked run produces `role-skills/workers/<worker_id>/SKILL.md`, combining the standalone role body with only that lane's configured profile advice. |
+| Creator outside the new run | `skills/herdr-create/SKILL.md` | Explicitly loaded. Decide whether to create a track; use run-independent rank/check/escalate, distill WHAT/WHY, make one initial open, then retire to the born ORCH. |
+| Born ORCH | `skills/herdr-orch/SKILL.md` | The spawn resolves this installed path and names it in the first prompt, with configured ORCH advice and profile-selection metadata inline. |
+| Responsibility worker | `skills/herdr-default-worker/SKILL.md`, `skills/herdr-task-worker/SKILL.md`, `skills/herdr-slow-worker/SKILL.md` | Dispatch, including FIFO promotion, resolves the installed skill the assignment's profile selects and names it in the lane's prompt, with only that profile's advice inline. |
 | Configuration operator | `skills/herdr-config/SKILL.md` | Query effective layers and provenance, preview and validate changes, then apply only approved configuration edits. |
 | Jev developer | `skills/build-your-own-jev/SKILL.md` | Implement fixed judgments through existing client/budgets/logging and retain lessons supported by actual observations. |
 
-Generated role skills use explicit run-local paths, not global registration or a fixed list of profile names. Mandates and assignments remain separate real inputs. The sealed protocol files remain machine-owned contract inputs; new sessions using marked templates do not need a common-protocol/guidance reading chain. Accepted historical unmarked runs retain their original reading behavior. Unknown protocol bytes still fail closed: A-012 rejected the earlier unshipped hint-only worker pilot; the current authorized worker pilot now matches the accepted template.
+Each packaged role skill is complete on its own: no mandatory include, no generated artifact and no other role's document supplies a duty. Mandates and assignments remain separate real inputs. A new run materializes no role or guidance artifact at all; its backing records are machine selection records whose bytes choose that delivery, and they carry no operating instructions.
 
-Required role instructions remain present when advisory rendering fails; failure to write required instructions is fatal. Regenerating a file is not evidence that an already-prompted session reread it. The actual 3.11.0 package includes the separate configuration/development skills and their scripts; A-015 exercised the packaged configuration read/preview path and passed the fixed-source repository check.
+Historical runs are unchanged: a marked role-template run still generates its run-local role skill from its own body, and an older unmarked run keeps the common-protocol/guidance chain. Unknown protocol bytes still fail closed, and no historical run file is rewritten. A-012 rejected the earlier unshipped hint-only worker pilot; that behavior is retained.
+
+Advisory absence or failure never removes a required duty. Delivery is classified only over a backing record that was read canonically and accepted by the shipped-digest rule, so a missing, unreadable or tampered record refuses instead of selecting a historical branch. A missing or unreadable packaged skill, or an assignment profile with no packaged skill, is refused as a capability at `preflight` and again in `add` before the assignment is registered or sealed, with the dispatch-time recheck kept for a later loss; when that late recheck fires, the result names the retained registered assignment instead of reporting no effect. Pointing at a document is not evidence that a session read it. The actual 3.11.0 package includes the separate configuration/development skills and their scripts; A-015 exercised the packaged configuration read/preview path and passed the fixed-source repository check.
 
 ## External routes and retained responsibilities
 
@@ -45,7 +47,7 @@ The pilot began with eight user-layer rules containing twelve distinct external 
 | `mandela` | Preserve independent-ground-truth checks. Worker self-rating, model agreement and designer-written fixtures have distinct evidentiary limits. |
 | `re0` | Keep the plan and final documents current rather than retaining contradictory amendments. This run consolidated its plan; that is not a measured efficiency claim. |
 | `arch-mentor` | Preserve understandable explanations of design decisions in the human's language. A personal concept-wiki tutoring workflow is not introduced as a mandatory delegation dependency. |
-| `herdr-delegation` | Retain as the plugin's creator skill, not an operating guide for already-born ORCH/workers. |
+| `herdr-create` | Retain as the plugin's creator skill, not an operating guide for already-born ORCH/workers. |
 | `herdr-config` | Retain actual loader/query/preview operations; configuration provenance cannot be replaced by semantic inference. |
 | `build-your-own-jev` | Retain for development, with actual-use lessons rather than user directions recast as measured principles. |
 

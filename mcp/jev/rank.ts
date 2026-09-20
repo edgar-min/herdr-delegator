@@ -2,6 +2,7 @@
 // Returns every candidate ordered by probability — never truncated by a threshold; the caller decides.
 import { readFileSync } from "node:fs";
 import { ask, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
+import { jevConfig } from "./config.js";
 import { blocksOfText, chunk, type Chunk } from "./chunk.js";
 import { append, requestId, type DecisionRow } from "./log.js";
 import { QUESTION_VERSION, rankQuestions } from "./questions.js";
@@ -52,7 +53,10 @@ async function judge(intent: string, kind: "path" | "chunk", items: Item[], tool
     }
     const state = { intent, items: group.map((it, index) => (kind === "path" ? { index, path: it.path } : { index, title: it.title, text: it.text })) };
     const questions: Record<string, Question> = rankQuestions(group.length, kind);
-    const response = await ask(state, questions, options);
+    // The configured model is the resolver's answer for this working directory
+    // (project > user > environment > default); an explicit option still wins,
+    // because `options` is spread last.
+    const response = await ask(state, questions, { model: jevConfig().model, ...options });
     requests++;
     input_tokens += response.usage?.input_tokens ?? 0;
     model = response.model;
@@ -81,9 +85,18 @@ export async function rankPaths(intent: string, paths: string[], options: AskOpt
   return { intent, ...r };
 }
 
-/** Rank the chunks of one or more files. `topK` limits how many of the given paths (in given order) are chunked. */
+/**
+ * Rank the chunks of one or more files. `topK` bounds the INPUT: it is the
+ * number of given paths, in given order, whose chunks are read and judged. It
+ * never truncates output — every judged chunk is returned in probability order
+ * — and every path it excludes is reported in `unevaluated` with that reason,
+ * so a caller can never mistake an unjudged file for an irrelevant one.
+ */
 export async function rankChunks(intent: string, paths: string[], options: AskOptions & { topK?: number; maxChunkChars?: number } = {}): Promise<RankOutput> {
   const chosen = options.topK ? paths.slice(0, options.topK) : paths;
+  const excludedByLimit: Unevaluated[] = paths
+    .slice(chosen.length)
+    .map((path) => ({ path, reason: `excluded by top=${options.topK}: top bounds how many of the ${paths.length} given paths are read and judged, in the order given; it is not an output limit` }));
   const items: Item[] = [];
   const unevaluated: Unevaluated[] = [];
   for (const path of chosen) {
@@ -97,7 +110,7 @@ export async function rankChunks(intent: string, paths: string[], options: AskOp
     for (const c of chunk(text, path, options.maxChunkChars)) items.push({ index: items.length, path, range: { start: c.start, end: c.end }, title: c.title, text: c.text });
   }
   const r = await judge(intent, "chunk", items, "rank", options);
-  return { intent, ...r, unevaluated: [...unevaluated, ...r.unevaluated] };
+  return { intent, ...r, unevaluated: [...excludedByLimit, ...unevaluated, ...r.unevaluated] };
 }
 
 /** Rank blocks of an in-memory text (tool output, transcript) against an intent. `path` is only a label for logs. */

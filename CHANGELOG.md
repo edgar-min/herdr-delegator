@@ -17,15 +17,29 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 
 ### Added
 
-- Standalone generated ORCH and worker role skills, with the worker's actual configured profile embedded rather than every profile. Marked runs receive one role-skill instruction path; historical unmarked contracts retain their existing protocol/guidance paths.
+- Five installed role skills — `herdr-create`, `herdr-orch`, `herdr-default-worker`, `herdr-task-worker`, `herdr-slow-worker` — each carrying the complete operating duties of one role. A new run points its ORCH and each dispatched lane at the installed skill for that role and profile, and materializes no role or guidance artifact; configured advisory criteria are delivered inline in the same prompt, with the ORCH's own advice and profile-selection table separated from a lane's own profile advice.
+- Evidence-backed Jev usage guidance in every role skill: no ranking of known pointers, short mandatory documents or already-read material, no model call where a parser, filter or hash settles the question, no duplicate call for a judgment already attached to a response, content ranking preferred where filenames do not encode the answer, and outcome records that name the actual effect on reading or decisions.
 - Jev intake and plan judgments over canonical run documents, request IDs on compact authoring/settlement observations, and identifier-only outcome recording and accounting summaries. Counts and model judgments are advisory, not accuracy or acceptance measurements.
-- Packaged configuration and Jev-development skills alongside the creator-only `herdr-delegation` skill.
+- Packaged configuration and Jev-development skills alongside the role skills.
+
+### Changed
+
+- Backing records (`protocol-orch.md`, `protocol-worker.md`) are now machine selection records carrying a packaged-delivery marker, and the bundled templates moved to `skills/herdr-create/templates/`. A run's own accepted bytes still choose its delivery: marked role-template runs keep generating their run-local role skills, unmarked runs keep the protocol-plus-guidance chain, accepted historical digests stay accepted, unknown bytes still fail closed, and no historical run file is rewritten.
+- The creator skill `herdr-delegation` is replaced by `herdr-create`; no alias remains. Publish allowlist, template checker, schema descriptions and docs follow the five packaged skills.
+- `rank`'s `top` is documented and reported for what it is: a bound on how many given paths are read and judged, never an output limit. Every path it excludes now comes back in `unevaluated` with that reason, and `path_only` ignores it because no file is read.
+- Jev usage guidance follows the controlled trial rather than intuition: semantic evidence selection and explicit abstention are retained; filename ranking ahead of a known authority or a direct symbol lookup is removed from mandatory guidance; composed completeness labels are read as partial; the purpose-retrieval wrapper and track-criteria injection are recorded as deferred, not adopted. No total-agent token or time saving is claimed anywhere.
 
 ### Fixed
 
 - Required role instructions survive advisory-render failures; a required role-skill write failure stops delivery rather than silently omitting the contract.
 - Floating-point roundoff at the existing inclusive Jev score-consistency boundary no longer rejects an otherwise valid response. The tolerance policy is unchanged.
 - The MCP SDK rejects unknown Jev input fields before invoking the handler, instead of silently stripping them and allowing an unintended log append (friction `1fb40aa08866ab76`).
+- Required role selection now fails visibly before any prompt-side state change: an unreadable packaged skill, or an assignment profile with no packaged skill, stops the dispatch instead of silently borrowing another role's instructions. Advisory failure still degrades to a warning.
+- Delivery is classified only over required input. The run's backing record is read as a canonical regular file and accepted by the shipped-digest rule before its era is decided, at the one boundary the ORCH spawn, direct dispatch, FIFO promotion and the guidance gate share. A missing, unreadable or tampered record refuses the call before `prompting`, `prompted_at` and any adapter submission instead of silently falling back to a historical branch and pointing a lane at instructions that are not there.
+- The packaged-delivery capability — a supported profile and a readable installed role skill — is checked at `preflight` and in `add` before `select` and sealing, so an assignment nobody could dispatch is never registered. A loss that happens only after registration still refuses to prompt, but now reports the retained assignment state and a recovery naming it, instead of `effect: "none"`; a promoted FIFO head that cannot be delivered stays queued and is reported as a warning on its caller's boundary.
+- Waiting on an undispatched queued head now returns its delivery refusal and recovery in `data.warnings`; it no longer hides the failure behind a successful queued-state observation or claims dispatch before a prompt succeeds.
+- The three worker skills show an unindented completion example and state that the two lines are appended at column 1 without fence or indentation. The parser is unchanged: it was the instruction, not the grammar, that produced invalid completions.
+- The configured `jev.model` now reaches the MCP action, the CLI, the host hooks and the judgments attached to server responses; previously the resolver read the file layers correctly and every adapter dropped the result, so a configured model was silently replaced by the environment value or the default (reproduced in six isolated processes). Resolver precedence and explicit per-call overrides are unchanged.
 
 ## [3.10.0] - 2026-09-20
 

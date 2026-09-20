@@ -169,7 +169,9 @@ export async function judgeAuthoring(input: AuthoringInput, options: AskOptions 
     conditions,
   };
   const questions = authoringQuestions(conditions.length, profiles);
-  const response = await ask(state, questions, options);
+  // Configured model for the working directory this judgment belongs to; an
+  // explicit AskOptions.model still wins because `options` is spread last.
+  const response = await ask(state, questions, { model: jevConfig(cwd).model, ...options });
 
   const scores: ScoreRow[] = [];
   const rows: DecisionRow[] = [];
@@ -399,7 +401,7 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
     stateTokens += cost;
   }
   const state = { ...baseState, owned_diff: fitting.map((item, index) => ({ index, path: item.path, range: item.range, text: item.text })) };
-  const response = await ask(state, questions, options);
+  const response = await ask(state, questions, { model: jevConfig(store.cwd).model, ...options });
 
   const rid = requestId();
   const ts = new Date().toISOString();
@@ -485,7 +487,7 @@ export type EscalateOutput = {
 export async function judgeEscalation(input: EscalateInput, options: AskOptions = {}): Promise<EscalateOutput> {
   const state = { question: input.question, known_context: input.context ?? "" };
   const questions = escalateQuestions();
-  const response = await ask(state, questions, options);
+  const response = await ask(state, questions, { model: jevConfig(process.cwd()).model, ...options });
   const rung = response.answers.rung;
   const blockingAnswer = response.answers.blocking;
   const reversibleAnswer = response.answers.reversible;
@@ -564,7 +566,7 @@ export async function judgeIntake(input: IntakeInput, options: AskOptions = {}):
   };
   const questions = intakeQuestions();
   assertMomentBudget("intake", state, questions);
-  const response = await ask(state, questions, options);
+  const response = await ask(state, questions, { model: jevConfig(store.cwd).model, ...options });
 
   const noul = (id: string): number => {
     const answer = response.answers[id];
@@ -643,7 +645,7 @@ export async function judgePlan(input: PlanInput, options: AskOptions = {}): Pro
   const state = { mandate: mandate.text, plan: plan.text };
   const questions = planQuestions();
   assertMomentBudget("plan", state, questions);
-  const response = await ask(state, questions, options);
+  const response = await ask(state, questions, { model: jevConfig(store.cwd).model, ...options });
 
   const noul = (id: string): number => {
     const answer = response.answers[id];

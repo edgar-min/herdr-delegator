@@ -195,7 +195,7 @@
         },
         "directive": {
           "$ref": "#/$defs/guidanceText",
-          "description": "ORCH-facing execution guidance rendered at the top of guidance.md. Advisory only; never changes authority, scope, or completion conditions."
+          "description": "ORCH-facing execution guidance delivered inline with the orchestrator's first prompt, as the first advisory section (historical runs render it at the top of guidance.md or the generated role skill). Advisory only; never changes authority, scope, or completion conditions."
         }
       }
     },
@@ -219,7 +219,7 @@
         },
         "directive": {
           "$ref": "#/$defs/guidanceText",
-          "description": "Worker-facing execution guidance rendered only to a lane selected with this profile. Advisory only; never changes the assignment contract."
+          "description": "Worker-facing execution guidance delivered inline with the assignment prompt of a lane selected with this profile, and never to another profile. Advisory only; never changes the assignment contract, and never supplies a duty missing from the packaged worker skill."
         }
       }
     },

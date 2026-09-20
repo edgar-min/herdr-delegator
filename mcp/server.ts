@@ -8,6 +8,7 @@ import { mountedBuild } from "./registry";
 import { ASSIGNMENT_ID_GUIDANCE, ASSIGNMENT_RE, COORDINATE_RE, herdrAssignmentInputShape, herdrAssignmentSchema, herdrFrictionInputShape, herdrFrictionSchema, herdrMessageInputShape, herdrMessageSchema, herdrTrackInputShape, herdrTrackSchema, herdrWorkerInputShape, herdrWorkerSchema, type McpResult, type ToolName } from "./contracts";
 import { CompositeTools } from "./tools";
 import { check } from "./jev/check";
+import { jevConfig } from "./jev/config";
 import { judgeAuthoring, judgeEscalation, judgeIntake, judgePlan, judgeSettlement } from "./jev/judge";
 import { rankChunks, rankPaths } from "./jev/rank";
 import { appendOutcome, LOG_IDENTIFIER_RE, summarize } from "./jev/log";
@@ -67,7 +68,7 @@ function invalidToolInput(tool: ToolName, input: unknown, error: ZodError): McpR
  * refuses a published-shape violation before the handler, and the discriminated union below refuses the field
  * combinations one action forbids.
  */
-const JEV_ACTION_DESCRIPTION = `rank: order candidate paths (path_only) or the chunks of those files by the probability that each serves \`intent\`; every candidate comes back in probability order and nothing is dropped by a threshold.
+const JEV_ACTION_DESCRIPTION = `rank: order candidate paths (path_only) or the chunks of those files by the probability that each serves \`intent\`; every candidate comes back in probability order and nothing is dropped by a threshold. \`top\` is an INPUT bound, not an output top-K: it is how many of the given paths, in the order given, are read and chunked, every path beyond it is returned in \`unevaluated\` with that reason, and \`path_only\` ignores it because no file is read.
 judge with moment "authoring": judge a draft or registered assignment before dispatch — three Score questions (purpose understandable without prior context, terms defined or self-evident, next action unambiguous), one Noul per "# Completion conditions" bullet asking whether the condition is observable rather than self-asserted, one Noul for specification maturity, and one Choice over the configured worker profiles whose criteria are their intent strings. Takes track_id+run_id+assignment_id, or file for a draft.
 judge with moment "settlement": judge a reported boundary — per condition one Noul that it is met according to this assignment's segment of the lane report and the diff of its owned paths, plus one Choice over the report paragraphs with a \`none\` sentinel naming the supporting paragraph; one Noul that the report separates claims from evidence; one Noul that the unowned changed paths indicate a change outside declared write ownership; one Score over [reject, requery, accept]. The change set is base..HEAD plus staged, unstaged and untracked paths, base being the last commit before the assignment was dispatched unless base is given; attribution is always "ambiguous" because the working directory is shared.
 judge with moment "escalate": judge whether a question should interrupt a human — one Choice over the ladder [autonomous, machine_check, human] and two Nouls (work cannot safely continue until the question is answered; a wrong autonomous answer could be undone cheaply), combined into one line of ASK HUMAN, decide or observe. Takes a required question and an optional context of what the mandate, plan or evidence already say; it reads no run state, and an approval the human reserved stays mandatory whatever it returns.
@@ -128,7 +129,9 @@ async function jevAction(input: HerdrJevInput): Promise<object> {
   if (input.action === "rank") {
     return input.path_only ? await rankPaths(input.intent, input.paths) : await rankChunks(input.intent, input.paths, { topK: input.top });
   }
-  if (input.action === "check") return await check(input.sentences, input.reference_paths);
+  // `check` lives in the portable low-level half, so its caller supplies the
+  // resolved model rather than the module reading configuration itself.
+  if (input.action === "check") return await check(input.sentences, input.reference_paths, { model: jevConfig().model });
   if (input.action === "log") {
     if (input.op === "outcome") return { op: "outcome", recorded: appendOutcome(input.request_id, input.outcome), advisory: JEV_LOG_ADVISORY };
     return { op: "summary", ...summarize(input.request_ids), advisory: JEV_LOG_ADVISORY };

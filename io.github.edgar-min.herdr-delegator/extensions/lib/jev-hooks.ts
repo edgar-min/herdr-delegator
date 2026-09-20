@@ -64,7 +64,7 @@ export function registerJevHooks(pi: ExtensionAPI): void {
     if (total < THRESHOLD_LINES) return;
     let out;
     try {
-      out = await rankChunks(intent, [abs]);
+      out = await rankChunks(intent, [abs], { model: JEV.model });
     } catch {
       return; // no key, budget, or network: the plain read proceeds untouched
     }
@@ -135,7 +135,7 @@ async function rankGlobResult(input: { i?: string }, content: ReadonlyArray<{ ty
   const paths = text.split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#") && !l.endsWith("/") && !l.includes(" "));
   if (paths.length < GLOB_MIN_HITS) return;
   try {
-    const out = await rankPaths(input.i, paths.slice(0, 400));
+    const out = await rankPaths(input.i, paths.slice(0, 400), { model: JEV.model });
     const top = out.results.slice(0, 10).map((r) => `  ${r.p.toFixed(2)} ${r.path}`).join("\n");
     return `\n[jev] top paths for intent (${out.results.length} judged):\n${top}`;
   } catch {
@@ -159,7 +159,7 @@ async function filterLargeOutput(tool: string, input: { i?: string; path?: strin
   if (lines.length < OUTPUT_MIN_LINES) return;
   let out;
   try {
-    out = await rankText(input.i, text, `${tool}-output`);
+    out = await rankText(input.i, text, `${tool}-output`, { model: JEV.model });
   } catch {
     return;
   }

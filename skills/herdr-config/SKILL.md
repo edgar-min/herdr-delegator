@@ -5,7 +5,7 @@ description: Observe, understand, and modify the herdr-delegator config of the c
 
 # herdr-config (v0)
 
-This skill covers configuration resolved for the current project. Installation belongs to the README, track creation to herdr-delegation, and run operation to the supplied ORCH or worker role skill.
+This skill covers configuration resolved for the current project. Installation belongs to the README, track creation to herdr-create, and run operation to the packaged ORCH or worker role skill.
 
 ## Where — layer observation (the first act is a query, not a document read)
 
@@ -17,19 +17,19 @@ This skill covers configuration resolved for the current project. Installation b
 
 ## What — fields and where they land
 
-Config supplies advisory content, not the required role contract. For marked role templates it is embedded under `Advisory configuration` in the generated skill. Historical unmarked ORCH/worker roles retain `guidance.md` / `guidance-<profile>.md` respectively. Edit config, never its generated projection:
+Config supplies advisory content, not the required role contract. On a current run it is delivered inline with the prompt that reads it; historical marked-role runs embed it under `Advisory configuration` in the generated skill, and older unmarked runs keep `guidance.md` / `guidance-<profile>.md`. Edit config, never its projection:
 
 | config coordinate | lands in | render timing |
 | --- | --- | --- |
-| `skill_routing.skills.<name>` (`intent`, `trigger`) | the routed skill line's description text | next render of that document |
-| `skill_routing.rules` | ORCH rules in `role-skills/orchestrator/SKILL.md`; selected-profile rules in `role-skills/workers/<worker_id>/SKILL.md` | ORCH at open·revive; worker at dispatch |
-| `orchestrator.directive` | ORCH skill's advisory `Orchestrator directive` section | at open·revive |
-| `worker_profiles.<p>.intent` | ORCH skill's profile-selection table, not other workers' execution guidance | at open·revive |
-| `worker_profiles.<p>.directive` | that profile's worker skill advisory section | at dispatch, including FIFO |
+| `skill_routing.skills.<name>` (`intent`, `trigger`) | the routed skill line's description text | next delivery of that projection |
+| `skill_routing.rules` | ORCH rules in the orchestrator's inline advisory block; selected-profile rules in that lane's inline advisory block | ORCH at open·revive; worker at dispatch |
+| `orchestrator.directive` | the ORCH advisory `Orchestrator directive` section | at open·revive |
+| `worker_profiles.<p>.intent` | the ORCH's profile-selection table, not other workers' execution guidance | at open·revive |
+| `worker_profiles.<p>.directive` | that profile's lane advisory section, and no other profile's | at dispatch, including FIFO |
 | `orchestrator.role`, `worker_profiles.<p>.role` | role resolution at spawn | next spawn |
 | `storage.root` | run storage location `<root>/<track>/<run>` | new tracks onward |
 
-Directive and route text is advisory: it changes no scope, authority, ownership or completion condition; an uninstalled routed skill is a reader-side no-op. Required role instructions are not optional: advisory failure preserves their body with a warning, while a required skill write failure stops delivery. Regeneration does not mean an already-prompted live ORCH reread the file.
+Directive and route text is advisory: it changes no scope, authority, ownership or completion condition; an uninstalled routed skill is a reader-side no-op. Required role instructions are not optional and are never configured: they are the installed packaged role skills. Advisory failure leaves those instructions intact with a warning, while an unresolvable required role skill or profile fails the call before any prompt effect. Delivering a pointer does not mean an already-prompted live session read it.
 
 ## How — the three scripts (observe, attribute, edit)
 
@@ -41,14 +41,14 @@ predicate by hand.
 | --- | --- |
 | `bun skills/herdr-config/scripts/drift.ts <run-path>` | Are this run's three protocol documents the installed text? Prints `document / run sha256 / installed sha256 / verdict`, where the verdict is `current`, `historical (…)`, or `unknown (…)` from the run loader's own acceptance rule. |
 | `bun skills/herdr-config/scripts/routes.ts <cwd> [run-path]` | What is in effect and which layer set it? Prints the orchestrator directive, every worker profile's `intent`/`directive`, every effective route with its authored shape, and every per-skill `intent`/`trigger`, each attributed to the layer that declared it. |
-| `bun skills/herdr-config/scripts/directive.ts <cwd> --set "<text>" [--layer project\|user] [--apply]` | Validates the directive through the real loader in a throwaway root and previews its advisory rendering in the historical `guidance.md` format, not a complete role skill. Without `--apply` nothing is written; rejected values retain the parser's `invalid_config` message. |
+| `bun skills/herdr-config/scripts/directive.ts <cwd> --set "<text>" [--layer project\|user] [--apply]` | Validates the directive through the real loader in a throwaway root and previews its advisory rendering in the historical `guidance.md` format — the same content blocks a current run delivers inline, not a complete role skill. Without `--apply` nothing is written; rejected values retain the parser's `invalid_config` message. |
 
 Common procedure (mandatory before any write):
 
 1. The default edit target is project `<repo>/.omp/herdr-delegator.json`. Observe the user and run layers, but do not write them unless the user explicitly names that layer.
 2. Attribute first: run `routes.ts` and read which layer currently sets the coordinate you are about to change. A value you did not author usually comes from the user layer, and editing the project layer will not remove it.
-3. Validate and preview before writing. `directive.ts` without `--apply` validates a proposed directive and previews its advisory text. For other coordinates use the real `loadDelegatorConfig` from `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` in an isolated proposed-config root; an unknown key fails under `assertExactKeys`. Preview the applicable role from its accepted backing body using `roleSkillBody` and `renderOrchRoleSkill(body, config)` / `renderWorkerRoleSkill(body, config, profile)` in `…/lib/{templates,guidance}.ts`. For an unmarked historical role, use `renderGuidanceDocument(config)` / `renderWorkerGuidanceDocument(config, profile)`. Do not silently upgrade old run contracts.
-4. If approved and clean, write the intended layer, re-load and compare the intended effective change. `directive.ts --apply` performs its directive write/reload/advisory preview. Actual role output refreshes at ORCH open·revive and worker dispatch; historical roles retain their guidance paths. Do not claim active-session consumption without observing it.
+3. Validate and preview before writing. `directive.ts` without `--apply` validates a proposed directive and previews its advisory text. For other coordinates use the real `loadDelegatorConfig` from `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` in an isolated proposed-config root; an unknown key fails under `assertExactKeys`. For a current packaged run the advisory blocks a prompt carries are exactly what `renderGuidanceDocument(config)` (ORCH) and `renderWorkerGuidanceDocument(config, profile)` (lane) render, without the document chrome. For a historical marked-role run, preview through `roleSkillBody` plus `renderOrchRoleSkill(body, config)` / `renderWorkerRoleSkill(body, config, profile)` in `…/lib/{templates,guidance}.ts`. Do not silently upgrade old run contracts.
+4. If approved and clean, write the intended layer, re-load and compare the intended effective change. `directive.ts --apply` performs its directive write/reload/advisory preview. Advice reaches a session at the next ORCH open·revive or worker dispatch; historical runs keep their own delivery. Required role instructions are the installed packaged skills and are never produced by configuration. Do not claim active-session consumption without observing it.
 
 Scenario A — adding a skill route:
 

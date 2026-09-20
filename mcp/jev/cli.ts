@@ -10,6 +10,7 @@
 //   bun mcp/jev/cli.ts check --sentence "<text>" [--sentence "<text>"...] --ref <path> [--ref <path>...]
 //   flags: --json  --min <p> (display filter only; nothing is dropped from --json)
 import { check, type CheckOutput } from "./check.js";
+import { jevConfig } from "./config.js";
 import { judgeAuthoring, judgeEscalation, judgeSettlement, type AuthoringOutput, type EscalateOutput, type SettlementOutput } from "./judge.js";
 import { SETTLEMENT_ACTIONS } from "./questions.js";
 import { rankChunks, rankPaths, type RankOutput } from "./rank.js";
@@ -17,6 +18,7 @@ import { rankChunks, rankPaths, type RankOutput } from "./rank.js";
 const USAGE = [
   "usage:",
   "  cli.ts rank --intent <text> [--paths | --top N] [--glob <pattern> --root <dir>] [--json] [--min p] <path>...",
+  "    --top N bounds the INPUT: the first N given paths are read and chunked; the rest are reported in unevaluated. It is not an output top-K, and --paths (path-only) ignores it.",
   "  cli.ts judge --moment authoring|settlement (--file <path> | --track <id> --run <id> --assignment <A-nnn>) [--base <rev>] [--json]",
   "  cli.ts check --sentence <text> [--sentence <text>...] --ref <path> [--ref <path>...] [--json]",
 ].join("\n");
@@ -224,7 +226,7 @@ if (action === "rank") {
     console.error("check needs at least one --sentence and one --ref");
     process.exit(2);
   }
-  const out = await check(flags.sentences, flags.refs);
+  const out = await check(flags.sentences, flags.refs, { model: jevConfig().model });
   console.log(flags.json ? JSON.stringify(out, null, 1) : checkTable(out));
 } else {
   console.error(USAGE);

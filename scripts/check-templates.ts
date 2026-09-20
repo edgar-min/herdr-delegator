@@ -10,12 +10,13 @@
  * template's own digest must appear in its own list, and each list must be
  * sorted and duplicate-free so the header's regeneration command reproduces it.
  *
- * A role template carries a second contract: its frontmatter `name` is what the
- * runtime reads to decide that a run gets one generated role skill instead of
- * the protocol-plus-guidance pointers. Dropping or renaming that marker would
- * silently send every new run back to the legacy chain, so it is checked here
- * against the same names `extensions/lib/templates.ts` publishes.
- *
+ * A backing record carries a second contract: its frontmatter marker is what
+ * the runtime reads to decide which delivery a run gets. The shipped records
+ * must select packaged delivery — installed `skills/herdr-<role>/SKILL.md` —
+ * so a dropped or renamed marker would silently send every new run back to a
+ * historical chain. That marker is checked here against the same values
+ * `extensions/lib/templates.ts` publishes, and every packaged role skill must
+ * exist with a frontmatter name matching its directory.
  * Dependency-free by design: it runs inside `bun run check` before anything else
  * is installed. Pass a directory to check a copy of the tree instead of the
  * repository itself.
@@ -27,11 +28,13 @@ import { fileURLToPath } from "node:url";
 
 const TEMPLATE_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
 const ALLOWLIST_PATH = "io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts";
-const TEMPLATE_DIR = "skills/herdr-delegation/templates";
-const ROLE_SKILL_TEMPLATE_NAMES: Record<string, string> = {
-  "protocol-orch.md": "herdr-orchestrator",
-  "protocol-worker.md": "herdr-worker",
+const TEMPLATE_DIR = "skills/herdr-create/templates";
+const PACKAGED_DELIVERY_MARKER = "herdr-packaged-role-skills/1";
+const PACKAGED_DELIVERY_ROLES: Record<string, string> = {
+  "protocol-orch.md": "orchestrator",
+  "protocol-worker.md": "worker",
 };
+const PACKAGED_ROLE_SKILLS = ["herdr-create", "herdr-orch", "herdr-default-worker", "herdr-task-worker", "herdr-slow-worker"] as const;
 
 /** Parses `HISTORICAL_TEMPLATE_SHA256` without importing it, so this stays a pure text check. */
 function parseAllowlist(source: string): Map<string, string[]> {
@@ -90,15 +93,32 @@ for (const name of TEMPLATE_NAMES) {
       `${name}: installed template digest ${digest} is missing from its allowlist. Append it — and the digest the previous commit shipped — never replace the list, or every run created on an earlier version stops loading and reviving.`,
     );
   }
-  const expectedRoleName = ROLE_SKILL_TEMPLATE_NAMES[name];
-  if (expectedRoleName) {
-    const front = /^---\n([\s\S]*?)\n---\n/.exec(installed.toString("utf8"));
-    const declared = front ? /^name:[ \t]*(\S+)[ \t]*$/m.exec(front[1])?.[1] : undefined;
-    if (declared !== expectedRoleName) {
+  const expectedRole = PACKAGED_DELIVERY_ROLES[name];
+  if (expectedRole) {
+    const front = /^---\n([\s\S]*?)\n---\n/.exec(installed.toString("utf8"))?.[1];
+    const delivery = front ? /^delivery:[ \t]*(\S+)[ \t]*$/m.exec(front)?.[1] : undefined;
+    const role = front ? /^role:[ \t]*(\S+)[ \t]*$/m.exec(front)?.[1] : undefined;
+    if (delivery !== PACKAGED_DELIVERY_MARKER || role !== expectedRole) {
       failures.push(
-        `${name}: role-skill frontmatter name is ${declared ?? "absent"}, expected ${expectedRoleName}. Without that marker the runtime treats the document as a pre-role-skill protocol and every new run falls back to the protocol-plus-guidance pointers.`,
+        `${name}: backing record declares delivery ${delivery ?? "absent"} / role ${role ?? "absent"}, expected ${PACKAGED_DELIVERY_MARKER} / ${expectedRole}. Without that marker the runtime treats the document as a historical protocol and every new run falls back to generated role skills or protocol-plus-guidance pointers.`,
       );
     }
+  }
+}
+
+for (const skill of PACKAGED_ROLE_SKILLS) {
+  const target = path.join(root, "skills", skill, "SKILL.md");
+  let body: string;
+  try {
+    body = await readFile(target, "utf8");
+  } catch (error: unknown) {
+    failures.push(`skills/${skill}/SKILL.md: cannot read the packaged role skill: ${error instanceof Error ? error.message : String(error)}. Delivery resolves this exact path and fails closed without it.`);
+    continue;
+  }
+  const declared = /^---\n([\s\S]*?)\n---\n/.exec(body)?.[1];
+  const declaredName = declared ? /^name:[ \t]*(\S+)[ \t]*$/m.exec(declared)?.[1] : undefined;
+  if (declaredName !== skill) {
+    failures.push(`skills/${skill}/SKILL.md: frontmatter name is ${declaredName ?? "absent"}, expected ${skill}. Directory and skill name must match or an explicit load resolves nothing.`);
   }
 }
 
@@ -107,4 +127,4 @@ if (failures.length) {
   for (const failure of failures) console.error(`  - ${failure}`);
   process.exit(1);
 }
-console.log(`check-templates: ${TEMPLATE_NAMES.length} templates, every installed digest present, lists sorted and unique`);
+console.log(`check-templates: ${TEMPLATE_NAMES.length} templates, ${PACKAGED_ROLE_SKILLS.length} packaged role skills, every installed digest present, lists sorted and unique`);
