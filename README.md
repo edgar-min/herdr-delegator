@@ -269,7 +269,90 @@ Dogfooding friction accumulates in a global append-only local log at `<agent-dir
 
 To promote friction upstream, open a [friction issue](https://github.com/edgar-min/herdr-delegator/issues/new?template=friction.yml): copy `kind`, `summary`, `fingerprint`, and `evidence` from `herdr_friction {action: "list"}`, and review them for private paths first — the local log is unsanitized by design. A PR fixing dogfooded friction cites the same record in its template, so the tracker stays greppable by the exact taxonomy the tool records.
 
+### `herdr_jev`
+
+- `rank`: an `intent` plus candidate `paths`; returns every candidate ordered by the probability that it serves the intent, as file names only (`path_only`) or as chunk ranges. Nothing is dropped by a threshold.
+- `judge`: a `moment` plus coordinates. `authoring` scores a draft or registered assignment; `settlement` judges a reported boundary against the lane report and the diff of the assignment's owned paths; both are read-only and advisory.
+- `check`: `sentences` against `reference_paths`; per sentence the probability that some chunk supports it, plus the chunk or `none`.
+
 All calls except `herdr_friction` include `track_id` and `run_id`. The server does not accept arbitrary run paths, Herdr targets, session paths, argv, commands, or generic close operations.
+
+## Jev (System One) — reading moved out of the context
+
+An orchestrator's context is spent mostly on reading: across 84 runs, tool results were 62% of peak context and
+half of those were `read`. Most of that reading exists to make a choice — which file, which part, is this
+condition met, should I ask the human. [TypeSafe Jev](https://docs.typesafe.ai) answers fixed questions about
+text with calibrated probabilities and never generates, so those choices move out of the context: **the agent
+sees the choice, not the text.**
+
+There is no on/off flag. With a credential Jev answers; without one the tool returns a clear error and the hooks
+pass the untouched result through.
+
+**Credentials.** `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment, or `NAME=value` in
+`<agent-dir>/herdr-delegator/.env` (mode 600, never logged, never echoed in a result).
+
+**Actions** — `herdr_jev` above, and the same three from the CLI, which prints compact tables instead of JSON:
+
+```sh
+bun mcp/jev/cli.ts rank --intent "where the settlement sweep runs" mcp/tools.ts
+bun mcp/jev/cli.ts judge --moment authoring --file <run>/a2a/assignments/A-007.md
+bun mcp/jev/cli.ts judge --moment settlement --track <id> --run <id> --assignment A-007
+bun mcp/jev/cli.ts judge --moment escalate --question "<what you would ask the human>" --context "<what is already decided>"
+bun mcp/jev/cli.ts check --sentence "<claim>" --ref docs/SPEC.md
+```
+
+**Hooks.** The host is narrowed where the reading happens, and every hook falls back to the untouched result on
+any error: a `read` of a file at or above `read_threshold_lines` is revised to the ranked ranges that fit
+`read_view_lines`, with the remaining ranges listed as selectors; a `glob` with many hits gets a ranked footer;
+a subagent result is capped at `task_result_chars` and pointed at its artifact; any other output at or above
+`output_min_lines` keeps its ranked blocks and reports what was withheld.
+
+**Server responses carry the judgment.** What the server already holds is judged where it is held, not by a hook
+that would read it again: `herdr_assignment preflight` and `add` attach `data.jev` with the `authoring` table
+(three scores, per-condition observability, specification maturity, the profile the questions favor against the
+declared one); a `wait` on a terminal assignment and a `herdr_worker inspect` of a lane whose last assignment
+settled attach the `settlement` table (per condition a probability and the supporting report paragraph, claims
+versus evidence, out-of-ownership change, changed-path counts, next action). Attachments are advisory and never
+fail the call: a judgment that cannot run attaches `data.jev.error` instead.
+
+**Calibration log.** Every call appends to `<agent-dir>/herdr-delegator/jev/calibration.jsonl`: a `decision` row
+per question (`tool`, `stage`, `question_id`, `question_version`, `model`, probability or score, and an
+identifier target such as `A-007:conditions[3]`) and later an `outcome` row for what actually happened
+(`opened:path:40-58`, `rewrote_intent`, `accepted`). Rows never carry document text or credentials, so the log
+can be read to calibrate thresholds without leaking what was judged.
+
+**Define your own moment.** Built-in moments and yours share one shape, declared in the `jev` block:
+
+```json
+{
+  "jev": {
+    "read_threshold_lines": 200,
+    "hint_min_p": 0.6,
+    "moments": [
+      {
+        "name": "release_notes",
+        "when": { "tool_call": "edit", "path": "CHANGELOG.md" },
+        "state": { "file": "CHANGELOG.md" },
+        "questions": {
+          "entry_observable": {
+            "type": "noul",
+            "instructions": "The topmost entry in `state.text` names a change a reader could verify in the repository, not an intention."
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+The rules that make a question work — name the target by a backticked state path, concrete criteria, a `none`
+option where nothing may fit, never a counterfactual — and the evidence behind them are in
+[`skills/build-your-own-jev/SKILL.md`](skills/build-your-own-jev/SKILL.md). What each previously routed skill
+became is in [`docs/SKILL-DISPOSITION.md`](docs/SKILL-DISPOSITION.md).
+
+**Re-import.** `mcp/jev/` is generic apart from `judge.ts`, which is the only file that knows this plugin's run
+structure. Copying the folder into another project gives you `client`, `chunk`, `questions`, `rank`, `check`,
+`log`, and `config` with no herdr dependency.
 
 ## Safety
 
@@ -318,3 +401,5 @@ bun run check
 - [Configuration schema](config.schema.json)
 - [Configuration example](config.example.json)
 - [Delegation skill](skills/herdr-delegation/SKILL.md)
+- [Build your own Jev judgment](skills/build-your-own-jev/SKILL.md)
+- [Skill disposition](docs/SKILL-DISPOSITION.md)

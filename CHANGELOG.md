@@ -13,6 +13,54 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.10.0] - Unreleased
+
+### Added
+
+- `herdr_jev`, a sixth MCP tool, moves the "read text, then choose" half of an agent's
+  work out of its context and into TypeSafe Jev (System One), which answers fixed
+  questions about text with calibrated probabilities and never generates. `rank` orders
+  candidate files or their chunks against a stated intent; `judge` answers a moment's
+  question set — `authoring` for a draft or registered assignment, `settlement` for a
+  reported boundary, `escalate` for whether a question is worth a human's attention;
+  `check` tests sentences against reference documents. Every action is read-only and
+  advisory, returns its whole ranking, and never drops a result at a threshold.
+- Host hooks narrow reading where it happens: a `read` of a long file is revised to the
+  ranked ranges with the rest listed as selectors, a `glob` with many hits gains a
+  ranked footer, a subagent result is capped and pointed at its artifact, and any other
+  long output keeps its ranked blocks and reports what was withheld. Every hook falls
+  back to the untouched result on any error.
+- Server responses carry the judgment for state the server already holds:
+  `herdr_assignment preflight` and `add` attach `data.jev` with the authoring table, and
+  a `wait` on a terminal assignment or a `herdr_worker inspect` of a lane whose last
+  assignment settled attach the settlement table. The attachments are advisory and
+  non-fatal — a judgment that cannot run attaches `data.jev.error` and changes nothing.
+- Configuration gained an optional `jev` block (`model`, `read_threshold_lines`,
+  `read_view_lines`, `output_min_lines`, `task_result_chars`, `hint_min_p`, and
+  user-defined `moments`). There is no on/off flag: without a credential the tool errors
+  clearly and the hooks pass results through untouched.
+- `skills/build-your-own-jev/SKILL.md` documents how to add a Jev-backed judgment, hook,
+  or moment, with the evidence behind each rule; `docs/SKILL-DISPOSITION.md` records what
+  each previously routed external skill became.
+- Credentials resolve through `TYPESAFE_API_KEY` (or `JEV_API_KEY`) in the environment or
+  a `NAME=value` line in `<agent-dir>/herdr-delegator/.env`; values are never logged, and
+  the calibration log at `<agent-dir>/herdr-delegator/jev/calibration.jsonl` records
+  identifiers only, never document text.
+
+### Changed
+
+- Write-ownership bullets tolerate a trailing annotation: `mcp/jev/judge.ts (new)` and
+  `skills/gate/** (only the two drafts)` now classify as the path and the prefix they
+  name, and a comma-separated list of bare tokens classifies token by token. The audit
+  reports how many bullets were classified, so the prose remainder stays visible instead
+  of silently widening or narrowing the owned set.
+
+### Removed
+
+- The `readchk-gate` and `coldread-gate` skill drafts and `mcp/jev/gate-questions.ts`.
+  Their phrasings live on as the `intake` and `authoring` question sets, where the
+  question wording has one home and one version.
+
 ## [3.9.0] - 2026-09-08
 
 ### Changed
