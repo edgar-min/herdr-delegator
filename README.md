@@ -352,7 +352,8 @@ became is in [`docs/SKILL-DISPOSITION.md`](docs/SKILL-DISPOSITION.md).
 
 **Re-import.** `mcp/jev/` is generic apart from `judge.ts`, which is the only file that knows this plugin's run
 structure. Copying the folder into another project gives you `client`, `chunk`, `questions`, `rank`, `check`,
-`log`, and `config` with no herdr dependency.
+`log`, and `config` with no import of anything outside the folder — `config.ts` only looks for a `jev` block in a
+`herdr-delegator.json` layer, so rename that lookup to your own configuration file when you re-import.
 
 ## Safety
 
