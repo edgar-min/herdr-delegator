@@ -14,6 +14,8 @@ Jev answers fixed questions about text with calibrated probabilities. It never g
 | `mcp/jev/questions.ts` | fixed English phrases + `QUESTION_VERSION` | the only place question wording lives; bump the version when wording changes |
 | `mcp/jev/rank.ts` | `rankPaths` / `rankChunks` / `rankText`, greedy batching under both budgets, `quality()` | results are complete and ordered; nothing is cut by a threshold inside the tool |
 | `mcp/jev/log.ts` | append-only `calibration.jsonl`: `decision` rows per question, `outcome` rows from what happened next | rows carry identifiers (path, range, index) and never document text or keys |
+| `mcp/jev/judge.ts`, `check.ts`, `config.ts` | moments `authoring` / `settlement` / `escalate`; sentence-vs-reference `check`; one config reader (`jev` block → env → defaults) | judge builds its own state from files and the registry, read-only; every result ends with `advisory` |
+| `mcp/server.ts` | `herdr_jev {action: rank\|judge\|check}`; `preflight`/`add` responses carry `data.jev` authoring, terminal `wait`/`inspect` carry `data.jev` settlement | attachments are non-fatal: a Jev failure becomes `data.jev.error`, never a refused call |
 | `extensions/lib/jev-hooks.ts` | host hooks: long `read` → top ranges + menu; `glob` → ranked footer; `task` result → capped + pointer; other long outputs → ranked blocks | thresholds are env-overridable; every hook falls back to the untouched result on any error |
 | `.scratch/jev-*` | throwaway experiments (friction scans, escalation gate, hook smoke) | copy the shape, not the code |
 
@@ -30,7 +32,11 @@ Credentials: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment or `<age
 7. **Hook the host at the right event.** OMP `tool_call` may *revise the input* (not only block): a `read` of a long file becomes `path:start-end` with zero extra round trips; `tool_result` may replace content. Blocking costs a round trip; prefer revision. Everything the server already holds (assignment at `preflight`, report at `wait`) should be judged in the server response, not by a hook.
 8. **Log decisions and outcomes separately, and get outcomes for free.** A later selector read of a narrowed file, or an intent change on the same target, is an outcome row without asking the agent anything.
 9. **Advisory only.** No Jev result settles, blocks settlement, or changes registry state. It is a table the judging agent reads before deciding.
-10. **Ownership still applies to you.** The ORCH once edited a lane-owned file while adding a footer; tsc caught it against the lane's in-progress code. A hook that checks `tool_call` on edit/write against active ownership is an open candidate.
+10. **Write ownership bullets as bare paths.** The first settlement judge on a real assignment returned reject 0.90 because every bullet ended in "(new)"; none classified, so no diff reached the state and three conditions had no evidence. The classifier now strips trailing annotations, and the ORCH writes bare paths. Read the judge's `changed_paths` counts before trusting its `next_action`.
+11. **Treat judge-vs-ORCH disagreement as the calibration signal.** A-003: judge reject, ORCH accept after machine checks (cause above). A-004: judge requery, ORCH accept — one condition asked for "a commit removing" files that were never tracked. Log both; they are how thresholds and question wording get fixed with evidence instead of taste.
+12. **One "why" sentence moves the authoring score.** A-004's goal scored purpose 1.57/3; adding a single sentence on why the work exists raised it to 2.58/3 with the same completion conditions. That is the shower replacement in practice: 0.7 s, 3k tokens, no sub-session.
+13. **Validation tolerance must scale.** The API rounds probabilities; a Choice over ~50 paragraph options summed to 0.990 and failed a fixed ±0.01 check. Tolerance is now 0.01 + 0.002 × options.
+14. **Ownership still applies to you.** The ORCH once edited a lane-owned file while adding a footer; tsc caught it against the lane's in-progress code. A hook that checks `tool_call` on edit/write against active ownership is an open candidate.
 
 ## Adding a new judgment — the shape
 
@@ -42,6 +48,15 @@ Credentials: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment or `<age
 6. Verify with real calls on this run's own artifacts and paste the printed table, not JSON, into the report. Note the token count and latency (a 12k-token rank of a 674-line file takes about one second).
 7. Surface it where the agent already is: a server response field, a hook footer, or a CLI subcommand — a new skill document is the last resort, and it is five lines that name the action and the branch.
 
+## Where the judgments fire now
+
+| moment | where | what the agent sees |
+|---|---|---|
+| authoring | `herdr_assignment preflight`/`add` → `data.jev`, or `cli judge --moment authoring --file` | 3 scores, per-condition observability, maturity, profile distribution vs declared, one-line next action |
+| settlement | terminal `herdr_assignment wait` / `herdr_worker inspect` → `data.jev`, or `cli judge --moment settlement` | per-condition p_met + evidence paragraph, claims/evidence separation, out-of-scope probability, changed paths by ownership, next action |
+| escalate | `cli judge --moment escalate --question … --context …` | ASK HUMAN / decide / observe with the ladder distribution — used before interrupting the user |
+| any read | `read` hook, `cli rank` | top ranges + menu + intent quality |
+
 ## Numbers to remember
 
-Baseline over 84 runs: ORCH peak context median 381k tokens; 62% of it tool results, half of those `read`. A rank call costs 1–13k Jev input tokens ($0.042 per million) and returns in 0.3–1.6 s. Pilot scans: 176 KB of friction log → 60 lines read by the ORCH.
+Baseline over 84 runs: ORCH peak context median 381k tokens; 62% of it tool results, half of those `read`. A rank call costs 1–13k Jev input tokens ($0.042 per million) and returns in 0.3–1.6 s. Pilot scans: 176 KB of friction log → 60 lines read by the ORCH. In the run that built this (jev-tools/2026-09-20, hooks not yet live, CLI used by hand), the ORCH settled two implementation assignments without opening a lane report, and its peak context was 359k tokens at close against a baseline median of 381k — a modest peak difference, because most of that session was design conversation; the per-read savings are in the run's observations.md §F.
