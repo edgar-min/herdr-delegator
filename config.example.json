@@ -24,44 +24,33 @@
       "guidance": "long deliberate reasoning; also the profile budget auditors run on"
     }
   },
-  "skill_routing": {
-    "rules": [
+  "jev": {
+    "model": "jev-latest",
+    "read_threshold_lines": 200,
+    "read_view_lines": 120,
+    "output_min_lines": 80,
+    "task_result_chars": 1200,
+    "hint_min_p": 0.6,
+    "moments": [
       {
-        "boundary": "plan",
-        "surface": "orch",
-        "skills": ["inquire"],
-        "trigger": "when the mandate leaves the plan's shape underdetermined"
-      },
-      {
-        "boundary": "authoring",
-        "surface": "orch",
-        "skills": ["readchk", "shower"],
-        "trigger": "when an assignment must execute without any chat history"
-      },
-      {
-        "boundary": "dispatch",
-        "surface": "worker",
-        "skills": ["readchk"],
-        "trigger": "when the assignment is long, bundled, or hard to undo"
-      },
-      {
-        "boundary": "completion",
-        "surface": "worker",
-        "skills": ["sip"],
-        "trigger": "when an artifact was created or changed",
-        "profiles": ["task", "default"]
-      },
-      {
-        "boundary": "settlement",
-        "surface": "orch",
-        "skills": ["gap", "factchk"],
-        "trigger": "when accepting evidence for a completion condition"
-      },
-      {
-        "boundary": "reset",
-        "surface": "orch",
-        "skills": ["re0-memo"],
-        "trigger": "when a sibling reset must inherit lessons, not code"
+        "name": "release_notes",
+        "when": {
+          "tool_call": "edit",
+          "path": "CHANGELOG.md"
+        },
+        "state": {
+          "file": "CHANGELOG.md"
+        },
+        "questions": {
+          "entry_observable": {
+            "type": "noul",
+            "instructions": "The topmost entry in `state.text` names a change a reader could verify in the repository, not an intention.",
+            "criteria": {
+              "true": "The entry names a tool, file, flag, or behavior that exists after the change.",
+              "false": "The entry describes an intention, a refactor with no observable effect, or nothing specific."
+            }
+          }
+        }
       }
     ]
   }

@@ -4,13 +4,17 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { jevConfig } from "../../../mcp/jev/config";
 import { append } from "../../../mcp/jev/log";
 import { quality, rankChunks, rankPaths, rankText, type RankResult } from "../../../mcp/jev/rank";
 
-/** Files at or above this many lines are narrowed. Env override until the config schema carries `jev.read_threshold_lines`. */
-const THRESHOLD_LINES = Number(process.env.JEV_READ_THRESHOLD ?? 200);
+// Thresholds come from the `jev` configuration block, then the environment overrides, then the defaults —
+// all resolved by the one config module, so a hook and a tool never disagree about what "long" means.
+const JEV = jevConfig();
+/** Files at or above this many lines are narrowed. */
+const THRESHOLD_LINES = JEV.read_threshold_lines;
 /** Line budget for the narrowed view; ranges are added in probability order until it is spent. */
-const VIEW_LINES = Number(process.env.JEV_READ_VIEW_LINES ?? 120);
+const VIEW_LINES = JEV.read_view_lines;
 /** Ranges within this much of the top probability are treated as equally relevant. */
 const GAP = 0.1;
 const SELECTOR = /:(raw|conflicts|img|-?\d+(?:[-+]\d*)?(?:,\d+-\d+)*)$/;
@@ -113,7 +117,7 @@ export function registerJevHooks(pi: ExtensionAPI): void {
 }
 
 /** Subagent results enter the parent's context in full by default. Keep the head; point at the artifact for the rest. */
-const TASK_RESULT_CHARS = Number(process.env.JEV_TASK_RESULT_CHARS ?? 1200);
+const TASK_RESULT_CHARS = JEV.task_result_chars;
 function capTaskResult(content: ReadonlyArray<{ type: string; text?: string }>): string | undefined {
   const text = content.map((c) => c.text ?? "").join("\n");
   if (text.length <= TASK_RESULT_CHARS) return;
@@ -144,7 +148,7 @@ async function rankGlobResult(input: { i?: string }, content: ReadonlyArray<{ ty
  * ranks highest for the call's intent, in original order, and say what was withheld. Tools whose output must stay
  * exact (edit echoes, todo, ask) are excluded. Images pass through untouched.
  */
-const OUTPUT_MIN_LINES = Number(process.env.JEV_OUTPUT_MIN_LINES ?? 80);
+const OUTPUT_MIN_LINES = JEV.output_min_lines;
 const OUTPUT_VIEW_LINES = Number(process.env.JEV_OUTPUT_VIEW_LINES ?? 60);
 const EXACT_TOOLS = new Set(["edit", "todo", "ask", "hub", "eval"]);
 async function filterLargeOutput(tool: string, input: { i?: string; path?: string }, content: ReadonlyArray<{ type: string; text?: string }>): Promise<string | undefined> {

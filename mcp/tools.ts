@@ -18,6 +18,7 @@ import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MA
 import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, minutesStepCap, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, policyFloor, projectApplied, readAuditDocument, readClamp, refreshApplied, releaseCondition, renderAuditInput, renderEmergencyAuditInput, requestedAxes, requiredClamp, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, usableAxes, writeClampMaxTokens, type AppliedAxes, type BudgetApprovalView, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
+import { compactAuthoring, compactSettlement, judgeAuthoring, judgeSettlement } from "./jev/judge";
 
 
 // ---------------------------------------------------------------------------
@@ -418,6 +419,23 @@ async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Pr
 /** A bounded single-line reason, safe to join into the capped response field. */
 function auditDetail(error: unknown): string {
   return singleLine(error instanceof Error ? error.message : String(error)).slice(0, 160);
+}
+
+/**
+ * The advisory judgment a response carries with it (plan v2 §2.3): what the server already holds — the
+ * assignment at `preflight`/`add`, the report and the change set at a terminal `wait` or `inspect` — is judged
+ * here instead of by a hook that would have to read it all over again.
+ *
+ * It is strictly additive and strictly non-fatal. No Jev result settles anything, and a judgment that cannot run
+ * (no credential, budget, network) attaches its one-line reason so the caller can see why the table is missing,
+ * never an error that would fail an operation the registry already committed.
+ */
+async function jevAttachment(judge: () => Promise<object>): Promise<{ jev: object }> {
+  try {
+    return { jev: await judge() };
+  } catch (error) {
+    return { jev: { error: auditDetail(error) } };
+  }
 }
 
 /**
@@ -3224,7 +3242,10 @@ export class CompositeTools {
         // report surface should read it here instead of guessing it.
         if (existing) {
           const bound = { worker_id: existing.worker_id, report_path: path.join(store.runPath, "a2a", `${existing.worker_id}-report.md`), lane_reuse: true };
-          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound } };
+          // A registered assignment is not re-validated here, but the artifact it was registered from is still
+          // on disk: an ORCH that re-runs preflight gets the same authoring table as the first time.
+          const registeredJev = await jevAttachment(async () => compactAuthoring(await judgeAuthoring({ file: path.join(store.runPath, "a2a", "assignments", `${input.assignment_id}.md`) })));
+          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound, ...registeredJev } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
         // Both authoring-time refusals, before anything is registered: the
@@ -3238,10 +3259,11 @@ export class CompositeTools {
         // an observation appended to a non-mutating result: preflight still
         // decides nothing (ASN-014a).
         const interRunOwnership = await observeInterRunOwnership(store, artifact.assignment.write_ownership);
+        const authoringJev = await jevAttachment(async () => compactAuthoring(await judgeAuthoring({ file: artifact.path })));
         // Authoring-time display (M2 P2): the coordinate is what disambiguates
         // an ID that dozens of runs also hold, and the label is echoed back so
         // the author sees exactly what the artifact declared. Neither is stored.
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership, ...authoringJev } };
       }
       if (input.action === "add") {
         const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
@@ -3279,6 +3301,7 @@ export class CompositeTools {
         if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment, input.separation);
         const addReferences = addArtifact.assignment.references ?? [];
         assertReferencesPinned(input.assignment_id, await observeReferences(store.runPath, addReferences));
+        const addJev = await jevAttachment(async () => compactAuthoring(await judgeAuthoring({ file: addArtifact.path })));
         const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
         // Gate observations and the placement echo share one `data`: the echo is
         // merged in, never spread over the top, because a settlement sweep,
@@ -3298,7 +3321,7 @@ export class CompositeTools {
         if (addReferences.length) {
           await store.mutate(DEFAULT_TIMEOUT_MS, (next) => { next.assignments[input.assignment_id].references = addReferences.map((reference) => ({ ...reference })); });
         }
-        const addData = { data: { ...gateData, ...(sealWarnings.length ? { seal: sealWarnings } : {}), ...(addReferences.length ? { references: addReferences.length } : {}), queue_position: selected.queue_position } };
+        const addData = { data: { ...gateData, ...(sealWarnings.length ? { seal: sealWarnings } : {}), ...(addReferences.length ? { references: addReferences.length } : {}), queue_position: selected.queue_position, ...addJev } };
         if (selected.duplicate) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: selected.assignment.state }, ...addData };
         if (selected.queued) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: selected.revision, worker: selected.lane, assignment: { assignment_id: input.assignment_id, state: "queued" }, ...addData };
         let ensured: WorkerResult;
@@ -3376,7 +3399,8 @@ export class CompositeTools {
         // one call an ORCH makes to read a settled assignment was also the one
         // that never mentioned that its referenced documents had moved (I7).
         const terminalDrift = await observeReferenceDrift(store, registry, assignment);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment, terminalDrift) } };
+        const terminalJev = await jevAttachment(async () => compactSettlement(await judgeSettlement({ track_id: input.track_id, run_id: input.run_id, assignment_id: input.assignment_id })));
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment, terminalDrift) }, data: terminalJev };
       }
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");
@@ -3418,12 +3442,15 @@ export class CompositeTools {
       // wait as a polling loop.
       const cursor = await laneWaitCursor(store, registry, registry.lanes[lane.worker_id]);
       const moved = input.wait?.cursor === undefined ? undefined : cursorMoved(input.wait.cursor, cursor);
+      const waitJev = settledAssignment.state === "completed" || settledAssignment.state === "failed"
+        ? await jevAttachment(async () => compactSettlement(await judgeSettlement({ track_id: input.track_id, run_id: input.run_id, assignment_id: input.assignment_id })))
+        : {};
       const cursorData = {
         wait_cursor: cursor,
         ...(moved === undefined ? {} : { moved_since_cursor: moved }),
         ...(waitTimedOut ? { next_step: `The wait window elapsed without ${(input.wait?.until ?? ["idle", "done", "blocked"]).join("/")}. End the turn and remain idle; the next doorbell will wake this session. Do not repeat wait, sleep, or inspect merely to occupy time. Use wait.cursor=${cursor} only if a later missing or inconsistent doorbell requires an explicit recovery probe.` } : {}),
       };
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: cursorData };
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: { ...cursorData, ...waitJev } };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 
@@ -3456,7 +3483,13 @@ export class CompositeTools {
         // the same lane, so a supervision probe costs a fraction of the context
         // (friction 588687ae4317fd72). The full form stays the default.
         const data = input.compact ? compactInspect(result, staleness) : full;
-        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: sweepWarnings.length ? { ...data, settlement_sweep: sweepWarnings } : data };
+        // The lane's last settled assignment is what an ORCH inspects a finished lane to judge.
+        const settledId = registry.lanes[input.worker_id].last_completed_assignment_id;
+        const settled = settledId ? registry.assignments[settledId] : undefined;
+        const inspectJev = settledId && settled && (settled.state === "completed" || settled.state === "failed")
+          ? await jevAttachment(async () => compactSettlement(await judgeSettlement({ track_id: input.track_id, run_id: input.run_id, assignment_id: settledId })))
+          : {};
+        return { ok: true, tool: "herdr_worker", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[input.worker_id], data: { ...data, ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...inspectJev } };
       }
       const runtime = await loadFacts(this.adapter);
       await assertOrchCommand(store, runtime.facts);
