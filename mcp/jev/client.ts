@@ -29,18 +29,30 @@ export function agentDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp", "agent");
 }
 
-/** Key resolution order: TYPESAFE_API_KEY, JEV_API_KEY, <agentDir>/herdr-delegator/jev/auth.json {"api_key"}. Never logged. */
-export function apiKey(): string {
-  const env = process.env.TYPESAFE_API_KEY ?? process.env.JEV_API_KEY;
-  if (env) return env;
-  const path = join(agentDir(), "herdr-delegator", "jev", "auth.json");
+/**
+ * Secret resolution shared by every credential this plugin may need: the process environment first, then
+ * `<agentDir>/herdr-delegator/.env` (dotenv syntax, `NAME=value`, `#` comments). Values are never logged.
+ */
+export function secret(...names: string[]): string | undefined {
+  for (const n of names) if (process.env[n]) return process.env[n];
+  const path = join(agentDir(), "herdr-delegator", ".env");
+  let text: string;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (parsed && typeof parsed === "object" && "api_key" in parsed && typeof parsed.api_key === "string" && parsed.api_key) return parsed.api_key;
+    text = readFileSync(path, "utf8");
   } catch {
-    // fall through to the explicit error below
+    return undefined;
   }
-  throw new Error(`Jev API key not found: set TYPESAFE_API_KEY or JEV_API_KEY, or write {"api_key": "..."} to ${path}`);
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^#\s]*))/);
+    if (m && names.includes(m[1])) return m[2] ?? m[3] ?? m[4];
+  }
+  return undefined;
+}
+
+export function apiKey(): string {
+  const key = secret("TYPESAFE_API_KEY", "JEV_API_KEY");
+  if (key) return key;
+  throw new Error(`Jev API key not found: set TYPESAFE_API_KEY (or JEV_API_KEY) in the environment or in ${join(agentDir(), "herdr-delegator", ".env")}`);
 }
 
 export class BudgetExceeded extends Error {
