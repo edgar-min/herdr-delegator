@@ -83,7 +83,9 @@ function validate(questions: Record<string, Question>, response: JevResponse): s
     }
     const probs = Object.values(a.probabilities);
     const sum = probs.reduce((x, y) => x + y, 0);
-    if (Math.abs(sum - 1) > 0.01 || probs.some((p) => !(p >= 0 && p <= 1))) return `probabilities of ${id} invalid (sum ${sum.toFixed(3)})`;
+    // The API rounds each probability; with many options the rounded sum drifts (observed 0.990 over ~50 paragraphs).
+    const tolerance = 0.01 + 0.002 * probs.length;
+    if (Math.abs(sum - 1) > tolerance || probs.some((p) => !(p >= 0 && p <= 1))) return `probabilities of ${id} invalid (sum ${sum.toFixed(3)}, ${probs.length} options)`;
     if (a.type === "choice" && q.type === "choice") {
       const keys = Object.keys(q.criteria).sort().join("\u0000");
       if (Object.keys(a.probabilities).sort().join("\u0000") !== keys) return `choice ${id} key set mismatch`;
