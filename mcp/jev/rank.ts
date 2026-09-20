@@ -8,7 +8,7 @@ import { QUESTION_VERSION, rankQuestions } from "./questions.js";
 
 export type RankResult = { path: string; range?: { start: number; end: number }; title?: string; p: number; a: number; b: number };
 export type Unevaluated = { path: string; range?: { start: number; end: number }; reason: string };
-export type RankOutput = { intent: string; results: RankResult[]; unevaluated: Unevaluated[]; requests: number; input_tokens: number; model?: string };
+export type RankOutput = { intent: string; results: RankResult[]; unevaluated: Unevaluated[]; requests: number; request_ids: string[]; input_tokens: number; model?: string };
 
 const QUESTION_TOKENS_PER_ITEM = 2 * 70;
 const STATE_BUDGET = Math.floor(STATE_PLUS_LONGEST_TOKENS * (1 - SAFETY_MARGIN)) - 200;
@@ -29,11 +29,12 @@ function batches(intent: string, items: Item[]): { batch: Item[]; over: Item[] }
   return { batch: fits, over };
 }
 
-async function judge(intent: string, kind: "path" | "chunk", items: Item[], tool: string, options: AskOptions): Promise<{ results: RankResult[]; unevaluated: Unevaluated[]; requests: number; input_tokens: number; model?: string }> {
+async function judge(intent: string, kind: "path" | "chunk", items: Item[], tool: string, options: AskOptions): Promise<{ results: RankResult[]; unevaluated: Unevaluated[]; requests: number; request_ids: string[]; input_tokens: number; model?: string }> {
   const { batch, over } = batches(intent, items);
   const unevaluated: Unevaluated[] = over.map((it) => ({ path: it.path, range: it.range, reason: "single item exceeds state budget" }));
   const results: RankResult[] = [];
   let requests = 0;
+  const request_ids: string[] = [];
   let input_tokens = 0;
   let model: string | undefined;
   let cursor = 0;
@@ -56,6 +57,7 @@ async function judge(intent: string, kind: "path" | "chunk", items: Item[], tool
     input_tokens += response.usage?.input_tokens ?? 0;
     model = response.model;
     const rid = requestId();
+    request_ids.push(rid);
     const rows: DecisionRow[] = [];
     group.forEach((it, i) => {
       const a = response.answers[`a_${i}`], b = response.answers[`b_${i}`];
@@ -69,7 +71,7 @@ async function judge(intent: string, kind: "path" | "chunk", items: Item[], tool
     append(rows);
   }
   results.sort((x, y) => y.p - x.p);
-  return { results, unevaluated, requests, input_tokens, model };
+  return { results, unevaluated, requests, request_ids, input_tokens, model };
 }
 
 /** Rank candidate paths by name only (directory order in state; probability order in output). */
