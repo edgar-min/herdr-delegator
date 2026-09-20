@@ -2,7 +2,7 @@
 // Returns every candidate ordered by probability — never truncated by a threshold; the caller decides.
 import { readFileSync } from "node:fs";
 import { ask, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
-import { chunk } from "./chunk.js";
+import { blocksOfText, chunk, type Chunk } from "./chunk.js";
 import { append, requestId, type DecisionRow } from "./log.js";
 import { QUESTION_VERSION, rankQuestions } from "./questions.js";
 
@@ -98,4 +98,12 @@ export async function rankChunks(intent: string, paths: string[], options: AskOp
   }
   const r = await judge(intent, "chunk", items, "rank", options);
   return { intent, ...r, unevaluated: [...unevaluated, ...r.unevaluated] };
+}
+
+/** Rank blocks of an in-memory text (tool output, transcript) against an intent. `path` is only a label for logs. */
+export async function rankText(intent: string, text: string, label: string, options: AskOptions = {}): Promise<RankOutput & { blocks: Chunk[] }> {
+  const blocks = blocksOfText(text);
+  const items: Item[] = blocks.map((c, index) => ({ index, path: label, range: { start: c.start, end: c.end }, title: c.title, text: c.text }));
+  const r = await judge(intent, "chunk", items, "rank", options);
+  return { intent, ...r, blocks };
 }

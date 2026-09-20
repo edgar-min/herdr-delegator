@@ -89,3 +89,19 @@ function split(c: Chunk, lines: string[], maxChars: number): Chunk[] {
   const per = Math.max(1, Math.ceil(total / parts));
   return blocks(lines.slice(0, c.end), c.start, per).map((b, i) => ({ ...b, title: `${c.title} (${i + 1}/${parts})` }));
 }
+
+/** Split arbitrary tool output into blocks at blank lines (falling back to fixed blocks), for ranking in memory. */
+export function blocksOfText(text: string, fallbackLines = 30, maxChars = 6_000): Chunk[] {
+  const lines = text.split("\n");
+  const out: Chunk[] = [];
+  let start = 0;
+  for (let i = 0; i <= lines.length; i++) {
+    const boundary = i === lines.length || lines[i].trim() === "";
+    if (!boundary) continue;
+    if (i > start) out.push(make(lines, start + 1, i, lines[start].slice(0, 80)));
+    start = i + 1;
+  }
+  const useFallback = out.length < 2 || out.some((c) => c.text.length > maxChars);
+  const base = useFallback ? blocks(lines, 1, fallbackLines) : out;
+  return base.flatMap((c) => split(c, lines, maxChars)).filter((c) => c.text.trim().length > 0);
+}

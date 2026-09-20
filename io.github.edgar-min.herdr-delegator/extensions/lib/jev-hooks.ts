@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { append } from "../../../mcp/jev/log";
-import { rankChunks, rankPaths, type RankResult } from "../../../mcp/jev/rank";
+import { rankChunks, rankPaths, rankText, type RankResult } from "../../../mcp/jev/rank";
 
 /** Files at or above this many lines are narrowed. Env override until the config schema carries `jev.read_threshold_lines`. */
 const THRESHOLD_LINES = Number(process.env.JEV_READ_THRESHOLD ?? 200);
@@ -24,7 +24,7 @@ function countLines(path: string): number {
   return readFileSync(path, "utf8").split("\n").length;
 }
 
-function selectRanges(results: RankResult[]): { shown: RankResult[]; rest: RankResult[] } {
+function selectRanges(results: RankResult[], budget = VIEW_LINES): { shown: RankResult[]; rest: RankResult[] } {
   const shown: RankResult[] = [];
   const rest: RankResult[] = [];
   let lines = 0;
@@ -32,7 +32,7 @@ function selectRanges(results: RankResult[]): { shown: RankResult[]; rest: RankR
   for (const r of results) {
     const size = r.range ? r.range.end - r.range.start + 1 : 0;
     const relevant = r.p >= top - GAP || shown.length === 0;
-    if (relevant && lines + size <= VIEW_LINES) {
+    if (relevant && lines + size <= budget) {
       shown.push(r);
       lines += size;
     } else rest.push(r);
@@ -82,7 +82,10 @@ export function registerJevHooks(pi: ExtensionAPI): void {
       const footer = await rankGlobResult(event.input as { i?: string }, event.content);
       return footer === undefined ? undefined : { content: [...event.content, { type: "text", text: footer }] };
     }
-    if (event.toolName !== "read") return;
+    if (event.toolName !== "read") {
+      const filtered = await filterLargeOutput(event.toolName, event.input as { i?: string; path?: string }, event.content);
+      return filtered === undefined ? undefined : { content: [{ type: "text", text: filtered }] };
+    }
     const rec = narrowedByCall.get(event.toolCallId);
     if (rec) {
       narrowedByCall.delete(event.toolCallId);
@@ -132,4 +135,32 @@ async function rankGlobResult(input: { i?: string }, content: ReadonlyArray<{ ty
   } catch {
     return;
   }
+}
+
+/**
+ * Any other tool whose output is long (grep, bash, MCP responses via write xd://, custom tools): keep the blocks Jev
+ * ranks highest for the call's intent, in original order, and say what was withheld. Tools whose output must stay
+ * exact (edit echoes, todo, ask) are excluded. Images pass through untouched.
+ */
+const OUTPUT_MIN_LINES = Number(process.env.JEV_OUTPUT_MIN_LINES ?? 80);
+const OUTPUT_VIEW_LINES = Number(process.env.JEV_OUTPUT_VIEW_LINES ?? 60);
+const EXACT_TOOLS = new Set(["edit", "todo", "ask", "hub", "eval"]);
+async function filterLargeOutput(tool: string, input: { i?: string; path?: string }, content: ReadonlyArray<{ type: string; text?: string }>): Promise<string | undefined> {
+  if (!input.i || EXACT_TOOLS.has(tool) || content.some((c) => c.type !== "text")) return;
+  if (tool === "write" && !(input.path ?? "").startsWith("xd://")) return;
+  const text = content.map((c) => c.text ?? "").join("\n");
+  const lines = text.split("\n");
+  if (lines.length < OUTPUT_MIN_LINES) return;
+  let out;
+  try {
+    out = await rankText(input.i, text, `${tool}-output`);
+  } catch {
+    return;
+  }
+  if (out.results.length < 2) return;
+  const { shown, rest } = selectRanges(out.results.map((r) => ({ ...r })), OUTPUT_VIEW_LINES);
+  const keep = [...shown].sort((a, b) => (a.range?.start ?? 0) - (b.range?.start ?? 0));
+  const body = keep.map((r) => lines.slice((r.range?.start ?? 1) - 1, r.range?.end ?? 0).join("\n")).join("\n…\n");
+  const withheld = rest.reduce((n, r) => n + (r.range ? r.range.end - r.range.start + 1 : 0), 0);
+  return `${body}\n\n[jev] ${tool}: ${withheld} of ${lines.length} lines withheld as less relevant to the intent (${rest.length} blocks; best withheld p=${rest[0]?.p.toFixed(2) ?? "-"}). Re-run with a narrower query or read the artifact if something is missing.`;
 }
