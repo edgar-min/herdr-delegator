@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { append } from "../../../mcp/jev/log";
-import { rankChunks, rankPaths, rankText, type RankResult } from "../../../mcp/jev/rank";
+import { quality, rankChunks, rankPaths, rankText, type RankResult } from "../../../mcp/jev/rank";
 
 /** Files at or above this many lines are narrowed. Env override until the config schema carries `jev.read_threshold_lines`. */
 const THRESHOLD_LINES = Number(process.env.JEV_READ_THRESHOLD ?? 200);
@@ -16,7 +16,7 @@ const GAP = 0.1;
 const SELECTOR = /:(raw|conflicts|img|-?\d+(?:[-+]\d*)?(?:,\d+-\d+)*)$/;
 const SKIP_EXT = /\.(png|jpe?g|gif|webp|svg|pdf|zip|tar|gz|db|sqlite3?|mp4|mov|ico|woff2?)$/i;
 
-type Narrowed = { path: string; total: number; shown: RankResult[]; rest: RankResult[]; request: string };
+type Narrowed = { path: string; total: number; shown: RankResult[]; rest: RankResult[]; request: string; quality: ReturnType<typeof quality>; intent: string };
 const narrowedByCall = new Map<string, Narrowed>();
 const narrowedByPath = new Map<string, Narrowed>();
 
@@ -67,7 +67,9 @@ export function registerJevHooks(pi: ExtensionAPI): void {
     if (out.results.length < 2) return;
     const { shown, rest } = selectRanges(out.results);
     const selector = shown.map((r) => `${r.range?.start}-${r.range?.end}`).sort((a, b) => Number(a.split("-")[0]) - Number(b.split("-")[0])).join(",");
-    const record: Narrowed = { path: abs, total, shown, rest, request: out.request_ids.join("+") };
+    const prior = narrowedByPath.get(abs);
+    if (prior && prior.intent !== intent) append([{ ts: new Date().toISOString(), event: "outcome", request_id: prior.request, action: "rewrote_intent", note: prior.quality.verdict }]);
+    const record: Narrowed = { path: abs, total, shown, rest, request: out.request_ids.join("+"), quality: quality(out.results), intent };
     narrowedByCall.set(event.toolCallId, record);
     narrowedByPath.set(abs, record);
     return { input: { ...input, path: `${raw}:${selector}` } };
@@ -92,7 +94,7 @@ export function registerJevHooks(pi: ExtensionAPI): void {
       const shownLines = rec.shown.reduce((n, r) => n + (r.range ? r.range.end - r.range.start + 1 : 0), 0);
       const footer = [
         "",
-        `[jev] ${shownLines} of ${rec.total} lines shown for intent; ranked by relevance. Other ranges (open with path:start-end):`,
+        `[jev] ${shownLines} of ${rec.total} lines shown for intent; ranked by relevance.${rec.quality.hint ? ` Intent ${rec.quality.verdict} — ${rec.quality.hint}.` : ""} Other ranges (open with path:start-end):`,
         ...rec.rest.slice(0, 12).map((r) => `  ${fmt(r)}`),
         rec.rest.length > 12 ? `  … ${rec.rest.length - 12} more` : "",
       ].filter((l) => l !== "").join("\n");
@@ -162,5 +164,6 @@ async function filterLargeOutput(tool: string, input: { i?: string; path?: strin
   const keep = [...shown].sort((a, b) => (a.range?.start ?? 0) - (b.range?.start ?? 0));
   const body = keep.map((r) => lines.slice((r.range?.start ?? 1) - 1, r.range?.end ?? 0).join("\n")).join("\n…\n");
   const withheld = rest.reduce((n, r) => n + (r.range ? r.range.end - r.range.start + 1 : 0), 0);
-  return `${body}\n\n[jev] ${tool}: ${withheld} of ${lines.length} lines withheld as less relevant to the intent (${rest.length} blocks; best withheld p=${rest[0]?.p.toFixed(2) ?? "-"}). Re-run with a narrower query or read the artifact if something is missing.`;
+  const q = quality(out.results);
+  return `${body}\n\n[jev] ${tool}: ${withheld} of ${lines.length} lines withheld as less relevant to the intent (${rest.length} blocks; best withheld p=${rest[0]?.p.toFixed(2) ?? "-"}).${q.hint ? ` Intent ${q.verdict} — ${q.hint}.` : ""} Re-run with a narrower query or read the artifact if something is missing.`;
 }

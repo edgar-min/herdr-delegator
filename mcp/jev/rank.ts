@@ -107,3 +107,20 @@ export async function rankText(intent: string, text: string, label: string, opti
   const r = await judge(intent, "chunk", items, "rank", options);
   return { intent, ...r, blocks };
 }
+
+/**
+ * How well the intent separated the candidates — a property of the question, not of the documents.
+ * sharp: a clear head; flat: everything similar (rewrite the intent more specifically); weak: nothing relevant
+ * (the intent names something these candidates do not contain, or is too vague to match anything).
+ */
+export type Quality = { verdict: "sharp" | "flat" | "weak"; top: number; gap: number; hint?: string };
+export function quality(results: RankResult[]): Quality {
+  if (results.length === 0) return { verdict: "weak", top: 0, gap: 0 };
+  const top = results[0].p;
+  const median = results[Math.floor(results.length / 2)].p;
+  const gap = top - median;
+  if (top < 0.5) return { verdict: "weak", top, gap, hint: "nothing scored as relevant: state concretely what information you need (a name, a decision, a symbol, a section), not the task you are doing" };
+  // Observed: a vague intent ("doing my task") gives top≈0.64 / median≈0.50; a specific one gives top≈0.98 / median≈0.11.
+  if (results.length >= 4 && median > 0.35 && gap < 0.3) return { verdict: "flat", top, gap, hint: "everything scored alike: the intent does not distinguish these items; name what would make one of them the answer" };
+  return { verdict: "sharp", top, gap };
+}
