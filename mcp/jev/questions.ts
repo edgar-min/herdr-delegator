@@ -3,7 +3,7 @@
 // calibration rows carry it so thresholds are never mixed across wordings.
 import type { Question } from "./client.js";
 
-export const QUESTION_VERSION = "2026-09-20.2";
+export const QUESTION_VERSION = "2026-09-20.3";
 
 /**
  * rank: two phrasings of the same proposition per item, combined by max in code.
@@ -177,4 +177,43 @@ export function checkQuestions(sentenceCount: number, chunkCount: number): Recor
     };
   }
   return q;
+}
+
+/** The judgment ladder of moment `escalate`, cheapest rung first. */
+export const ESCALATION_RUNGS = ["autonomous", "machine_check", "human"] as const;
+
+/**
+ * escalate: the agent is about to interrupt a human. The state is `question` (what it would ask) and
+ * `known_context` (what the mandate, plan, or evidence already say). Code turns the three answers into one
+ * line — asking a human is warranted when the rung is `human`, or when the question blocks work and a wrong
+ * autonomous answer could not be undone cheaply.
+ */
+export function escalateQuestions(): Record<string, Question> {
+  return {
+    rung: {
+      type: "choice",
+      instructions: "Which rung of the judgment ladder does the decision in `question` belong to, given `known_context`?",
+      criteria: {
+        autonomous: "The mandate, plan, project rules, or evidence already fix the answer; the agent decides without asking.",
+        machine_check: "The answer can be observed directly by running a command, reading a file, or calling a tool; no human is needed.",
+        human: "It is a genuine value judgment, a scope change, an irreversible external action, a governance or account/secret decision, or an approval the human reserved.",
+      },
+    },
+    blocking: {
+      type: "noul",
+      instructions: "Work cannot safely continue until `question` is answered.",
+      criteria: {
+        true: "Every remaining path depends on the answer, so continuing would mean guessing it.",
+        false: "Other work in scope proceeds while the question stays open.",
+      },
+    },
+    reversible: {
+      type: "noul",
+      instructions: "If the agent decided `question` itself and was wrong, the mistake could be undone cheaply.",
+      criteria: {
+        true: "The wrong choice is undone by editing a file, reverting a commit, or calling again.",
+        false: "The wrong choice spends money, publishes something, touches an account, or destroys state a later call cannot restore.",
+      },
+    },
+  };
 }

@@ -5,10 +5,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { agentDir, ask, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
+import { ask, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
+import { jevConfig } from "./config.js";
 import { chunk } from "./chunk.js";
 import { append, requestId, type DecisionRow } from "./log.js";
-import { AUTHORING_SCORES, QUESTION_VERSION, SETTLEMENT_ACTIONS, authoringQuestions, settlementQuestions } from "./questions.js";
+import { AUTHORING_SCORES, ESCALATION_RUNGS, QUESTION_VERSION, SETTLEMENT_ACTIONS, authoringQuestions, escalateQuestions, settlementQuestions } from "./questions.js";
 import { DelegationStore } from "../registry";
 import type { AssignmentArtifact, AssignmentRecord } from "../contracts";
 import { classifyOwnershipDeclarations, loadDelegatorConfig } from "../../io.github.edgar-min.herdr-delegator/extensions/lib/config";
@@ -25,30 +26,16 @@ const MAX_EXCERPT_LINES = 3;
 
 export type Unevaluated = { path: string; range?: { start: number; end: number }; reason: string };
 
-/** Only the two knobs the actions need; both merely pick the one-line next action, never truncate a result. */
-export type Thresholds = { hint_min_p: number; score_min: number };
-const DEFAULT_THRESHOLDS: Thresholds = { hint_min_p: 0.7, score_min: 2 };
-
 /**
- * `jev.hint_min_p` / `jev.score_min` from the same configuration files the plugin already reads, user layer then
- * project layer. Read defensively as plain JSON: an absent, malformed, or out-of-range value falls back to the
- * default rather than failing a judgment.
+ * The two knobs the moments need. `hint_min_p` comes from the `jev` configuration block through the one config
+ * module; `score_min` is a property of the four-level Score scale itself, not a deployment setting, so it stays
+ * in code. Both only pick the one-line next action — neither ever truncates a result.
  */
+export type Thresholds = { hint_min_p: number; score_min: number };
+const SCORE_MIN = 2;
+
 export function thresholds(cwd: string = process.cwd()): Thresholds {
-  const value = { ...DEFAULT_THRESHOLDS };
-  for (const file of [path.join(agentDir(), "herdr-delegator.json"), path.join(cwd, ".omp", "herdr-delegator.json")]) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(file, "utf8"));
-    } catch {
-      continue;
-    }
-    const jev = (parsed as { jev?: Record<string, unknown> } | null)?.jev;
-    if (!jev || typeof jev !== "object") continue;
-    if (typeof jev.hint_min_p === "number" && jev.hint_min_p >= 0 && jev.hint_min_p <= 1) value.hint_min_p = jev.hint_min_p;
-    if (typeof jev.score_min === "number" && jev.score_min >= 0 && jev.score_min <= 3) value.score_min = jev.score_min;
-  }
-  return value;
+  return { hint_min_p: jevConfig(cwd).hint_min_p, score_min: SCORE_MIN };
 }
 
 const BUILTIN_PROFILES: Record<string, string> = {
@@ -240,7 +227,8 @@ export type SettlementOutput = {
   p_claims_evidence_separated: number;
   p_out_of_scope_change: number;
   changed_paths: Record<OwnershipLabel, string[]>;
-  ownership: { classified: number; unclassified: number };
+  /** `bullets` is how many "# Write ownership" lines there were; `classified` is how many yielded a path or prefix after the trailing annotation was stripped. */
+  ownership: { bullets: number; classified_bullets: number; classified: number; unclassified: number };
   base: string;
   next_action: { score: number; label: string; probabilities: Record<string, number> };
   attribution: "ambiguous";
@@ -328,8 +316,11 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
   const declarations = artifact.write_ownership;
   const classified: { kind: "path" | "prefix"; value: string }[] = [];
   let unclassifiedDeclarations = 0;
+  let classifiedBullets = 0;
   for (const declaration of declarations) {
-    for (const declared of classifyOwnershipDeclarations(declaration)) {
+    const classes = classifyOwnershipDeclarations(declaration);
+    if (classes.every((declared) => declared.kind !== "unclassified")) classifiedBullets += 1;
+    for (const declared of classes) {
       if (declared.kind === "unclassified") unclassifiedDeclarations += 1;
       else classified.push({ kind: declared.kind, value: declared.value });
     }
@@ -435,7 +426,7 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
     p_claims_evidence_separated,
     p_out_of_scope_change,
     changed_paths,
-    ownership: { classified: classified.length, unclassified: unclassifiedDeclarations },
+    ownership: { bullets: declarations.length, classified_bullets: classifiedBullets, classified: classified.length, unclassified: unclassifiedDeclarations },
     base,
     next_action,
     // The working directory is shared by concurrent tracks, so a changed path is evidence about the tree, never
@@ -447,5 +438,105 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
     requests: 1,
     input_tokens: response.usage?.input_tokens ?? 0,
     model: response.model,
+  };
+}
+
+// ---------------------------------------------------------------- escalate
+
+export type EscalateInput = { question: string; context?: string };
+export type EscalateOutput = {
+  moment: "escalate";
+  line: "ASK HUMAN" | "decide" | "observe";
+  rung: string;
+  probabilities: Record<string, number>;
+  blocking: number;
+  reversible: number;
+  advisory: string;
+  requests: number;
+  input_tokens: number;
+  model: string;
+};
+
+/**
+ * Should this question interrupt a human? The ladder answers where the decision belongs; `blocking` and
+ * `reversible` are what make an otherwise autonomous call worth escalating anyway. The question text is state,
+ * never a log row: calibration carries the request id as the target.
+ */
+export async function judgeEscalation(input: EscalateInput, options: AskOptions = {}): Promise<EscalateOutput> {
+  const state = { question: input.question, known_context: input.context ?? "" };
+  const questions = escalateQuestions();
+  const response = await ask(state, questions, options);
+  const rung = response.answers.rung;
+  const blockingAnswer = response.answers.blocking;
+  const reversibleAnswer = response.answers.reversible;
+  if (rung.type !== "choice" || blockingAnswer.type !== "noul" || reversibleAnswer.type !== "noul") throw new Error("escalate: unexpected answer types");
+  const blocking = blockingAnswer.noul;
+  const reversible = reversibleAnswer.noul;
+  const askHuman = rung.choice === "human" || (blocking >= 0.7 && reversible < 0.4);
+  const line = askHuman ? "ASK HUMAN" : rung.choice === "machine_check" ? "observe" : "decide";
+  const rid = requestId();
+  const ts = new Date().toISOString();
+  append([
+    { ts, event: "decision", request_id: rid, tool: "judge", stage: "escalate", question_id: "rung", question_version: QUESTION_VERSION, model: response.model, chosen: rung.choice, probability: rung.probabilities[rung.choice], target: rid },
+    { ts, event: "decision", request_id: rid, tool: "judge", stage: "escalate", question_id: "blocking", question_version: QUESTION_VERSION, model: response.model, probability: blocking, target: rid },
+    { ts, event: "decision", request_id: rid, tool: "judge", stage: "escalate", question_id: "reversible", question_version: QUESTION_VERSION, model: response.model, probability: reversible, target: rid },
+  ]);
+  return {
+    moment: "escalate",
+    line,
+    rung: ESCALATION_RUNGS.includes(rung.choice as (typeof ESCALATION_RUNGS)[number]) ? rung.choice : "autonomous",
+    probabilities: rung.probabilities,
+    blocking,
+    reversible,
+    advisory: ADVISORY,
+    requests: 1,
+    input_tokens: response.usage?.input_tokens ?? 0,
+    model: response.model,
+  };
+}
+
+// ------------------------------------------------- compact server attachments
+
+/** What a tool response may carry: rows and lists are bounded so a judgment never costs more context than it saves. */
+const ATTACH_CONDITIONS = 12;
+const ATTACH_PATHS = 10;
+const ATTACH_EXCERPT_LINES = 2;
+
+export function compactAuthoring(out: AuthoringOutput): object {
+  return {
+    moment: out.moment,
+    scores: Object.fromEntries(out.scores.map((s) => [s.id, Number(s.score.toFixed(2))])),
+    conditions: out.conditions.slice(0, ATTACH_CONDITIONS).map((c) => ({ index: c.index, p_observable: Number(c.p_observable.toFixed(2)) })),
+    ...(out.conditions.length > ATTACH_CONDITIONS ? { conditions_omitted: out.conditions.length - ATTACH_CONDITIONS } : {}),
+    maturity: Number(out.maturity.toFixed(2)),
+    profile: { choice: out.profile.choice, declared: out.profile.declared, agrees: out.profile.agrees, probabilities: out.profile.probabilities },
+    next_action: out.next_action,
+    advisory: out.advisory,
+    model: out.model,
+  };
+}
+
+export function compactSettlement(out: SettlementOutput): object {
+  const paths = (list: string[]): object => ({ count: list.length, ...(list.length ? { sample: list.slice(0, ATTACH_PATHS) } : {}), ...(list.length > ATTACH_PATHS ? { omitted: list.length - ATTACH_PATHS } : {}) });
+  return {
+    moment: out.moment,
+    assignment_id: out.assignment.assignment_id,
+    conditions: out.conditions.slice(0, ATTACH_CONDITIONS).map((c) => ({
+      index: c.index,
+      p_met: Number(c.p_met.toFixed(2)),
+      evidence_paragraph: c.evidence.paragraph,
+      ...(c.evidence.excerpt ? { excerpt: c.evidence.excerpt.split("\n").slice(0, ATTACH_EXCERPT_LINES).join(" / ").slice(0, 300) } : {}),
+    })),
+    ...(out.conditions.length > ATTACH_CONDITIONS ? { conditions_omitted: out.conditions.length - ATTACH_CONDITIONS } : {}),
+    p_claims_evidence_separated: Number(out.p_claims_evidence_separated.toFixed(2)),
+    p_out_of_scope_change: Number(out.p_out_of_scope_change.toFixed(2)),
+    changed_paths: { owned: paths(out.changed_paths.owned), unowned: paths(out.changed_paths.unowned), unclassified: paths(out.changed_paths.unclassified) },
+    ownership: out.ownership,
+    base: out.base,
+    next_action: { label: out.next_action.label, score: Number(out.next_action.score.toFixed(2)) },
+    attribution: out.attribution,
+    evidence_note: out.evidence_note,
+    advisory: out.advisory,
+    model: out.model,
   };
 }

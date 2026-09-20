@@ -6,10 +6,11 @@
 //   bun mcp/jev/cli.ts judge --moment authoring --file <assignment.md>
 //   bun mcp/jev/cli.ts judge --moment authoring --track <id> --run <id> --assignment <A-nnn>
 //   bun mcp/jev/cli.ts judge --moment settlement --track <id> --run <id> --assignment <A-nnn> [--base <rev>]
+//   bun mcp/jev/cli.ts judge --moment escalate --question "<what you would ask the human>" [--context "<what is already decided>"]
 //   bun mcp/jev/cli.ts check --sentence "<text>" [--sentence "<text>"...] --ref <path> [--ref <path>...]
 //   flags: --json  --min <p> (display filter only; nothing is dropped from --json)
 import { check, type CheckOutput } from "./check.js";
-import { judgeAuthoring, judgeSettlement, type AuthoringOutput, type SettlementOutput } from "./judge.js";
+import { judgeAuthoring, judgeEscalation, judgeSettlement, type AuthoringOutput, type EscalateOutput, type SettlementOutput } from "./judge.js";
 import { SETTLEMENT_ACTIONS } from "./questions.js";
 import { rankChunks, rankPaths, type RankOutput } from "./rank.js";
 
@@ -64,7 +65,7 @@ function rankTable(out: RankOutput, min: number, limit: number): string {
 
 // ------------------------------------------------------------------ judge
 
-type JudgeFlags = { moment?: string; track?: string; run?: string; assignment?: string; file?: string; base?: string; json: boolean };
+type JudgeFlags = { moment?: string; track?: string; run?: string; assignment?: string; file?: string; base?: string; question?: string; context?: string; json: boolean };
 
 function parseJudge(argv: string[]): JudgeFlags {
   const f: JudgeFlags = { json: false };
@@ -76,9 +77,20 @@ function parseJudge(argv: string[]): JudgeFlags {
     else if (a === "--assignment") f.assignment = argv[++i];
     else if (a === "--file") f.file = argv[++i];
     else if (a === "--base") f.base = argv[++i];
+    else if (a === "--question") f.question = argv[++i];
+    else if (a === "--context") f.context = argv[++i];
     else if (a === "--json") f.json = true;
   }
   return f;
+}
+
+function escalateTable(out: EscalateOutput): string {
+  return [
+    `judge escalate: ${out.line} — 1 request, ${out.input_tokens} input tokens, model ${out.model}`,
+    `rung: ${out.rung} (${distribution(out.probabilities)})`,
+    `blocking: ${out.blocking.toFixed(2)} | reversible: ${out.reversible.toFixed(2)}`,
+    out.advisory,
+  ].join("\n");
 }
 
 function authoringTable(out: AuthoringOutput): string {
@@ -195,8 +207,15 @@ if (action === "rank") {
     }
     const out = await judgeSettlement({ ...coordinates, ...(flags.base ? { base: flags.base } : {}) });
     console.log(flags.json ? JSON.stringify(out, null, 1) : settlementTable(out));
+  } else if (flags.moment === "escalate") {
+    if (!flags.question) {
+      console.error("judge --moment escalate takes --question <text> [--context <what the mandate, plan or evidence already say>]");
+      process.exit(2);
+    }
+    const out = await judgeEscalation({ question: flags.question, ...(flags.context ? { context: flags.context } : {}) });
+    console.log(flags.json ? JSON.stringify(out, null, 1) : escalateTable(out));
   } else {
-    console.error("--moment is authoring or settlement");
+    console.error("--moment is authoring, settlement or escalate");
     process.exit(2);
   }
 } else if (action === "check") {
