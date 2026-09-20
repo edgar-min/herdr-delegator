@@ -95,7 +95,9 @@ function validate(questions: Record<string, Question>, response: JevResponse): s
       const expected = q.criteria.map((_, i) => String(i)).join("\u0000");
       if (Object.keys(a.probabilities).sort((x, y) => Number(x) - Number(y)).join("\u0000") !== expected) return `score ${id} level set mismatch`;
       const mean = Object.entries(a.probabilities).reduce((acc, [k, p]) => acc + Number(k) * p, 0);
-      if (Math.abs(mean - a.score) > 0.02) return `score ${id} != weighted mean (${mean.toFixed(3)} vs ${a.score})`;
+      // Preserve the inclusive tolerance at floating-point boundaries (e.g. 2.49 - 2.47).
+      const roundoff = Number.EPSILON * Math.max(1, Math.abs(mean));
+      if (Math.abs(mean - a.score) > 0.02 + roundoff) return `score ${id} != weighted mean (${mean.toFixed(3)} vs ${a.score})`;
     }
   }
   return null;

@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 3.10.0 and the bundled `herdr-delegation` skill 3.10.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 3.11.0 and the bundled creator skill `herdr-delegation` 3.11.0.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,9 +11,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `3.10.0`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `3.10.0` under frontmatter metadata.
-- **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`.
+- **ID-002**: The package and plugin version MUST be `3.11.0`.
+- **ID-003**: The creator skill MUST be named `herdr-delegation` and versioned `3.11.0` under frontmatter metadata.
+- **ID-004**: The five delegation tools MUST remain `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`. The additional advisory tool MUST be `herdr_jev`; its judgments MUST NOT replace delegation authority.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
 - **ID-007**: The license MUST be Apache-2.0 with copyright 2026 Edgar Min.
@@ -32,7 +32,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **CFG-004**: The optional run file MUST resolve to `<canonical-run>/herdr-delegator.json`.
 - **CFG-005**: Later layers MUST override earlier leaves. A worker profile MUST inherit only from the same profile name already accumulated across earlier layers; cross-name inheritance MUST NOT exist. The layer that first defines a profile name MUST declare `role`, otherwise that layer MUST fail closed with `invalid_config` naming the profile and the layer file, so a misspelled profile name can never resolve to another profile's identity. A first definition without `thinking` MUST take `inherit`.
 - **CFG-005a**: A worker profile MAY carry `guidance`, `intent`, and `directive`, each bounded single-line prose. `intent` is ORCH-facing profile-selection criteria, with `guidance` rendered as its fallback when `intent` is absent; `directive` is worker-facing execution guidance rendered only to a lane selected with that profile. Each field overrides by same-name layer exactly like `role` and `thinking`, and all three are advisory only — never a role, model, authority, or assignment contract. Blank, over-long, and control-character values MUST fail closed.
-- **CFG-005b**: The orchestrator profile MAY carry `directive` as bounded single-line prose. It MUST override by layer exactly like `role` and `thinking`, render only to the ORCH's `guidance.md`, and remain advisory only — never a role, model, authority, scope, or completion condition. `guidance` and `intent` MUST be rejected as unknown orchestrator-profile keys. Blank, over-long, and control-character values MUST fail closed.
+- **CFG-005b**: The orchestrator profile MAY carry `directive` as bounded single-line prose. It MUST override by layer exactly like `role` and `thinking`, render only to ORCH advisory content under GDE-002, and remain advisory only — never a role, model, authority, scope, or completion condition. `guidance` and `intent` MUST be rejected as unknown orchestrator-profile keys. Blank, over-long, and control-character values MUST fail closed.
 - **CFG-006**: At least the user or project layer MUST set an absolute `storage.root`; no temporary or project-directory fallback is allowed.
 - **CFG-007**: A run layer MUST NOT relocate its own storage root.
 - **CFG-008**: Every consumed configuration layer MUST be recorded by canonical path, scope, and SHA-256.
@@ -57,7 +57,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **SRT-001**: Configuration MAY declare `skill_routing` in two cooperating parts. `skills` MAY map at most 64 skill names matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` to optional bounded single-line `intent` and `trigger` metadata. `rules` MUST contain at most 16 rules, each carrying 1–8 such skill names and using exactly one of two shapes: the legacy shape declares `boundary` from `plan | authoring | dispatch | completion | settlement | reset` and `surface` from `orch | worker`, with optional rule-level `trigger` and `profiles` containing 1–8 worker profile names matching CFG-012; the additive shape declares `{ agent, moment, skills }`, where agent `orch` accepts moments `plan | authoring | settlement | reset`, while an agent matching CFG-012 accepts worker moments `intake | report`. The parser MUST lower the additive shape into the legacy internal vocabulary: orch moments retain their boundary on surface `orch`, while a profile agent's `intake` and `report` become `dispatch` and `completion` on surface `worker`, scoped to that profile. Malformed routing MUST fail closed with the rest of the layer.
 - **SRT-001a**: A rule carrying `profiles` MUST be delivered only where the delivery target's worker profile is named in the list; a rule without `profiles` MUST reach every profile. A named profile that no `worker_profiles` entry defines MUST NOT be an error and MUST simply never match, because rules and profiles may be authored in different layers. A delivery point that holds no profile — every orchestrator-surface point — MUST receive only unscoped rules, so a profile-scoped route can never reach a target whose profile is unknown.
 - **SRT-002**: A later configuration layer's `skill_routing` MUST replace the earlier layer's value as one leaf.
-- **SRT-003**: Matching routes MUST be delivered deterministically after parse-time lowering: `herdr_track init` results carry orch-surface `plan`/`authoring` routes (plus `reset` for a sibling reset), `herdr_assignment preflight` results carry orch-surface `authoring` routes, the worker dispatch prompt carries worker-surface `dispatch`/`completion` routes filtered by the lane's assignment profile and names that profile's materialized guidance document when one exists, terminal assignment results carry orch-surface `settlement` routes, `guidance.md` carries matching orch-agent `plan`/`authoring`/`settlement`/`reset` routes, and `guidance-<profile>.md` carries that profile agent's `intake`/`report` routes.
+- **SRT-003**: Matching routes MUST be delivered deterministically after parse-time lowering: `herdr_track init` results carry orch-surface `plan`/`authoring` routes (plus `reset` for a sibling reset), `herdr_assignment preflight` results carry orch-surface `authoring` routes, terminal assignment results carry orch-surface `settlement` routes, and worker dispatch carries worker-surface `dispatch`/`completion` routes filtered by the assignment profile. ORCH and worker operating-instruction pointers and their advisory route sections MUST follow GDE-001 through GDE-005.
 - **SRT-004**: Routes are advisory text only. They MUST NOT gate settlement, lifecycle, recovery, or any mutation; a delivered route MUST NOT be recorded or represented as proof that a skill ran.
 - **SRT-005**: Advisory route lookup MUST NOT block control flow; a failed lookup degrades to an empty route set while configuration-as-authority paths keep failing closed.
 - **SRT-006**: The shipped configuration MUST name no skills; skill names live only in user, project, or run configuration layers.
@@ -65,18 +65,26 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 2.4 Boundary judgment delivery
 
-- **JDG-001**: A field or boundary whose right value is a situational judgment MUST deliver the judgment criteria at that boundary. Published constants MUST remain stated contract facts and MUST NOT be phrased as recommendations, defaults to accept, or the value to use. The binding surfaces are schema `describe` text, the run guidance document, and the worker dispatch pointer.
+- **JDG-001**: A field or boundary whose right value is a situational judgment MUST deliver the judgment criteria at that boundary. Published constants MUST remain stated contract facts and MUST NOT be phrased as recommendations, defaults to accept, or the value to use. The binding surfaces are schema `describe` text, role instructions or historical guidance, and the worker dispatch pointer.
 - **JDG-002**: A bound or fallback MUST be stated as what it is — a ceiling, a clamp, or a fallback — beside the criterion for choosing within it. A describe text MUST NOT invite omission of a field whose declared value is the judgment being asked for.
 - **JDG-003**: Judgment criteria are advisory material. They MUST NOT gate settlement, lifecycle, recovery, or any mutation, and their absence MUST NOT block an operation.
 
-### 2.5 Run guidance document
+### 2.5 Role skills and advisory guidance
 
-- **GDE-001**: `herdr_track open` and both `revive` modes MUST render `<run>/guidance.md` from resolved configuration before the ORCH spawn. Assignment dispatch MUST materialize `<run>/guidance-<profile>.md` from the configuration current at dispatch when that profile has a directive or matching route.
-- **GDE-002**: `guidance.md` MUST carry the worker-profile table (configured name, role alias, and `intent`, with legacy `guidance` as fallback) and every matching orch-agent `plan | authoring | settlement | reset` route with each skill's configured `intent` and `trigger`. `guidance.md` MUST render a configured orchestrator `directive` as its parsed single-line value, without table-cell escaping, in an `Orchestrator directive` section immediately after the document title and before the worker-profile table; it MUST omit that section when the field is absent. `guidance-<profile>.md` MUST carry only that profile's `directive` and matching `intake | report` routes. The renderer MUST author no judgment sentence beyond its closed structural strings.
-- **GDE-003**: Guidance rendering MUST perform no installed-presence detection, lockfile lookup, or `SKILL.md` disk walk. Skill bodies resolve natively through `skill://`; an uninstalled skill is a reader-side no-op, and a skill without authored `intent` MUST render a `read skill://<name>` fallback. An absent ORCH route set MUST omit its section, a profile without selection criteria MUST render an em dash in the table, and a profile with neither directive nor route MUST produce no lane document.
-- **GDE-004**: Rendering MUST be best-effort and MUST NOT block a spawn or dispatch. An ORCH render failure MUST degrade to a `guidance.md` naming the failure; an ORCH write failure MUST surface as a warning. A lane render or write failure MUST surface as a warning and omit the lane-document pointer.
-- **GDE-005**: The ORCH's first prompt MUST name `guidance.md` as a third, explicitly advisory document whenever the run holds one, and MUST keep its two-document form on a run that holds none. A worker dispatch pointer MUST name `guidance-<profile>.md` only when materialization returned a path. Neither document may change scope, authority, ownership, immutable files, completion conditions, settlement, or recovery.
-- **GDE-006**: Guidance documents are rendered artifacts, not run state: they MUST add no `run.json` key, `guidance.md` MUST NOT appear in the open result payload, and run layout, manifest, and reconcile checks MUST tolerate its presence or absence.
+- **GDE-001**: For an accepted role backing protocol carrying the role-skill marker, ORCH open/revive MUST materialize `<run>/role-skills/orchestrator/SKILL.md`, and worker dispatch, including FIFO dispatch, MUST materialize `<run>/role-skills/workers/<worker_id>/SKILL.md`. An unmarked historical role MUST retain its protocol/guidance delivery contract rather than being silently upgraded.
+- **GDE-002**: A generated skill MUST combine the complete role body with applicable advisory configuration. ORCH advisory content MUST contain configured profile-selection metadata and matching ORCH routes. Worker advisory content MUST contain only the selected profile's directive and matching routes, including custom profile names; other profiles' directives MUST NOT leak into it. A configured ORCH directive MUST render only in ORCH advisory content.
+- **GDE-003**: Rendering MUST perform no installed-presence detection, lockfile lookup or skill-body disk walk. Routed skill bodies resolve through the runtime's skill mechanism; an unavailable routed skill remains a reader-side no-op. Empty advisory content MUST NOT remove a marked role's required skill. Historical guidance retains its optional-content behavior.
+- **GDE-004**: Advisory load/render failure MUST preserve the required role body and surface a warning. Failure to write a required role skill MUST stop delivery, not silently omit the operating contract. Historical advisory guidance failures MUST retain their existing best-effort warning behavior.
+- **GDE-005**: Marked-role prompts MUST name one complete role-skill operating-instruction path, separately from the immutable mandate or assignment; they MUST NOT additionally require the legacy common protocol, role protocol and guidance read chain. Historical unmarked roles MUST retain their former pointers. Advisory content MUST change no scope, authority, ownership, completion condition, settlement or recovery rule. Regeneration MUST NOT be represented as proof that a live session reread the file; existing duplicate-prompt suppression remains unchanged.
+- **GDE-006**: Generated role skills and guidance MUST remain rendered artifacts, not identity or lifecycle state. They MUST add no run-manifest or registry authority, and existing run reconciliation MUST tolerate their presence. Accepted historical protocol digests MUST remain accepted; unknown protocol content MUST still fail closed.
+
+### 2.6 Advisory Jev interface
+
+- **JEV-001**: `herdr_jev` MUST expose `rank`, `check`, `judge` and `log`. Judgment moments MUST be `authoring`, `settlement`, `escalate`, `intake` and `plan`; these MUST NOT add a delegation action, lifecycle state or acceptance threshold.
+- **JEV-002**: Intake MUST compare a restatement with the canonical assignment. Plan judgment MUST use the canonical run mandate and plan. Model probabilities MUST remain advisory; recorded human decisions MUST NOT be treated as unanswered questions solely because a decision once existed.
+- **JEV-003**: Compact authoring/settlement observations MUST retain their request ID. `log outcome` MUST append only the supported identifier-only outcome record, and `log summary` MUST report recorded decision/outcome accounting without inferring accuracy, approval or success. Unknown IDs MUST remain observable as having no matching records.
+- **JEV-004**: Unknown public input keys MUST be rejected at the MCP transport boundary rather than stripped before handler validation. Fields valid for another action MUST still fail the selected action's validation without a log mutation.
+- **JEV-005**: Numeric score-consistency validation MUST preserve the existing inclusive tolerance while allowing only floating-point roundoff at that boundary; it MUST NOT reinterpret the fix as calibration of judgment quality.
 
 ## 3. Deterministic storage and authority
 
@@ -359,24 +367,24 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 3.10.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 3.11.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server that survives a stripped spawn environment: command `sh` with args `["-c", "exec \"${PLUGIN_ROOT:-.}/bin/herdr-delegator-mcp\""]` and an env carrying a guaranteed baseline `PATH` (`/usr/bin:/bin`); `.mcp.json` MUST NOT exist. (friction 9072a9da598edd89)
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 3.10.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
-- **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, CHANGELOG, LICENSE, and docs.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 3.11.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, `skills/herdr-delegation/**`, `skills/herdr-config/**`, `skills/build-your-own-jev/**`, schemas/examples, README, CHANGELOG, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST first prepend `${HOME}/.local/bin`, `${HOME}/.bun/bin`, and `/usr/local/bin` to `PATH` (so its own Bun lookup and the server's Herdr binary discovery survive a stripped spawn environment), resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
-- **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
+- **PKG-006**: `/reload-plugins` MUST remain documented for plugin skill discovery. A changed mounted MCP server MUST be refreshed with the supported `/mcp reload` boundary before using its new schema; merely placing the command in a live editor is not execution. Changed OMP extension cutover MUST be verified in a new OMP session.
 
 ## 12. Module architecture
 
 - **ARC-001**: `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` MUST remain a bridge-only entry and MUST NOT register public MCP tools.
 - **ARC-002**: `io.github.edgar-min.herdr-delegator/extensions/lib/bridge.ts` MUST own OMP fact publication and bootstrap metadata reporting.
-- **ARC-003**: `mcp/server.ts` MUST own stdio transport and exactly five public registrations.
+- **ARC-003**: `mcp/server.ts` MUST own stdio transport, the five delegation-tool registrations and the additional advisory `herdr_jev` registration.
 - **ARC-004**: `mcp/contracts.ts` MUST own strict public schemas and bounded shared MCP contracts.
 - **ARC-005**: `mcp/herdr-adapter.ts` MUST expose fixed, bounded Herdr operations and MUST NOT accept raw public argv.
 - **ARC-006**: `mcp/registry.ts` MUST own immutable assignment parsing, responsibility routing, FIFO lane state, and minimal delegation registry.
 - **ARC-007**: `mcp/tools.ts` MUST own composite track, assignment, and worker transactions and consume internal lifecycle authority without exposing it as another public surface.
 - **ARC-008**: Existing configuration, runtime, worker, and track lifecycle modules MAY remain internal implementation dependencies; their old operations MUST NOT appear as public tools.
-- **ARC-009**: `io.github.edgar-min.herdr-delegator/extensions/lib/guidance.ts` MUST own guidance-document rendering and materialization, and MUST expose no throwing path to a spawn caller.
+- **ARC-009**: `io.github.edgar-min.herdr-delegator/extensions/lib/guidance.ts` MUST own role-skill and advisory-guidance rendering/materialization, separating best-effort advisory failures from required-role write failures.
 - **ARC-010**: `scripts/check-templates.ts` MUST fail the repository check when an installed protocol template's digest is absent from its own shipped-digest allowlist, or when a list is unsorted or duplicated.
 
 ## 13. Observable acceptance scenarios
@@ -393,7 +401,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ACC-010 — Budget cadence**: Crossing the cap parks the run with a named reason, ledger entry, and pane marker; `add` is refused while `wait` and `close` still land work; the clamp is scaffolded without overwrite and every park/deny surface names `{version:1, max_tokens?, max_minutes?, note?}`; an extension's verdict is recorded server-side before the cap moves; a `notify` grant lands the approved ceiling in the clamp file unless the value there is the human's, in which case the registry alone moves and the park routes to the human; a deny routes to the user and is not re-auditable until the clamp changes. On the cadence park alone, one `add` carrying an `emergency` claim registers anyway and creates its audit document as the whole record of that debt, a second is refused until the verdict lands, no queued head is promoted, the registry keeps every key and version it had, and an `unjustified` verdict closes the carve-out without recalling anything.
 - **ACC-010a — Revival**: A resume reconnects the recorded birth session with no new generation and may recreate only a dead anchor inside a live identity-matching workspace when the agent is gone and recorded session path is grounded; a live agent or dead/mismatched workspace keeps strict behavior. A rebirth is refused without the user's approval file, sufficient documents, an ambiguity-free run, and a non-live ORCH.
 - **ACC-010b — Template compatibility**: A run materialized from a previously shipped protocol set still reconciles and still revives, with a named drift warning; the repository check fails when an installed template's digest is missing from its allowlist.
-- **ACC-010c — Guidance delivery**: An `open` or revival on configured profile criteria and orch routes produces config-only `guidance.md`; dispatch materializes and points to `guidance-<profile>.md` only for a profile with a directive or route. Empty route sets omit sections, absent profile intent renders an em dash, missing lane content yields no lane document, a missing skill is a reader-side no-op resolved through `skill://`, and render/write failures preserve birth or dispatch through the documented degraded surface.
+- **ACC-010c — Role instruction delivery**: Marked roles materialize and point to their complete role skill with correct ORCH/profile-specific advisory content; empty or failed advice does not erase the role body, and a required write failure stops delivery. Historical unmarked roles retain their old read chain, accepted digests remain accepted, and unknown digests fail closed. Generated bytes, emitted pointers and observed agent consumption MUST be measured separately; none alone proves causal token or time savings.
 - **ACC-010d — Degraded fresh open**: A fresh `open` under `omp_fact_bridge_mismatch` records the degraded creator union member with no session ID and still births the ORCH; the same outage against an existing run fails closed, and a later attested same-pane retry upgrades without any verified-to-degraded transition.
 - **ACC-010e — Focus-polite doorbell**: A focused target returns `deferred` promptly, sends once after the 60-second re-probe and optional 90-second tail, and writes scheduled/final `messages.jsonl` rows with one delivery ID; an unfocused or unprobeable target sends immediately.
 - **ACC-011 — Completion retention**: A verified completion block stores report hash, returns the lane to idle, records last completion, and leaves the worker tab/session open.
@@ -423,9 +431,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 3.10.0.
-- [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`; the namespaced OMP extension is bridge-only and registers no command.
-- [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
+- [ ] Plugin/package and creator-skill metadata identify version 3.11.0.
+- [ ] `mcp/server.ts` preserves the five delegation registrations and additionally registers advisory `herdr_jev`; the namespaced OMP extension is bridge-only and registers no command.
+- [ ] Delegation actions/fields match `mcp/contracts.ts`; Jev actions/fields match its published strict schema and action-specific validation.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.
 - [ ] Exact responsibility reuse, one active assignment, FIFO queueing, ordinal reservation, and simple separation match routing source.
 - [ ] Bridge fact derivation, exact identity-only fact fields, exact session/attestation pane tokens, and both pre-prompt identity verifiers match bridge, runtime, and MCP source.
@@ -438,7 +446,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] Public `assignment.settlement`, worker `staleness`, and track `totals` fields match `mcp/contracts.ts` and `mcp/tools.ts`, including overflow-triggered saturation.
 - [ ] The ownership audit command, 2-second/128-KiB/64-path bounds, fail-open behavior, and no-attribution contract match source.
 - [ ] Same-name-only profile inheritance, the first-definition `role` requirement, and the bounded `guidance`/`intent`/`directive`/skill-metadata/rule fields match `extensions/lib/config.ts` and `config.schema.json`.
-- [ ] Config-only ORCH/lane guidance rendering, partial absence, degrade paths, the `skill://` pointer, and profile-filtered dispatch delivery match `extensions/lib/guidance.ts`, `extensions/lib/config.ts`, and `mcp/tools.ts`.
+- [ ] Marked role skills, historical guidance, profile isolation, required/advisory failure separation, pointers and unchanged duplicate-prompt suppression match `extensions/lib/guidance.ts`, `extensions/lib/templates.ts`, `extensions/lib/track.ts`, and `mcp/tools.ts`.
 - [ ] Every schema `describe` text states its constants as facts and carries the judgment criterion for the field it documents (JDG-001).
 - [ ] Inbound channel observation is read-time only, content-free, index-enumerated, deterministically ordered, bounded at 256 candidates / 32 entries / 8 prompt pointers, loud on failure, and surfaced at `herdr_track inspect` plus the ORCH first prompt with the non-delivered `notify_run` disposition warning (INB-001 through INB-008).
 - [ ] Ownership declarations are classified by the strict lexical grammar with unclassified bullets counted rather than guessed, every audit skip names one of the OBS-004 codes in the triggering response only, and `preflight` reports bounded inter-run overlaps without preventing, refusing, or guarding anything (OBS-003, OBS-004, ASN-014b).
@@ -489,8 +497,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] [`README.md`](../README.md): package, installation, responsibility routing, MCP surface, lifecycle, and safety.
 - [ ] [`docs/ARCHITECTURE.md`](ARCHITECTURE.md): process boundary, authority, assignment state, recovery, and trust boundaries.
 - [ ] `docs/SPEC.md`: unique normative IDs, current actions, acceptance scenarios, non-goals, and this checklist.
-- [ ] [`skills/herdr-delegation/SKILL.md`](../skills/herdr-delegation/SKILL.md): ORCH procedure and public contract.
-- [ ] [`skills/herdr-delegation/templates/protocol.md`](../skills/herdr-delegation/templates/protocol.md), [`protocol-orch.md`](../skills/herdr-delegation/templates/protocol-orch.md), and [`protocol-worker.md`](../skills/herdr-delegation/templates/protocol-worker.md): deployed role-scoped run protocol set.
+- [ ] [`skills/herdr-delegation/SKILL.md`](../skills/herdr-delegation/SKILL.md): creator-only handoff procedure and retirement; configuration and development remain in their separate packaged skills.
+- [ ] [`skills/herdr-delegation/templates/protocol.md`](../skills/herdr-delegation/templates/protocol.md), [`protocol-orch.md`](../skills/herdr-delegation/templates/protocol-orch.md), and [`protocol-worker.md`](../skills/herdr-delegation/templates/protocol-worker.md): accepted backing contracts, standalone marked-role bodies and historical compatibility.
 - [ ] [`skills/herdr-delegation/templates/handoff.md`](../skills/herdr-delegation/templates/handoff.md): responsibility and assignment handoff.
 - [ ] [`config.schema.json`](../config.schema.json), [`run.schema.json`](../run.schema.json), and [`reset.schema.json`](../reset.schema.json): strict public data contracts.
 - [ ] [`LICENSE`](../LICENSE): canonical Apache License 2.0 text and copyright notice.

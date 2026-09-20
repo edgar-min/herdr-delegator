@@ -14,8 +14,8 @@ Jev answers fixed questions about text with calibrated probabilities. It never g
 | `mcp/jev/questions.ts` | fixed English phrases + `QUESTION_VERSION` | the only place question wording lives; bump the version when wording changes |
 | `mcp/jev/rank.ts` | `rankPaths` / `rankChunks` / `rankText`, greedy batching under both budgets, `quality()` | results are complete and ordered; nothing is cut by a threshold inside the tool |
 | `mcp/jev/log.ts` | append-only `calibration.jsonl`: `decision` rows per question, `outcome` rows from what happened next | rows carry identifiers (path, range, index) and never document text or keys |
-| `mcp/jev/judge.ts`, `check.ts`, `config.ts` | moments `authoring` / `settlement` / `escalate`; sentence-vs-reference `check`; one config reader (`jev` block → env → defaults) | judge builds its own state from files and the registry, read-only; every result ends with `advisory` |
-| `mcp/server.ts` | `herdr_jev {action: rank\|judge\|check}`; `preflight`/`add` responses carry `data.jev` authoring, terminal `wait`/`inspect` carry `data.jev` settlement | attachments are non-fatal: a Jev failure becomes `data.jev.error`, never a refused call |
+| `mcp/jev/judge.ts`, `check.ts`, `config.ts` | moments `authoring` / `settlement` / `escalate` / `intake` / `plan`; sentence-vs-reference `check`; one config reader (`jev` block → env → defaults) | judge derives canonical run/assignment state where applicable; every judgment remains advisory |
+| `mcp/server.ts` | `herdr_jev {action: rank\|judge\|check\|log}`; authoring/settlement response attachments include request IDs | attachments are non-fatal; strict public input and action-specific validation precede outcome mutation |
 | `extensions/lib/jev-hooks.ts` | host hooks: long `read` → top ranges + menu; `glob` → ranked footer; `task` result → capped + pointer; other long outputs → ranked blocks | thresholds are env-overridable; every hook falls back to the untouched result on any error |
 | `.scratch/jev-*` | throwaway experiments (friction scans, escalation gate, hook smoke) | copy the shape, not the code |
 
@@ -34,9 +34,11 @@ Credentials: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment or `<age
 9. **Advisory only.** No Jev result settles, blocks settlement, or changes registry state. It is a table the judging agent reads before deciding.
 10. **Write ownership bullets as bare paths.** The first settlement judge on a real assignment returned reject 0.90 because every bullet ended in "(new)"; none classified, so no diff reached the state and three conditions had no evidence. The classifier now strips trailing annotations, and the ORCH writes bare paths. Read the judge's `changed_paths` counts before trusting its `next_action`.
 11. **Treat judge-vs-ORCH disagreement as the calibration signal.** A-003: judge reject, ORCH accept after machine checks (cause above). A-004: judge requery, ORCH accept — one condition asked for "a commit removing" files that were never tracked. Log both; they are how thresholds and question wording get fixed with evidence instead of taste.
-12. **One "why" sentence moves the authoring score.** A-004's goal scored purpose 1.57/3; adding a single sentence on why the work exists raised it to 2.58/3 with the same completion conditions. That is the shower replacement in practice: 0.7 s, 3k tokens, no sub-session.
+12. **A "why" sentence can move the authoring score; that is not a comprehension test.** A-004's goal scored purpose 1.57/3; adding one sentence on why the work exists raised it to 2.58/3 with the same completion conditions. This observed response sensitivity does not establish clearer understanding or replace an independent reader.
 13. **Validation tolerance must scale.** The API rounds probabilities; a Choice over ~50 paragraph options summed to 0.990 and failed a fixed ±0.01 check. Tolerance is now 0.01 + 0.002 × options.
 14. **Ownership still applies to you.** The ORCH once edited a lane-owned file while adding a footer; tsc caught it against the lane's in-progress code. A hook that checks `tool_call` on edit/write against active ownership is an open candidate.
+15. **Separate floating-point roundoff from judgment tolerance.** Actual authoring errors printed weighted mean 2.490 versus score 2.47. In an independent deterministic `ask` fixture, JavaScript's mismatch was 0.020000000000000018: the old inclusive-0.02 validator rejected it after two fetches; a scale-aware machine-epsilon allowance accepted it after one. Both versions accepted a 0.01 control and rejected a 0.021 control. This repairs the numeric boundary without tuning the judgment tolerance. The fixture does not reconstruct unretained historical model responses (jev-internalize/2026-09-20, A-009).
+16. **Verify validation through the caller's transport, not only the handler.** A-008's real MCP call carried an unknown `note`; the SDK stripped it before the strict handler, and the outcome was appended. A-013 exercised the repaired strict SDK registration: unknown keys were rejected with the log byte-for-byte unchanged, known but action-inappropriate fields also caused no append, and a valid outcome appended exactly once. Handler strictness alone did not prove the public boundary strict (jev-internalize/2026-09-20, A-008/A-013).
 
 ## Adding a new judgment — the shape
 
@@ -45,18 +47,25 @@ Credentials: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) from the environment or `<age
 3. Write the questions in `questions.ts`: English; one narrow proposition each; target by state path; Choice gets a `none`/no-match key when nothing may fit; Score levels describe situations a reader could recognize.
 4. Compose in code: max for two phrasings of the same proposition, min for independent requirements (a restatement must match **and** be complete — max let an incomplete restatement pass), thresholds only to choose a one-line `next_action`, never to drop results.
 5. Log a `decision` row per question with an identifier target. Decide what later event is the `outcome` and log it from a hook or the next tool call.
-6. Verify with real calls on this run's own artifacts and paste the printed table, not JSON, into the report. Note the token count and latency (a 12k-token rank of a 674-line file takes about one second).
-7. Surface it where the agent already is: a server response field, a hook footer, or a CLI subcommand — a new skill document is the last resort, and it is five lines that name the action and the branch.
+6. Verify with real calls on this run's own artifacts and put the printed table, not a raw JSON dump, in the report. Record the actual input tokens and latency; do not reuse another payload's timing as a prediction.
+7. Put judgment assistance at an existing response, hook or supported tool boundary. Keep mandatory role instructions together in the supplied role skill, with applicable profile guidance; do not replace the operating contract with a tiny pointer-only skill. Generation, delivery and actual consumption are separate observations.
 
 ## Where the judgments fire now
 
 | moment | where | what the agent sees |
 |---|---|---|
-| authoring | `herdr_assignment preflight`/`add` → `data.jev`, or `cli judge --moment authoring --file` | 3 scores, per-condition observability, maturity, profile distribution vs declared, one-line next action |
-| settlement | terminal `herdr_assignment wait` / `herdr_worker inspect` → `data.jev`, or `cli judge --moment settlement` | per-condition p_met + evidence paragraph, claims/evidence separation, out-of-scope probability, changed paths by ownership, next action |
-| escalate | `cli judge --moment escalate --question … --context …` | ASK HUMAN / decide / observe with the ladder distribution — used before interrupting the user |
-| any read | `read` hook, `cli rank` | top ranges + menu + intent quality |
+| authoring | `herdr_assignment preflight`/`add` → `data.jev`, or supported `herdr_jev judge` | 3 scores, per-condition observability, maturity, profile distribution, next action and request ID |
+| settlement | terminal `herdr_assignment wait` / `herdr_worker inspect` → `data.jev`, or supported `herdr_jev judge` | per-condition p_met + independently selected evidence paragraph, ownership observations, next action and request ID; shared-worktree changes are not attribution |
+| escalate | `herdr_jev {action:"judge", moment:"escalate", question, context?}` | ASK HUMAN / decide / observe with ladder distribution; advisory, not a replacement for reserved approval |
+| intake | `herdr_jev {action:"judge", moment:"intake", track_id, run_id, assignment_id, restatement}` | canonical assignment comparison: goal, completion conditions and boundaries |
+| plan | `herdr_jev {action:"judge", moment:"plan", track_id, run_id}` | canonical mandate/plan comparison: unresolved decisions, coverage and boundaries |
+| outcome accounting | `herdr_jev {action:"log", op:"outcome", request_id, outcome}` / `op:"summary", request_ids` | identifier-only outcome append or recorded decision/outcome counts; no inferred accuracy or success |
+| exploratory read | `herdr_jev rank`, existing read hook or CLI rank | ranked candidate paths/ranges and intent quality; exact named mandatory inputs need no artificial ranking call |
+
+The added intake, plan and log operations are MCP surfaces; do not assume matching CLI commands or an arbitrary configured-moment executor.
 
 ## Numbers to remember
 
-Baseline over 84 runs: ORCH peak context median 381k tokens; 62% of it tool results, half of those `read`. A rank call costs 1–13k Jev input tokens ($0.042 per million) and returns in 0.3–1.6 s. Pilot scans: 176 KB of friction log → 60 lines read by the ORCH. In the run that built this (jev-tools/2026-09-20, hooks not yet live, CLI used by hand), the ORCH settled two implementation assignments without opening a lane report, and its peak context was 359k tokens at close against a baseline median of 381k — a modest peak difference, because most of that session was design conversation; the per-read savings are in the run's observations.md §F.
+The saved 84-run CSV has a median ORCH peak context of 381,151 tokens. The corresponding conversation-text estimate (`chars / 4`) attributes 61.5% to tool results and 49.5% of tool-result text to reads, with 3,546 read calls. These text-share estimates are not token-meter attribution. The predecessor run's final-handoff cutoff measured peak context 363,499 and 47 read calls; its mutable CSV value 359,045 came from a different cutoff and is not the final close value.
+
+In the independent generated-output fixture, complete role input shrank from 18,810 to 7,994 bytes for ORCH and from 10,215 to 5,665 bytes for the custom worker profile. Those are generated-byte comparisons, not observed savings in agent tokens, time or comprehension. Fresh worker A-014 subsequently reported reading its generated role skill and performing intake; the still-configured external `readchk` route also ran, so this does not establish route-free equivalence. Raw results and provenance live in the `jev-internalize/2026-09-20` verification reports; retain their cutoff and fixture qualifications when citing them.

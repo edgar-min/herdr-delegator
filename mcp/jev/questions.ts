@@ -3,7 +3,7 @@
 // calibration rows carry it so thresholds are never mixed across wordings.
 import type { Question } from "./client.js";
 
-export const QUESTION_VERSION = "2026-09-20.3";
+export const QUESTION_VERSION = "2026-09-20.4";
 
 /**
  * rank: two phrasings of the same proposition per item, combined by max in code.
@@ -213,6 +213,75 @@ export function escalateQuestions(): Record<string, Question> {
       criteria: {
         true: "The wrong choice is undone by editing a file, reverting a commit, or calling again.",
         false: "The wrong choice spends money, publishes something, touches an account, or destroys state a later call cannot restore.",
+      },
+    },
+  };
+}
+
+/**
+ * intake: a worker has restated its assignment before spending work, and the restatement is compared with the
+ * canonical artifact it claims to restate. The state is `assignment` (the registered artifact's own fields) and
+ * `restatement` (the worker's words). Each question names the artifact section it judges against, and coverage is
+ * asked separately from alignment so a restatement that echoes one sentence well is not read as a complete one.
+ */
+export function intakeQuestions(): Record<string, Question> {
+  return {
+    goal_aligned: {
+      type: "noul",
+      instructions: "`restatement` describes the same work `assignment.goal` assigns.",
+      criteria: {
+        true: "The outcome `restatement` says it will produce is the outcome `assignment.goal` asks for, with no substituted, widened, or narrowed target.",
+        false: "`restatement` names a different outcome, a different subject, or a scope `assignment.goal` does not ask for.",
+      },
+    },
+    conditions_covered: {
+      type: "noul",
+      instructions: "Every bullet of `assignment.completion_conditions` is accounted for somewhere in `restatement`.",
+      criteria: {
+        true: "For each bullet, `restatement` says what it will do about that bullet; none is left unmentioned.",
+        false: "At least one bullet of `assignment.completion_conditions` has no counterpart in `restatement`, even if the bullets it does mention are restated well.",
+      },
+    },
+    boundaries_respected: {
+      type: "noul",
+      instructions: "The work `restatement` plans stays inside `assignment.write_ownership`, `assignment.dependencies`, and `assignment.user_boundaries`.",
+      criteria: {
+        true: "Everything `restatement` says it will change or do is permitted by those three sections.",
+        false: "`restatement` plans to touch something outside `assignment.write_ownership`, ignores a bullet of `assignment.dependencies`, or does something `assignment.user_boundaries` forbids.",
+      },
+    },
+  };
+}
+
+/**
+ * plan: the run's own mandate and plan are compared before work is dispatched from them. The state is `mandate`
+ * (the orchestrator instructions of this run) and `plan` (its plan document). An item the plan records as a
+ * decision the user already made is settled information, not an unresolved question.
+ */
+export function planQuestions(): Record<string, Question> {
+  return {
+    unresolved_inputs: {
+      type: "noul",
+      instructions: "Work `plan` proposes still depends on information that neither `plan` nor `mandate` resolves.",
+      criteria: {
+        true: "At least one proposed item cannot start without a fact, decision, or artifact that neither document states.",
+        false: "Every input the proposed work needs is stated in `plan` or `mandate`, including items recorded as decisions the user already made or as lookups `plan` assigns to a named owner.",
+      },
+    },
+    mandate_covered: {
+      type: "noul",
+      instructions: "Every outcome `mandate` requires appears as work in `plan`.",
+      criteria: {
+        true: "For each outcome `mandate` names, `plan` carries an item that would produce it.",
+        false: "At least one outcome `mandate` requires has no corresponding item in `plan`.",
+      },
+    },
+    boundaries_explicit: {
+      type: "noul",
+      instructions: "`plan` states, for the work it proposes, who is responsible and what each item depends on.",
+      criteria: {
+        true: "Each proposed item names its owner or lane and the items or artifacts it waits on, rather than leaving either to be inferred.",
+        false: "At least one proposed item leaves its owner or its dependency on other work unstated.",
       },
     },
   };

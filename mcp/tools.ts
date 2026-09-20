@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
+import { materializeGuidance, materializeWorkerGuidance, materializeWorkerRoleSkill } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -2063,7 +2063,7 @@ export class CompositeTools {
     const creatorWarning = stampedCreator.verified === false
       ? "Opening creator is unverified because pane attestation failed with omp_fact_bridge_mismatch; existing-run operations remain fail-closed."
       : undefined;
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, observation.role_skill_warning, guidance.warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
     const retirementText = stampedCreator.verified === false
       ? "the unverified opening pane is retired for this track and cannot issue guarded calls"
       : "this session is retired for this track and every guarded call it makes now fails with creator_session_retired";
@@ -2186,7 +2186,7 @@ export class CompositeTools {
       ]).catch(() => undefined);
     }
     const observation = isObject(started.observation) ? started.observation : {};
-    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning]) {
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, observation.role_skill_warning, guidance.warning]) {
       if (typeof candidate === "string") warnings.push(candidate);
     }
     return {
@@ -3124,18 +3124,28 @@ export class CompositeTools {
     const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
     const laneProfile = artifact?.assignment.profile;
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
-    // The lane's own advisory document, materialized at dispatch so it carries
-    // the configuration current now. Absence stays a no-op: an unknown profile, a
+    // The lane's own documents, materialized at dispatch — including FIFO
+    // promotion — so they carry the configuration current now. A run whose
+    // protocol document is a marked role template gets one generated worker
+    // skill that already contains this lane's advisory text; a run created
+    // before role skills keeps the protocol-plus-guidance pair it was created
+    // with. Absence stays a no-op on that legacy path: an unknown profile, a
     // profile the configuration gives neither a directive nor a route, and a
     // failed render or write all name no path, so the pointer omits the clause.
-    const laneGuidance = laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
+    const laneRoleSkill = await materializeWorkerRoleSkill(store.runPath, workerId, laneProfile);
+    if (laneRoleSkill.warning) warnings.push(laneRoleSkill.warning);
+    const laneGuidance = !laneRoleSkill.path && laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
     if (laneGuidance.warning) warnings.push(laneGuidance.warning);
     // The pointer is the worker's first display surface, so it names the full
     // coordinate — A-001 exists in dozens of runs and only <track>/<run>/<id>
     // tells them apart — and the artifact's label when it has one. Identity
     // stays numeric where it is parsed: the completion block the worker must
     // append carries the bare ID, never the coordinate and never the label.
-    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
+    const roleDocument = laneRoleSkill.path
+      ? `worker skill ${laneRoleSkill.path}`
+      : `worker protocol ${workerProtocolPath}`;
+    const wakeReference = laneRoleSkill.path ? "your worker skill" : "protocol-worker.md";
+    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; ${roleDocument}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per ${wakeReference}.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);

@@ -5,11 +5,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { ask, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
+import { ask, assertBudget, BudgetExceeded, estimateTokens, REQUEST_TOKENS, SAFETY_MARGIN, STATE_PLUS_LONGEST_TOKENS, type AskOptions, type Question } from "./client.js";
 import { jevConfig } from "./config.js";
 import { chunk } from "./chunk.js";
 import { append, requestId, type DecisionRow } from "./log.js";
-import { AUTHORING_SCORES, ESCALATION_RUNGS, QUESTION_VERSION, SETTLEMENT_ACTIONS, authoringQuestions, escalateQuestions, settlementQuestions } from "./questions.js";
+import { AUTHORING_SCORES, ESCALATION_RUNGS, QUESTION_VERSION, SETTLEMENT_ACTIONS, authoringQuestions, escalateQuestions, intakeQuestions, planQuestions, settlementQuestions } from "./questions.js";
 import { DelegationStore } from "../registry";
 import type { AssignmentArtifact, AssignmentRecord } from "../contracts";
 import { classifyOwnershipDeclarations, loadDelegatorConfig } from "../../io.github.edgar-min.herdr-delegator/extensions/lib/config";
@@ -36,6 +36,20 @@ const SCORE_MIN = 2;
 
 export function thresholds(cwd: string = process.cwd()): Thresholds {
   return { hint_min_p: jevConfig(cwd).hint_min_p, score_min: SCORE_MIN };
+}
+
+/**
+ * A moment whose state is one bounded document pair either fits the documented request or it does not; there is
+ * no partial judgment to fall back on, because dropping half a plan would silently change what was judged. The
+ * budget is therefore checked before the request and reported as its own error naming the moment.
+ */
+function assertMomentBudget(moment: string, state: unknown, questions: Record<string, Question>): void {
+  try {
+    assertBudget(state, questions);
+  } catch (error: unknown) {
+    if (error instanceof BudgetExceeded) throw new Error(`judge ${moment}: the state does not fit the request budget (${error.message}). Nothing was truncated; shorten the input document instead.`);
+    throw error;
+  }
 }
 
 const BUILTIN_PROFILES: Record<string, string> = {
@@ -67,6 +81,8 @@ export type AuthoringInput = AuthoringCoordinates | { file: string };
 export type ScoreRow = { id: string; label: string; score: number; probabilities: Record<string, number> };
 export type AuthoringOutput = {
   moment: "authoring";
+  /** The calibration request id of this judgment: what `herdr_jev log outcome` records the observed outcome against. */
+  request_id: string;
   source: string;
   assignment: { assignment_id: string; responsibility_key: string; profile: string; label?: string };
   scores: ScoreRow[];
@@ -199,6 +215,7 @@ export async function judgeAuthoring(input: AuthoringInput, options: AskOptions 
 
   return {
     moment: "authoring",
+    request_id: rid,
     source,
     assignment: { assignment_id: artifact.assignment_id, responsibility_key: artifact.responsibility_key, profile: artifact.profile, ...(artifact.label ? { label: artifact.label } : {}) },
     scores,
@@ -220,6 +237,7 @@ export type SettlementInput = { track_id: string; run_id: string; assignment_id:
 export type OwnershipLabel = "owned" | "unowned" | "unclassified";
 export type SettlementOutput = {
   moment: "settlement";
+  request_id: string;
   source: string;
   assignment: { assignment_id: string; responsibility_key: string; worker_id: string; profile: string; state: string };
   report: { path: string; paragraphs: number; segment_from: string };
@@ -419,6 +437,7 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
 
   return {
     moment: "settlement",
+    request_id: rid,
     source: artifactFile.path,
     assignment: { assignment_id: artifact.assignment_id, responsibility_key: artifact.responsibility_key, worker_id: record.worker_id, profile: artifact.profile, state: record.state },
     report: { path: reportPath, paragraphs: paragraphs.length, segment_from: from },
@@ -446,6 +465,7 @@ export async function judgeSettlement(input: SettlementInput, options: AskOption
 export type EscalateInput = { question: string; context?: string };
 export type EscalateOutput = {
   moment: "escalate";
+  request_id: string;
   line: "ASK HUMAN" | "decide" | "observe";
   rung: string;
   probabilities: Record<string, number>;
@@ -483,11 +503,177 @@ export async function judgeEscalation(input: EscalateInput, options: AskOptions 
   ]);
   return {
     moment: "escalate",
+    request_id: rid,
     line,
     rung: ESCALATION_RUNGS.includes(rung.choice as (typeof ESCALATION_RUNGS)[number]) ? rung.choice : "autonomous",
     probabilities: rung.probabilities,
     blocking,
     reversible,
+    advisory: ADVISORY,
+    requests: 1,
+    input_tokens: response.usage?.input_tokens ?? 0,
+    model: response.model,
+  };
+}
+
+// ------------------------------------------------------------------- intake
+
+export type IntakeInput = { track_id: string; run_id: string; assignment_id: string; restatement: string };
+export type IntakeOutput = {
+  moment: "intake";
+  request_id: string;
+  source: string;
+  run: { track_id: string; run_id: string };
+  assignment: { assignment_id: string; responsibility_key: string; worker_id?: string; profile: string };
+  p_goal_aligned: number;
+  p_conditions_covered: number;
+  p_boundaries_respected: number;
+  conditions: number;
+  advisory: string;
+  requests: number;
+  input_tokens: number;
+  model: string;
+};
+
+/**
+ * Did the worker understand the assignment it was given? The comparison is between the worker's own restatement
+ * and the canonical artifact at the coordinate — never the worker's report, and never a rewrite of the artifact.
+ * Coverage is asked as its own question because a restatement can echo one condition faithfully and miss four.
+ */
+export async function judgeIntake(input: IntakeInput, options: AskOptions = {}): Promise<IntakeOutput> {
+  const store = await DelegationStore.resolve(input.track_id, input.run_id);
+  const registry = await store.read();
+  const record = registry.assignments[input.assignment_id];
+  if (!record) throw new Error(`assignment ${input.assignment_id} is not in the run registry at ${store.runPath}`);
+  const artifactFile = await store.preflight(input.assignment_id, record.responsibility_key);
+  const artifact = artifactFile.assignment;
+
+  const state = {
+    assignment: {
+      assignment_id: artifact.assignment_id,
+      responsibility_key: artifact.responsibility_key,
+      profile: artifact.profile,
+      ...(artifact.label ? { label: artifact.label } : {}),
+      goal: artifact.goal,
+      completion_conditions: artifact.completion_conditions,
+      write_ownership: artifact.write_ownership,
+      dependencies: artifact.dependencies,
+      user_boundaries: artifact.user_boundaries,
+    },
+    restatement: input.restatement,
+  };
+  const questions = intakeQuestions();
+  assertMomentBudget("intake", state, questions);
+  const response = await ask(state, questions, options);
+
+  const noul = (id: string): number => {
+    const answer = response.answers[id];
+    if (answer.type !== "noul") throw new Error(`intake: answer ${id} is not a noul`);
+    return answer.noul;
+  };
+  const p_goal_aligned = noul("goal_aligned");
+  const p_conditions_covered = noul("conditions_covered");
+  const p_boundaries_respected = noul("boundaries_respected");
+
+  const rid = requestId();
+  const ts = new Date().toISOString();
+  const row = (question_id: string, target: string, probability: number): DecisionRow => ({
+    ts, event: "decision", request_id: rid, tool: "judge", stage: "intake", question_id, question_version: QUESTION_VERSION, model: response.model, probability, target,
+  });
+  append([
+    row("goal_aligned", `${artifact.assignment_id}:goal`, p_goal_aligned),
+    row("conditions_covered", `${artifact.assignment_id}:conditions`, p_conditions_covered),
+    row("boundaries_respected", `${artifact.assignment_id}:boundaries`, p_boundaries_respected),
+  ]);
+
+  return {
+    moment: "intake",
+    request_id: rid,
+    source: artifactFile.path,
+    run: { track_id: input.track_id, run_id: input.run_id },
+    assignment: { assignment_id: artifact.assignment_id, responsibility_key: artifact.responsibility_key, ...(record.worker_id ? { worker_id: record.worker_id } : {}), profile: artifact.profile },
+    p_goal_aligned,
+    p_conditions_covered,
+    p_boundaries_respected,
+    conditions: artifact.completion_conditions.length,
+    advisory: ADVISORY,
+    requests: 1,
+    input_tokens: response.usage?.input_tokens ?? 0,
+    model: response.model,
+  };
+}
+
+// --------------------------------------------------------------------- plan
+
+export type PlanInput = { track_id: string; run_id: string };
+export type PlanOutput = {
+  moment: "plan";
+  request_id: string;
+  run: { track_id: string; run_id: string; run_path: string };
+  sources: { mandate: string; plan: string };
+  p_unresolved_inputs: number;
+  p_mandate_covered: number;
+  p_boundaries_explicit: number;
+  advisory: string;
+  requests: number;
+  input_tokens: number;
+  model: string;
+};
+
+const PLAN_DOCUMENTS = { mandate: "orchestrator-instructions.md", plan: "plan.md" } as const;
+
+/**
+ * The run's own two documents, judged against each other: what the mandate requires and what the plan proposes.
+ * It produces no decomposition, approves nothing, and omits nothing at a threshold — it reports three
+ * probabilities about documents the ORCH already owns.
+ */
+export async function judgePlan(input: PlanInput, options: AskOptions = {}): Promise<PlanOutput> {
+  const store = await DelegationStore.resolve(input.track_id, input.run_id);
+  const read = (name: keyof typeof PLAN_DOCUMENTS): { path: string; text: string } => {
+    const target = path.join(store.runPath, PLAN_DOCUMENTS[name]);
+    try {
+      return { path: target, text: readFileSync(target, "utf8") };
+    } catch (error) {
+      throw new Error(`judge plan: cannot read ${PLAN_DOCUMENTS[name]} of this run (${(error as Error).message}).`);
+    }
+  };
+  const mandate = read("mandate");
+  const plan = read("plan");
+
+  const state = { mandate: mandate.text, plan: plan.text };
+  const questions = planQuestions();
+  assertMomentBudget("plan", state, questions);
+  const response = await ask(state, questions, options);
+
+  const noul = (id: string): number => {
+    const answer = response.answers[id];
+    if (answer.type !== "noul") throw new Error(`plan: answer ${id} is not a noul`);
+    return answer.noul;
+  };
+  const p_unresolved_inputs = noul("unresolved_inputs");
+  const p_mandate_covered = noul("mandate_covered");
+  const p_boundaries_explicit = noul("boundaries_explicit");
+
+  const rid = requestId();
+  const ts = new Date().toISOString();
+  const target = `${input.track_id}/${input.run_id}`;
+  const row = (question_id: string, probability: number): DecisionRow => ({
+    ts, event: "decision", request_id: rid, tool: "judge", stage: "plan", question_id, question_version: QUESTION_VERSION, model: response.model, probability, target,
+  });
+  append([
+    row("unresolved_inputs", p_unresolved_inputs),
+    row("mandate_covered", p_mandate_covered),
+    row("boundaries_explicit", p_boundaries_explicit),
+  ]);
+
+  return {
+    moment: "plan",
+    request_id: rid,
+    run: { track_id: input.track_id, run_id: input.run_id, run_path: store.runPath },
+    sources: { mandate: mandate.path, plan: plan.path },
+    p_unresolved_inputs,
+    p_mandate_covered,
+    p_boundaries_explicit,
     advisory: ADVISORY,
     requests: 1,
     input_tokens: response.usage?.input_tokens ?? 0,
@@ -505,6 +691,7 @@ const ATTACH_EXCERPT_LINES = 2;
 export function compactAuthoring(out: AuthoringOutput): object {
   return {
     moment: out.moment,
+    request_id: out.request_id,
     scores: Object.fromEntries(out.scores.map((s) => [s.id, Number(s.score.toFixed(2))])),
     conditions: out.conditions.slice(0, ATTACH_CONDITIONS).map((c) => ({ index: c.index, p_observable: Number(c.p_observable.toFixed(2)) })),
     ...(out.conditions.length > ATTACH_CONDITIONS ? { conditions_omitted: out.conditions.length - ATTACH_CONDITIONS } : {}),
@@ -520,6 +707,7 @@ export function compactSettlement(out: SettlementOutput): object {
   const paths = (list: string[]): object => ({ count: list.length, ...(list.length ? { sample: list.slice(0, ATTACH_PATHS) } : {}), ...(list.length > ATTACH_PATHS ? { omitted: list.length - ATTACH_PATHS } : {}) });
   return {
     moment: out.moment,
+    request_id: out.request_id,
     assignment_id: out.assignment.assignment_id,
     conditions: out.conditions.slice(0, ATTACH_CONDITIONS).map((c) => ({
       index: c.index,

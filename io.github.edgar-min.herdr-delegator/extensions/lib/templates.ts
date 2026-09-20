@@ -51,6 +51,7 @@ const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
     "9e8f200214bec2133866e309a0053cbf73dce82539d4c8f17697c1fefd55610f",
     "a07b6449a6e335303645b813e494f8aa0c06d6093050e147c042954081941747",
     "a7a93e7ade3e80f0c1775663fea64c07c3b055ebc7f25758ecb2261ba4e2cc6b",
+    "ac3004f8d155b326224a66dfc018072ee450a3a3f359ff6b90eeb42a35bf06d8",
     "d463fcc4789392191eadfb8b060a3f893f25c966ccb58f0df04c452f8a1afcae",
     "d6ab3311f9e00ebd998c90830921d245802713135f4cde785b7f126301c1b2b3",
     "df9d6dffe8247bccc9835fe7568cc804014bd477307a45bc401bec9ebd4a7243",
@@ -61,6 +62,7 @@ const HISTORICAL_TEMPLATE_SHA256: Record<string, readonly string[]> = {
     "0207d67b390abc449c2424bed0e51df398406fa3b8a4c708dbf01b6496d8679e",
     "028ca798cdde7830a0d7374e4240370ae93690d0b9bfbae1bf2a46f6f1432c82",
     "0cfef803d9d8d39eb426fbc275f22bd18644e790cee7b610746d2fc64f1e466e",
+    "2c855e47d2ab24c9a4932a94c61919518c93a6ee5f3ac40581d73d55675cf70b",
     "6da86841e66d7c9cf6cc00e4afa519002b5924806df417f4fff4a6fcfd694ee5",
     "8d7be06c72c1a0d0524f32a5d318fc47bf25c3a1070ce3f7bab56ff45cf10ce9",
     "aee1f733ca483e7eccbb928ba3c2759dbec1b689742f32853caa44e781dfd8e4",
@@ -99,4 +101,35 @@ export function acceptProtocolDocument(name: string, existing: Buffer, template:
     current: false,
     warning: `${name} in this run is an older shipped version (sha256 ${digest}); the installed template differs. The run keeps working on the text it was created with — read that file, not the current template, and create a fresh run if you need the newer protocol.`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Role-skill templates.
+//
+// A role template that carries the frontmatter name below is a standalone role
+// skill: one document a session reads instead of the common-protocol chain. An
+// older shipped template has no frontmatter, so its runs keep pointing at the
+// backing document exactly as they always did. The marker is the selector —
+// never a run's age, a config flag, or a digest list — so a historical run and
+// a fresh one each get the delivery its own accepted bytes describe.
+// ---------------------------------------------------------------------------
+
+export const ROLE_SKILL_TEMPLATE_NAMES: Record<string, string> = {
+  "protocol-orch.md": "herdr-orchestrator",
+  "protocol-worker.md": "herdr-worker",
+};
+
+/**
+ * The role-skill body of a protocol document, or `undefined` when the document
+ * is not a marked role template. Frontmatter is preserved in the body: the
+ * generated artifact is the skill, and its `name` is what the reader sees.
+ */
+export function roleSkillBody(name: string, document: Buffer | string): string | undefined {
+  const expected = ROLE_SKILL_TEMPLATE_NAMES[name];
+  if (!expected) return undefined;
+  const text = typeof document === "string" ? document : document.toString("utf8");
+  const front = /^---\n([\s\S]*?)\n---\n/.exec(text);
+  if (!front) return undefined;
+  const declared = /^name:[ \t]*(\S+)[ \t]*$/m.exec(front[1])?.[1];
+  return declared === expected ? text : undefined;
 }

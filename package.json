@@ -1,6 +1,6 @@
 {
   "name": "herdr-delegator",
-  "version": "3.10.0",
+  "version": "3.11.0",
   "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
   "type": "module",
   "private": false,
@@ -29,6 +29,8 @@
     "mcp.json",
     "bin/herdr-delegator-mcp",
     "skills/herdr-delegation/**",
+    "skills/herdr-config/**",
+    "skills/build-your-own-jev/**",
     "*.schema.json",
     "*.example.json",
     "README.md",

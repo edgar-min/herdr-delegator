@@ -25,14 +25,19 @@
  * directive renders no section, a moment with no routes renders no section,
  * and a profile with neither a directive nor routes renders no document.
  *
- * The module is non-blocking by construction. A render failure degrades to a
- * document that names what could not be rendered; only a failed write is
- * reported back, as a warning, to a caller that continues regardless.
+ * The module is non-blocking for advisory material: a render failure degrades to
+ * a document that names what could not be rendered, and only a failed write is
+ * reported back, as a warning, to a caller that continues regardless. The role
+ * skills below are the one exception, and only in one direction: their required
+ * role body is a contract, so a failed write of a marked role skill throws,
+ * while the advisory half still degrades to a named warning.
  */
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadDelegatorConfig, readRunManifest, writeAtomic } from "./config";
 import type { DelegatorConfig, SkillRoute, SkillRouteBoundary } from "./contracts";
-import { ORCH_MOMENTS, compactMessage } from "./contracts";
+import { ContractError, ORCH_MOMENTS, compactMessage } from "./contracts";
+import { roleSkillBody } from "./templates";
 
 export const GUIDANCE_DOCUMENT_NAME = "guidance.md";
 
@@ -158,9 +163,14 @@ function renderProfileTable(config: DelegatorConfig): string[] {
   return [ORCH_PROFILE_SECTION, "", ...ORCH_PROFILE_TABLE_HEAD, ...rows, "", ORCH_SELECTION_AXES, ""];
 }
 
+/** The ORCH's advisory blocks, in document order, shared by `guidance.md` and the ORCH role skill. */
+function orchAdvisorySections(config: DelegatorConfig): string[] {
+  return [...renderOrchestratorDirective(config), ...renderProfileTable(config), ...renderOrchRoutes(config)];
+}
+
 /** Renders the ORCH document from an already-resolved configuration. Never throws. */
 export function renderGuidanceDocument(config: DelegatorConfig): string {
-  return [ORCH_HEADER, "", ...renderOrchestratorDirective(config), ...renderProfileTable(config), ...renderOrchRoutes(config), ORCH_FOOTER, ""].join("\n");
+  return [ORCH_HEADER, "", ...orchAdvisorySections(config), ORCH_FOOTER, ""].join("\n");
 }
 
 /**
@@ -169,6 +179,18 @@ export function renderGuidanceDocument(config: DelegatorConfig): string {
  * pointer then names none. Never throws.
  */
 export function renderWorkerGuidanceDocument(config: DelegatorConfig, profile: string): string | undefined {
+  const sections = workerAdvisorySections(config, profile);
+  if (!sections) return undefined;
+  return [`# ${workerGuidanceDocumentName(profile)} — ${WORKER_HEADER_SUFFIX}`, "", ...sections, WORKER_FOOTER, ""].join("\n");
+}
+
+/**
+ * One lane's advisory blocks, or nothing when the profile has neither a
+ * directive nor a route. The caller decides what absence means: a standalone
+ * document is then not written at all, while a role skill still ships its
+ * required body.
+ */
+function workerAdvisorySections(config: DelegatorConfig, profile: string): string[] | undefined {
   const rules = config.skill_routing?.rules ?? [];
   const directive = config.worker_profiles[profile]?.directive;
   const routeLines: string[] = [];
@@ -181,13 +203,9 @@ export function renderWorkerGuidanceDocument(config: DelegatorConfig, profile: s
   }
   if (!directive && !routeLines.length) return undefined;
   return [
-    `# ${workerGuidanceDocumentName(profile)} — ${WORKER_HEADER_SUFFIX}`,
-    "",
     ...(directive ? [WORKER_DIRECTIVE_SECTION, "", cell(directive), ""] : []),
     ...(routeLines.length ? [WORKER_ROUTE_SECTION, "", ...routeLines, ""] : []),
-    WORKER_FOOTER,
-    "",
-  ].join("\n");
+  ];
 }
 
 /** The degrade rendering: the document exists and names what could not be rendered. */
@@ -270,4 +288,127 @@ export async function materializeWorkerGuidance(
     };
   }
   return { path: target };
+}
+
+// ---------------------------------------------------------------------------
+// Role skills.
+//
+// A marked role template is a complete role skill on its own, so a supported
+// session reads ONE run-local document instead of a common protocol, a role
+// protocol and an advisory document. The generated artifact is that template's
+// body with this run's advisory configuration appended beneath it: same
+// criteria, same asymmetry, same authority limits as the standalone documents,
+// delivered where the reading already happens rather than behind a second
+// pointer. These are explicit paths under the run, not globally discovered
+// skill names, so nothing here registers a name or scans a directory.
+// ---------------------------------------------------------------------------
+
+export const ROLE_SKILL_ROOT = "role-skills";
+export const ORCH_ROLE_SKILL_PATH = path.join(ROLE_SKILL_ROOT, "orchestrator", "SKILL.md");
+
+/** One lane, one generated skill. The worker id is the registry's own lane identity, never a new one. */
+export function workerRoleSkillPath(workerId: string): string {
+  return path.join(ROLE_SKILL_ROOT, "workers", workerId, "SKILL.md");
+}
+
+const ROLE_ADVISORY_SECTION = "## Advisory configuration";
+const ROLE_ADVISORY_NOTE = "Rendered from the delegator configuration when this document was generated. Criteria only: it changes no authority, scope, ownership, or completion condition.";
+const ROLE_ADVISORY_ABSENT = "No directive or skill route is configured for this role. The instructions above are the whole contract.";
+
+/** Body first, advisory beneath: the required half never moves, whatever configuration says. */
+function roleSkillDocument(body: string, advisory: string[]): string {
+  return [body.replace(/\s+$/, ""), "", ROLE_ADVISORY_SECTION, "", ROLE_ADVISORY_NOTE, "", ...advisory].join("\n");
+}
+
+export function renderOrchRoleSkill(body: string, config: DelegatorConfig): string {
+  const sections = orchAdvisorySections(config);
+  return roleSkillDocument(body, sections.length ? [...sections, ORCH_FOOTER, ""] : [ROLE_ADVISORY_ABSENT, ""]);
+}
+
+/**
+ * The lane's own profile text and nothing else — an unknown profile and an
+ * advisory-free one both still get the required worker contract, which is the
+ * difference between this and the standalone `guidance-<profile>.md`.
+ */
+export function renderWorkerRoleSkill(body: string, config: DelegatorConfig, profile: string | undefined): string {
+  const sections = profile ? workerAdvisorySections(config, profile) : undefined;
+  return roleSkillDocument(body, sections ? [...sections, WORKER_FOOTER, ""] : [ROLE_ADVISORY_ABSENT, ""]);
+}
+
+/** The degrade rendering: the role contract is intact and the document says what configuration could not be read. */
+export function renderRoleSkillAdvisoryFailure(body: string, reason: string): string {
+  return roleSkillDocument(body, [
+    `The advisory configuration could not be rendered: ${compactMessage(reason, "unknown error")}`,
+    "",
+    "Nothing above is gated by it. Read the delegator configuration directly if profile criteria or skill routes matter.",
+    "",
+  ]);
+}
+
+/**
+ * Generates one role skill from the run's own backing protocol document, or
+ * reports that this run has none: an unmarked historical document yields no
+ * path, and its caller keeps the pointers that run was created with. A marked
+ * document is a contract, so only its advisory half may degrade — a failed
+ * write throws the same storage error shape the rest of the run layout uses.
+ */
+async function materializeRoleSkill(
+  runPath: string,
+  templateName: string,
+  relativePath: string,
+  render: (body: string, config: DelegatorConfig) => string,
+): Promise<{ path?: string; warning?: string }> {
+  let body: string | undefined;
+  try {
+    body = roleSkillBody(templateName, await readFile(path.join(runPath, templateName)));
+  } catch {
+    return {};
+  }
+  if (!body) return {};
+  let document: string;
+  let warning: string | undefined;
+  try {
+    const manifest = await readRunManifest(runPath);
+    const { config } = await loadDelegatorConfig(runPath, manifest.cwd);
+    document = render(body, config);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : String(error);
+    document = renderRoleSkillAdvisoryFailure(body, reason);
+    warning = compactMessage(
+      `${relativePath} was generated without its advisory configuration (${reason}); the required role instructions are complete.`,
+      "The role skill was generated without its advisory configuration.",
+    );
+  }
+  const target = path.join(runPath, relativePath);
+  try {
+    await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    await writeAtomic(target, document);
+  } catch (error: unknown) {
+    throw new ContractError(
+      "role_skill_write_failed",
+      `${relativePath} could not be written (${error instanceof Error ? error.message : String(error)}); the session would be started without its role instructions.`,
+      "storage",
+      { recovery: "Preserve the run and fix the storage failure, then retry the identical call: the role skill is required instructions, not advisory material." },
+    );
+  }
+  return { path: target, ...(warning ? { warning } : {}) };
+}
+
+/** The ORCH's generated role skill, refreshed at every spawn so a revived session gets the current configuration. */
+export async function materializeOrchRoleSkill(runPath: string): Promise<{ path?: string; warning?: string }> {
+  return await materializeRoleSkill(runPath, "protocol-orch.md", ORCH_ROLE_SKILL_PATH, renderOrchRoleSkill);
+}
+
+/** The lane's generated role skill, refreshed at every dispatch, including FIFO promotion. */
+export async function materializeWorkerRoleSkill(
+  runPath: string,
+  workerId: string,
+  profile: string | undefined,
+): Promise<{ path?: string; warning?: string }> {
+  return await materializeRoleSkill(
+    runPath,
+    "protocol-worker.md",
+    workerRoleSkillPath(workerId),
+    (body, config) => renderWorkerRoleSkill(body, config, profile),
+  );
 }

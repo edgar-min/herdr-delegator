@@ -13,6 +13,20 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [3.11.0] - Unreleased
+
+### Added
+
+- Standalone generated ORCH and worker role skills, with the worker's actual configured profile embedded rather than every profile. Marked runs receive one role-skill instruction path; historical unmarked contracts retain their existing protocol/guidance paths.
+- Jev intake and plan judgments over canonical run documents, request IDs on compact authoring/settlement observations, and identifier-only outcome recording and accounting summaries. Counts and model judgments are advisory, not accuracy or acceptance measurements.
+- Packaged configuration and Jev-development skills alongside the creator-only `herdr-delegation` skill.
+
+### Fixed
+
+- Required role instructions survive advisory-render failures; a required role-skill write failure stops delivery rather than silently omitting the contract.
+- Floating-point roundoff at the existing inclusive Jev score-consistency boundary no longer rejects an otherwise valid response. The tolerance policy is unchanged.
+- The MCP SDK rejects unknown Jev input fields before invoking the handler, instead of silently stripping them and allowing an unintended log append (friction `1fb40aa08866ab76`).
+
 ## [3.10.0] - 2026-09-20
 
 ### Added

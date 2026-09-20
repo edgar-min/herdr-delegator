@@ -10,6 +10,12 @@
  * template's own digest must appear in its own list, and each list must be
  * sorted and duplicate-free so the header's regeneration command reproduces it.
  *
+ * A role template carries a second contract: its frontmatter `name` is what the
+ * runtime reads to decide that a run gets one generated role skill instead of
+ * the protocol-plus-guidance pointers. Dropping or renaming that marker would
+ * silently send every new run back to the legacy chain, so it is checked here
+ * against the same names `extensions/lib/templates.ts` publishes.
+ *
  * Dependency-free by design: it runs inside `bun run check` before anything else
  * is installed. Pass a directory to check a copy of the tree instead of the
  * repository itself.
@@ -22,6 +28,10 @@ import { fileURLToPath } from "node:url";
 const TEMPLATE_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
 const ALLOWLIST_PATH = "io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts";
 const TEMPLATE_DIR = "skills/herdr-delegation/templates";
+const ROLE_SKILL_TEMPLATE_NAMES: Record<string, string> = {
+  "protocol-orch.md": "herdr-orchestrator",
+  "protocol-worker.md": "herdr-worker",
+};
 
 /** Parses `HISTORICAL_TEMPLATE_SHA256` without importing it, so this stays a pure text check. */
 function parseAllowlist(source: string): Map<string, string[]> {
@@ -79,6 +89,16 @@ for (const name of TEMPLATE_NAMES) {
     failures.push(
       `${name}: installed template digest ${digest} is missing from its allowlist. Append it — and the digest the previous commit shipped — never replace the list, or every run created on an earlier version stops loading and reviving.`,
     );
+  }
+  const expectedRoleName = ROLE_SKILL_TEMPLATE_NAMES[name];
+  if (expectedRoleName) {
+    const front = /^---\n([\s\S]*?)\n---\n/.exec(installed.toString("utf8"));
+    const declared = front ? /^name:[ \t]*(\S+)[ \t]*$/m.exec(front[1])?.[1] : undefined;
+    if (declared !== expectedRoleName) {
+      failures.push(
+        `${name}: role-skill frontmatter name is ${declared ?? "absent"}, expected ${expectedRoleName}. Without that marker the runtime treats the document as a pre-role-skill protocol and every new run falls back to the protocol-plus-guidance pointers.`,
+      );
+    }
   }
 }
 
