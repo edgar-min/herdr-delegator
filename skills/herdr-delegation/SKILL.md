@@ -56,6 +56,13 @@ born ORCH in `plan.md`.
 Preserve settled user language. For call shape, limits, grammar, and recoverable
 failures, follow the mounted `herdr_track` schema and its error text, not this prose.
 
+Write the mandate as one structured JSON file before you call `open`, and derive the
+`open` arguments from it mechanically: `references/mandate-authoring.md` carries the
+shape, the authoring rules, the fixed `definitions` block, and the flattening script.
+That same shape is what the Phase 0 mandate scan in `protocols/inquire` reads, so a
+mandate authored this way can be measured for passages no ORCH could act on without a
+lookup, an observation, or a decision nobody has made.
+
 Authoring assignments is not yours: none exists before birth, and the born ORCH reads
 the full contract from the mounted `herdr_assignment` schema's `action` description and
 from its own `protocol-orch.md`. Know the shape anyway, so a mandate you distill can be
