@@ -1,0 +1,466 @@
+{
+  "version": "2026-09-21.3",
+  "strategy": "choice",
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 8985,
+    "output_tokens": 2018
+  },
+  "sufficient": 0.1,
+  "passages": [
+    {
+      "id": "mandate.boundaries.user[0]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.6,
+        "1": 0.02,
+        "2": 0.04,
+        "3": 0.34
+      },
+      "confidence": 0.46
+    },
+    {
+      "id": "mandate.boundaries.user[1]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.64,
+        "1": 0.01,
+        "2": 0.16,
+        "3": 0.19
+      },
+      "confidence": 0.51
+    },
+    {
+      "id": "mandate.boundaries.user[2]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.7,
+        "1": 0.02,
+        "2": 0.01,
+        "3": 0.27
+      },
+      "confidence": 0.61
+    },
+    {
+      "id": "mandate.boundaries.user[3]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.62,
+        "1": 0,
+        "2": 0.01,
+        "3": 0.37
+      },
+      "confidence": 0.49
+    },
+    {
+      "id": "mandate.boundaries.user[4]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.85,
+        "1": 0.02,
+        "2": 0.01,
+        "3": 0.12
+      },
+      "confidence": 0.81
+    },
+    {
+      "id": "mandate.boundaries.user[5]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.91,
+        "1": 0.02,
+        "2": 0.01,
+        "3": 0.06
+      },
+      "confidence": 0.89
+    },
+    {
+      "id": "mandate.boundaries.orch[0]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.72,
+        "1": 0.11,
+        "2": 0.02,
+        "3": 0.15
+      },
+      "confidence": 0.61
+    },
+    {
+      "id": "mandate.boundaries.workers[0]",
+      "domain": "boundaries",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.96,
+        "1": 0.01,
+        "2": 0.02,
+        "3": 0.01
+      },
+      "confidence": 0.94
+    },
+    {
+      "id": "mandate.constraints.prohibitions[0]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 1,
+        "1": 0,
+        "2": 0,
+        "3": 0
+      },
+      "confidence": 1
+    },
+    {
+      "id": "mandate.constraints.prohibitions[1]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.98,
+        "1": 0,
+        "2": 0.02,
+        "3": 0
+      },
+      "confidence": 0.97
+    },
+    {
+      "id": "mandate.constraints.prohibitions[2]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 1,
+        "1": 0,
+        "2": 0,
+        "3": 0
+      },
+      "confidence": 0.99
+    },
+    {
+      "id": "mandate.constraints.prohibitions[3]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 1,
+        "1": 0,
+        "2": 0,
+        "3": 0
+      },
+      "confidence": 0.99
+    },
+    {
+      "id": "mandate.constraints.prohibitions[4]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.61,
+        "1": 0,
+        "2": 0.38,
+        "3": 0.01
+      },
+      "confidence": 0.47
+    },
+    {
+      "id": "mandate.constraints.prohibitions[5]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.91,
+        "1": 0,
+        "2": 0.08,
+        "3": 0.01
+      },
+      "confidence": 0.88
+    },
+    {
+      "id": "mandate.constraints.prohibitions[6]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.98,
+        "1": 0,
+        "2": 0.01,
+        "3": 0.01
+      },
+      "confidence": 0.98
+    },
+    {
+      "id": "mandate.constraints.prohibitions[7]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.89,
+        "1": 0.04,
+        "2": 0.06,
+        "3": 0.01
+      },
+      "confidence": 0.85
+    },
+    {
+      "id": "mandate.constraints.prohibitions[8]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.88,
+        "1": 0.01,
+        "2": 0.09,
+        "3": 0.02
+      },
+      "confidence": 0.85
+    },
+    {
+      "id": "mandate.constraints.procedures[0]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.92,
+        "1": 0.02,
+        "2": 0.05,
+        "3": 0.01
+      },
+      "confidence": 0.91
+    },
+    {
+      "id": "mandate.constraints.procedures[1]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.79,
+        "1": 0.09,
+        "2": 0.11,
+        "3": 0.01
+      },
+      "confidence": 0.72
+    },
+    {
+      "id": "mandate.constraints.procedures[2]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.86,
+        "1": 0.13,
+        "2": 0.01,
+        "3": 0
+      },
+      "confidence": 0.81
+    },
+    {
+      "id": "mandate.constraints.procedures[3]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.93,
+        "1": 0.03,
+        "2": 0.03,
+        "3": 0.01
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "mandate.constraints.procedures[4]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.93,
+        "1": 0.01,
+        "2": 0.03,
+        "3": 0.02
+      },
+      "confidence": 0.91
+    },
+    {
+      "id": "mandate.constraints.procedures[5]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.8,
+        "1": 0.08,
+        "2": 0.1,
+        "3": 0.02
+      },
+      "confidence": 0.73
+    },
+    {
+      "id": "mandate.constraints.procedures[6]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.66,
+        "1": 0.05,
+        "2": 0.25,
+        "3": 0.04
+      },
+      "confidence": 0.53
+    },
+    {
+      "id": "mandate.constraints.procedures[7]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.48,
+        "1": 0.4,
+        "2": 0.08,
+        "3": 0.04
+      },
+      "confidence": 0.31
+    },
+    {
+      "id": "mandate.constraints.procedures[8]",
+      "domain": "constraints",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.38,
+        "1": 0.5599999999999999,
+        "2": 0.04,
+        "3": 0.02
+      },
+      "confidence": 0.42
+    },
+    {
+      "id": "mandate.constraints.procedures[9]",
+      "domain": "constraints",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.33,
+        "1": 0.62,
+        "2": 0.03,
+        "3": 0.02
+      },
+      "confidence": 0.51
+    },
+    {
+      "id": "mandate.constraints.procedures[10]",
+      "domain": "constraints",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.39,
+        "1": 0.58,
+        "2": 0.02,
+        "3": 0.01
+      },
+      "confidence": 0.44
+    },
+    {
+      "id": "mandate.constraints.procedures[11]",
+      "domain": "constraints",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.44,
+        "1": 0.53,
+        "2": 0.02,
+        "3": 0.01
+      },
+      "confidence": 0.37
+    },
+    {
+      "id": "mandate.constraints.procedures[12]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.49,
+        "1": 0.47,
+        "2": 0.02,
+        "3": 0.02
+      },
+      "confidence": 0.32
+    },
+    {
+      "id": "mandate.constraints.procedures[13]",
+      "domain": "constraints",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.48,
+        "1": 0.49,
+        "2": 0.01,
+        "3": 0.02
+      },
+      "confidence": 0.32
+    },
+    {
+      "id": "mandate.constraints.invariants[0]",
+      "domain": "constraints",
+      "score": 2,
+      "level": "facts_unnamed",
+      "probabilities": {
+        "0": 0.25,
+        "1": 0.08,
+        "2": 0.66,
+        "3": 0.01
+      },
+      "confidence": 0.54
+    }
+  ],
+  "verdict": {
+    "kept": [
+      {
+        "id": "mandate.constraints.procedures[8]",
+        "score": 1
+      },
+      {
+        "id": "mandate.constraints.procedures[9]",
+        "score": 1
+      },
+      {
+        "id": "mandate.constraints.procedures[10]",
+        "score": 1
+      },
+      {
+        "id": "mandate.constraints.procedures[11]",
+        "score": 1
+      },
+      {
+        "id": "mandate.constraints.procedures[13]",
+        "score": 1
+      },
+      {
+        "id": "mandate.constraints.invariants[0]",
+        "score": 2
+      }
+    ]
+  },
+  "elapsed_ms": 734,
+  "kept_ids": [
+    "mandate.constraints.procedures[8]",
+    "mandate.constraints.procedures[9]",
+    "mandate.constraints.procedures[10]",
+    "mandate.constraints.procedures[11]",
+    "mandate.constraints.procedures[13]",
+    "mandate.constraints.invariants[0]"
+  ],
+  "converged": null
+}

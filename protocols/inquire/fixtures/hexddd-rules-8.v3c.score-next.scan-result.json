@@ -1,0 +1,472 @@
+{
+  "version": "2026-09-21.2c",
+  "strategy": "score-next",
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 8836,
+    "output_tokens": 661
+  },
+  "sufficient": 0.12,
+  "passages": [
+    {
+      "id": "mandate.intent.background[0]",
+      "domain": "intent",
+      "score": 0.49,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.56,
+        "1": 0.4,
+        "2": 0.03,
+        "3": 0.01
+      },
+      "confidence": 0.51
+    },
+    {
+      "id": "mandate.intent.background[1]",
+      "domain": "intent",
+      "score": 0.74,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.34,
+        "1": 0.6,
+        "2": 0.04,
+        "3": 0.02
+      },
+      "confidence": 0.58
+    },
+    {
+      "id": "mandate.intent.first_activity",
+      "domain": "intent",
+      "score": 1.02,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0,
+        "1": 0.98,
+        "2": 0.02,
+        "3": 0
+      },
+      "confidence": 0.98
+    },
+    {
+      "id": "mandate.intent.purpose",
+      "domain": "intent",
+      "score": 1.31,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.09,
+        "1": 0.67,
+        "2": 0.08,
+        "3": 0.16
+      },
+      "confidence": 0.5
+    },
+    {
+      "id": "mandate.intent.work_items[0]",
+      "domain": "intent",
+      "score": 2.72,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.02,
+        "1": 0.11,
+        "2": 0.01,
+        "3": 0.86
+      },
+      "confidence": 0.72
+    },
+    {
+      "id": "mandate.intent.work_items[1]",
+      "domain": "intent",
+      "score": 2.81,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.01,
+        "1": 0.04,
+        "2": 0.08,
+        "3": 0.87
+      },
+      "confidence": 0.81
+    },
+    {
+      "id": "mandate.intent.work_items[2]",
+      "domain": "intent",
+      "score": 2.82,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.02,
+        "1": 0.04,
+        "2": 0.04,
+        "3": 0.9
+      },
+      "confidence": 0.82
+    },
+    {
+      "id": "mandate.intent.work_items[3]",
+      "domain": "intent",
+      "score": 2.56,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.01,
+        "1": 0.21,
+        "2": 0.01,
+        "3": 0.77
+      },
+      "confidence": 0.56
+    },
+    {
+      "id": "mandate.intent.conventions[0]",
+      "domain": "intent",
+      "score": 0.4,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.72,
+        "1": 0.18,
+        "2": 0.09,
+        "3": 0.01
+      },
+      "confidence": 0.6
+    },
+    {
+      "id": "mandate.intent.settled[0]",
+      "domain": "intent",
+      "score": 0.06,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.97,
+        "1": 0.01,
+        "2": 0.01,
+        "3": 0.01
+      },
+      "confidence": 0.94
+    },
+    {
+      "id": "mandate.constraints[0]",
+      "domain": "constraints",
+      "score": 0.58,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.75,
+        "1": 0.08,
+        "2": 0.01,
+        "3": 0.16
+      },
+      "confidence": 0.42
+    },
+    {
+      "id": "mandate.constraints[1]",
+      "domain": "constraints",
+      "score": 0.31,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.86,
+        "1": 0.04,
+        "2": 0.02,
+        "3": 0.08
+      },
+      "confidence": 0.69
+    },
+    {
+      "id": "mandate.constraints[2]",
+      "domain": "constraints",
+      "score": 0.42,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.78,
+        "1": 0.04,
+        "2": 0.14,
+        "3": 0.04
+      },
+      "confidence": 0.58
+    },
+    {
+      "id": "mandate.constraints[3]",
+      "domain": "constraints",
+      "score": 0.92,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.55,
+        "1": 0.04,
+        "2": 0.34,
+        "3": 0.06
+      },
+      "confidence": 0.08
+    },
+    {
+      "id": "mandate.constraints[4]",
+      "domain": "constraints",
+      "score": 0.86,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.55,
+        "1": 0.04,
+        "2": 0.4,
+        "3": 0.01
+      },
+      "confidence": 0.14
+    },
+    {
+      "id": "mandate.constraints[5]",
+      "domain": "constraints",
+      "score": 1.03,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.64,
+        "1": 0.01,
+        "2": 0.01,
+        "3": 0.34
+      },
+      "confidence": 0
+    },
+    {
+      "id": "mandate.constraints[6]",
+      "domain": "constraints",
+      "score": 0.6,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.7,
+        "1": 0.03,
+        "2": 0.24,
+        "3": 0.03
+      },
+      "confidence": 0.4
+    },
+    {
+      "id": "mandate.constraints[7]",
+      "domain": "constraints",
+      "score": 0.7,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.73,
+        "1": 0.04,
+        "2": 0.04,
+        "3": 0.19
+      },
+      "confidence": 0.3
+    },
+    {
+      "id": "mandate.constraints[8]",
+      "domain": "constraints",
+      "score": 0.56,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.69,
+        "1": 0.15,
+        "2": 0.07,
+        "3": 0.09
+      },
+      "confidence": 0.44
+    },
+    {
+      "id": "mandate.constraints[9]",
+      "domain": "constraints",
+      "score": 0.8,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.31,
+        "1": 0.61,
+        "2": 0.05,
+        "3": 0.03
+      },
+      "confidence": 0.57
+    },
+    {
+      "id": "mandate.constraints[10]",
+      "domain": "constraints",
+      "score": 0.65,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.57,
+        "1": 0.26,
+        "2": 0.12,
+        "3": 0.05
+      },
+      "confidence": 0.35
+    },
+    {
+      "id": "mandate.constraints[11]",
+      "domain": "constraints",
+      "score": 0.45,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.78,
+        "1": 0.06,
+        "2": 0.07,
+        "3": 0.09
+      },
+      "confidence": 0.55
+    },
+    {
+      "id": "mandate.shape_of_success[0]",
+      "domain": "shape_of_success",
+      "score": 2.06,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.13,
+        "1": 0.19,
+        "2": 0.17,
+        "3": 0.51
+      },
+      "confidence": 0.06
+    },
+    {
+      "id": "mandate.shape_of_success[1]",
+      "domain": "shape_of_success",
+      "score": 1.97,
+      "level": "facts_unnamed",
+      "probabilities": {
+        "0": 0.06,
+        "1": 0.06,
+        "2": 0.72,
+        "3": 0.16
+      },
+      "confidence": 0.66
+    },
+    {
+      "id": "mandate.shape_of_success[2]",
+      "domain": "shape_of_success",
+      "score": 2.74,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.03,
+        "1": 0.07,
+        "2": 0.04,
+        "3": 0.86
+      },
+      "confidence": 0.74
+    },
+    {
+      "id": "mandate.shape_of_success[3]",
+      "domain": "shape_of_success",
+      "score": 2.62,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.09,
+        "1": 0.03,
+        "2": 0.06,
+        "3": 0.82
+      },
+      "confidence": 0.62
+    },
+    {
+      "id": "mandate.shape_of_success[4]",
+      "domain": "shape_of_success",
+      "score": 2.91,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.02,
+        "1": 0.02,
+        "2": 0.01,
+        "3": 0.95
+      },
+      "confidence": 0.91
+    },
+    {
+      "id": "mandate.shape_of_success[5]",
+      "domain": "shape_of_success",
+      "score": 1.74,
+      "level": "facts_unnamed",
+      "probabilities": {
+        "0": 0.16,
+        "1": 0.08,
+        "2": 0.62,
+        "3": 0.14
+      },
+      "confidence": 0.47
+    },
+    {
+      "id": "mandate.shape_of_success[6]",
+      "domain": "shape_of_success",
+      "score": 1.59,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.17,
+        "1": 0.37,
+        "2": 0.16,
+        "3": 0.3
+      },
+      "confidence": 0.07
+    }
+  ],
+  "verdict": {
+    "kept": [
+      {
+        "id": "mandate.intent.background[1]",
+        "score": 0.74
+      },
+      {
+        "id": "mandate.intent.first_activity",
+        "score": 1.02
+      },
+      {
+        "id": "mandate.intent.purpose",
+        "score": 1.31
+      },
+      {
+        "id": "mandate.intent.work_items[0]",
+        "score": 2.72
+      },
+      {
+        "id": "mandate.intent.work_items[1]",
+        "score": 2.81
+      },
+      {
+        "id": "mandate.intent.work_items[2]",
+        "score": 2.82
+      },
+      {
+        "id": "mandate.intent.work_items[3]",
+        "score": 2.56
+      },
+      {
+        "id": "mandate.constraints[9]",
+        "score": 0.8
+      },
+      {
+        "id": "mandate.shape_of_success[0]",
+        "score": 2.06
+      },
+      {
+        "id": "mandate.shape_of_success[1]",
+        "score": 1.97
+      },
+      {
+        "id": "mandate.shape_of_success[2]",
+        "score": 2.74
+      },
+      {
+        "id": "mandate.shape_of_success[3]",
+        "score": 2.62
+      },
+      {
+        "id": "mandate.shape_of_success[4]",
+        "score": 2.91
+      },
+      {
+        "id": "mandate.shape_of_success[5]",
+        "score": 1.74
+      },
+      {
+        "id": "mandate.shape_of_success[6]",
+        "score": 1.59
+      }
+    ]
+  },
+  "elapsed_ms": 950,
+  "kept_ids": [
+    "mandate.intent.background[1]",
+    "mandate.intent.first_activity",
+    "mandate.intent.purpose",
+    "mandate.intent.work_items[0]",
+    "mandate.intent.work_items[1]",
+    "mandate.intent.work_items[2]",
+    "mandate.intent.work_items[3]",
+    "mandate.constraints[9]",
+    "mandate.shape_of_success[0]",
+    "mandate.shape_of_success[1]",
+    "mandate.shape_of_success[2]",
+    "mandate.shape_of_success[3]",
+    "mandate.shape_of_success[4]",
+    "mandate.shape_of_success[5]",
+    "mandate.shape_of_success[6]"
+  ],
+  "converged": null
+}

@@ -1,0 +1,498 @@
+{
+  "version": "2026-09-21.2a",
+  "strategy": "nouls",
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 12315,
+    "output_tokens": 2198
+  },
+  "sufficient": 0.16,
+  "passages": [
+    {
+      "id": "mandate.intent.background[0]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.7,
+        "fact": 0.26,
+        "decision": 0.53
+      },
+      "confidence": 0.06000000000000005
+    },
+    {
+      "id": "mandate.intent.background[1]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.84,
+        "fact": 0.27,
+        "decision": 0.68
+      },
+      "confidence": 0.3600000000000001
+    },
+    {
+      "id": "mandate.intent.first_activity",
+      "domain": "intent",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "lookup": 0.98,
+        "fact": 0.28,
+        "decision": 0.19
+      },
+      "confidence": 0.43999999999999995
+    },
+    {
+      "id": "mandate.intent.purpose",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.81,
+        "fact": 0.42,
+        "decision": 0.9
+      },
+      "confidence": 0.16000000000000003
+    },
+    {
+      "id": "mandate.intent.work_items[0]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.87,
+        "fact": 0.49,
+        "decision": 0.97
+      },
+      "confidence": 0.020000000000000018
+    },
+    {
+      "id": "mandate.intent.work_items[1]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.67,
+        "fact": 0.58,
+        "decision": 0.95
+      },
+      "confidence": 0.15999999999999992
+    },
+    {
+      "id": "mandate.intent.work_items[2]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.69,
+        "fact": 0.67,
+        "decision": 0.94
+      },
+      "confidence": 0.3400000000000001
+    },
+    {
+      "id": "mandate.intent.work_items[3]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.85,
+        "fact": 0.61,
+        "decision": 0.96
+      },
+      "confidence": 0.21999999999999997
+    },
+    {
+      "id": "mandate.intent.conventions[0]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.59,
+        "fact": 0.32,
+        "decision": 0.5
+      },
+      "confidence": 0
+    },
+    {
+      "id": "mandate.intent.settled[0]",
+      "domain": "intent",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "lookup": 0.26,
+        "fact": 0.19,
+        "decision": 0.12
+      },
+      "confidence": 0.48
+    },
+    {
+      "id": "mandate.constraints[0]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.58,
+        "fact": 0.25,
+        "decision": 0.87
+      },
+      "confidence": 0.15999999999999992
+    },
+    {
+      "id": "mandate.constraints[1]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.62,
+        "fact": 0.28,
+        "decision": 0.64
+      },
+      "confidence": 0.24
+    },
+    {
+      "id": "mandate.constraints[2]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "lookup": 0.44,
+        "fact": 0.31,
+        "decision": 0.31
+      },
+      "confidence": 0.12
+    },
+    {
+      "id": "mandate.constraints[3]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.52,
+        "fact": 0.37,
+        "decision": 0.61
+      },
+      "confidence": 0.040000000000000036
+    },
+    {
+      "id": "mandate.constraints[4]",
+      "domain": "constraints",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "lookup": 0.37,
+        "fact": 0.31,
+        "decision": 0.36
+      },
+      "confidence": 0.26
+    },
+    {
+      "id": "mandate.constraints[5]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.42,
+        "fact": 0.31,
+        "decision": 0.87
+      },
+      "confidence": 0.16000000000000003
+    },
+    {
+      "id": "mandate.constraints[6]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.55,
+        "fact": 0.43,
+        "decision": 0.71
+      },
+      "confidence": 0.10000000000000009
+    },
+    {
+      "id": "mandate.constraints[7]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.51,
+        "fact": 0.41,
+        "decision": 0.73
+      },
+      "confidence": 0.020000000000000018
+    },
+    {
+      "id": "mandate.constraints[8]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.78,
+        "fact": 0.39,
+        "decision": 0.75
+      },
+      "confidence": 0.21999999999999997
+    },
+    {
+      "id": "mandate.constraints[9]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.76,
+        "fact": 0.37,
+        "decision": 0.7
+      },
+      "confidence": 0.26
+    },
+    {
+      "id": "mandate.constraints[10]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.7,
+        "fact": 0.4,
+        "decision": 0.66
+      },
+      "confidence": 0.19999999999999996
+    },
+    {
+      "id": "mandate.constraints[11]",
+      "domain": "constraints",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.65,
+        "fact": 0.37,
+        "decision": 0.74
+      },
+      "confidence": 0.26
+    },
+    {
+      "id": "mandate.shape_of_success[0]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.68,
+        "fact": 0.28,
+        "decision": 0.9
+      },
+      "confidence": 0.3600000000000001
+    },
+    {
+      "id": "mandate.shape_of_success[1]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.63,
+        "fact": 0.44,
+        "decision": 0.79
+      },
+      "confidence": 0.12
+    },
+    {
+      "id": "mandate.shape_of_success[2]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.76,
+        "fact": 0.36,
+        "decision": 0.92
+      },
+      "confidence": 0.28
+    },
+    {
+      "id": "mandate.shape_of_success[3]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.76,
+        "fact": 0.37,
+        "decision": 0.91
+      },
+      "confidence": 0.26
+    },
+    {
+      "id": "mandate.shape_of_success[4]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.79,
+        "fact": 0.41,
+        "decision": 0.92
+      },
+      "confidence": 0.18000000000000005
+    },
+    {
+      "id": "mandate.shape_of_success[5]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.69,
+        "fact": 0.42,
+        "decision": 0.67
+      },
+      "confidence": 0.16000000000000003
+    },
+    {
+      "id": "mandate.shape_of_success[6]",
+      "domain": "shape_of_success",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "lookup": 0.76,
+        "fact": 0.42,
+        "decision": 0.74
+      },
+      "confidence": 0.16000000000000003
+    }
+  ],
+  "verdict": {
+    "kept": [
+      {
+        "id": "mandate.intent.background[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.background[1]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.first_activity",
+        "score": 1
+      },
+      {
+        "id": "mandate.intent.purpose",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[1]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[2]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[3]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.conventions[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[1]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[3]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[5]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[6]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[7]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[8]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[9]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[10]",
+        "score": 3
+      },
+      {
+        "id": "mandate.constraints[11]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[1]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[2]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[3]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[4]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[5]",
+        "score": 3
+      },
+      {
+        "id": "mandate.shape_of_success[6]",
+        "score": 3
+      }
+    ]
+  },
+  "elapsed_ms": 908,
+  "kept_ids": [
+    "mandate.intent.background[0]",
+    "mandate.intent.background[1]",
+    "mandate.intent.first_activity",
+    "mandate.intent.purpose",
+    "mandate.intent.work_items[0]",
+    "mandate.intent.work_items[1]",
+    "mandate.intent.work_items[2]",
+    "mandate.intent.work_items[3]",
+    "mandate.intent.conventions[0]",
+    "mandate.constraints[0]",
+    "mandate.constraints[1]",
+    "mandate.constraints[3]",
+    "mandate.constraints[5]",
+    "mandate.constraints[6]",
+    "mandate.constraints[7]",
+    "mandate.constraints[8]",
+    "mandate.constraints[9]",
+    "mandate.constraints[10]",
+    "mandate.constraints[11]",
+    "mandate.shape_of_success[0]",
+    "mandate.shape_of_success[1]",
+    "mandate.shape_of_success[2]",
+    "mandate.shape_of_success[3]",
+    "mandate.shape_of_success[4]",
+    "mandate.shape_of_success[5]",
+    "mandate.shape_of_success[6]"
+  ],
+  "converged": null
+}

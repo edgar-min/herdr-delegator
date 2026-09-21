@@ -1,0 +1,68 @@
+{
+  "mandate": {
+    "definition": "The fixed WHAT/WHY contract a creator wrote for an orchestrator (ORCH). The ORCH plans and delegates HOW. Nothing in the mandate changes during the run.",
+    "intent": {
+      "definition": "What the track must achieve and why. Only work_items are work the ORCH carries out or delegates; background, first_activity, purpose, and settled are context the ORCH reads to understand the work.",
+      "background": {
+        "definition": "Facts about the situation the track starts from: the previous track, its results, the current state of the artifacts. Context only; nothing here is a task or a decision.",
+        "items": [
+          "hexddd-rules-7/r1의 후속.",
+          "rules-7은 helper 플러그인 안정화·코드 정비·온톨로지 정비·커밋/push를 끝냈다(HEAD 9f1f0e1, 결정론 3종·4검사·카나리 exit 0)."
+        ]
+      },
+      "first_activity": {
+        "definition": "The one action the ORCH performs before anything else. It is explicit and already decided by the creator.",
+        "text": "첫 활동은 인계 문서 /Users/jsmin/.local/share/herdr-delegator/runs/hexddd-rules-7/r1/handoff-next-track.md를 읽고 §6 좌표로 재확인하는 것이다."
+      },
+      "purpose": {
+        "definition": "Why this track exists, in one sentence. Context that explains the work items; not itself a task.",
+        "text": "이 트랙은 rules-7이 '자료만 남기고 결정하지 않은' 항목을 닫는다."
+      },
+      "work_items": {
+        "definition": "The outcomes the track must produce. Each item is executed or delegated. A phrase such as 'by user decision' inside an item means the item cannot be completed until that decision exists.",
+        "items": [
+          "(1) 규칙 문안 후보 4건을 사용자 결정으로 닫고 채택분을 적용한다: AR-16 describe vs REL-0019~0022 evidence_rule(이벤트 핸들러 재수출 출처 정합), README#rules-2 절 문안 정밀화 또는 낱장화(카나리 표본 note/README-rules-2-legacy-id-key 포착), DNC-4·5 문안 제안(rules-7 A-001 보고서 §5), DF-11/15(judge note가 결정론 통과 낱장에 README 절 위반을 내는 사례)의 표기 후보 3 중 택일 또는 보류. 규칙 문안이 바뀌면 카나리 표본 rule_hash를 갱신하고 recall·오탐을 다시 잰다.",
+          "(2) helper 후속: rules canary --refresh-hashes(표본 rule_hash 갱신 경로, DF-16), 카나리 정상 표본 확장(현재 code 6·note 2 → 사용자가 정하는 수, 보정에 쓰지 않은 표본으로), mounted MCP judge에 JEV_API_KEY가 하네스 환경에서만 상속되는 사실(DF-17)의 문서화 또는 ADR-0035 §2.9 개정.",
+          "(3) 온톨로지 후속(사용자 검토대로): L1 v2 산문 흔적 26파일 정리, event 낱장 factory 키 처분, 5-fileclass/ 옛 파일 정리, likec4 model.c4의 L1-v2 5행.",
+          "(4) 개발자 공유 문서(rules-7 inputs/dev-share.md)의 레포 반영 위치 결정과 반영."
+        ]
+      },
+      "settled": {
+        "definition": "Decisions already made before this track. They are closed: the ORCH does not reopen them and needs no further decision or lookup to respect them.",
+        "items": [
+          "rules-6 D0~D24·rules-7 D-0~D-18은 정본이며 재논의하지 않는다."
+        ]
+      }
+    },
+    "constraints": {
+      "definition": "Obligations and prohibitions the ORCH complies with while working. A constraint is not a task: complying with it needs no plan step of its own. A constraint that names a document, tool, or command tells the ORCH what to use, not what to look up before it may comply. A constraint that says a matter is 'decided by the user' is a gate the ORCH routes to the user when that matter comes up; it does not by itself leave a decision open now.",
+      "items": [
+        "사용자와의 소통: ask 도구를 쓰지 않는다. 사람 게이트가 필요할 때만 부른다(가치 판단·범위 변경·AGENTS.md·DEVELOPMENT.md·ADR·규칙 문안·L1 추가·템플릿 키 허용·개념 낱장 신설·비가역 행위). plan·mandate·증거로 정해지는 것은 ORCH가 결정하고 plan.md 결정 대장에 기록한다.",
+        "공유 트리 /Users/jsmin/Projects/axtra-mono의 HEAD·브랜치는 바꾸지 않는다(.secrets/secrets.env 읽기만). 작업 트리는 /Users/jsmin/Projects/axtra-mono-skeleton, 브랜치 arch/skeleton. stash·checkout·reset·clean 금지. 커밋·push는 사용자가 이 트랙에서 위임할 때만 ORCH가 수행하며, 그 전에는 사용자 몫이다.",
+        "Jev API 키는 환경변수 JEV_API_KEY로만 참조하고 값은 코드·프롬프트·런 문서·로그·캐시·설정에 넣지 않는다. 모델 jev-1.13.0 고정, 응답 model 기록. 외부 의존 추가는 ADR-0035 범위 안(현재 핀: @modelcontextprotocol/sdk 1.30.0, zod 4.6.5).",
+        "규칙은 낱장(+ontology-docs/README.md 헤딩 절)에만. 코드에 규칙 ID 목록·개념 목록·README 헤딩·템플릿 종류 목록·폴더 목록·허용 쌍을 두지 않는다(grep 0이 수락 조건). 오탐은 규칙 문안 수정(사용자 결정) → 남으면 evaluator: code.",
+        "pre-commit에는 결정론 검사(docs:check·docs:relations·arch:check)만. docs:judge는 게이트가 아니다. 현재 실물 exit 0 상태를 트랙 내내 유지한다(배정 경계마다 3명령 재확인).",
+        "새 어휘(새 키·술어·개념·규칙 종류·템플릿 표기)와 규칙 문안 변경은 사용자 결정. L1 추가는 rule: 필수이며 사용자 결정. L2는 스크립트만 쓴다. 카나리 표본의 기대 라벨 변경은 사용자 결정.",
+        "스크립트 자리는 ontology-docs/4-scripts·scripts/arch·plugins/axtra-helper뿐. import 방향은 4-scripts → scripts/arch, plugins → scripts/arch 한 방향. packages/는 이들을 import하지 않는다. MCP 툴 4개(check·judge·rules·scaffold)의 이름·모드는 유지하고 선택 인자 추가만 허용한다.",
+        "ontology-docs·AGENTS.md·DEVELOPMENT.md·docs-index는 사용자 공동 편집. AGENTS.md·DEVELOPMENT.md·docs-index·likec4/는 사용자 확인 없이 건드리지 않는다. lane이 ontology-docs를 편집하는 창은 쓰기 소유를 폴더 단위로 나눠 합의한다(같은 파일을 두 lane이 고치지 않음).",
+        "도그푸딩: 낱장 작업은 obsidian CLI(vault axtra-mono-skeleton, 전체 vault-relative 경로) 권장 + helper(MCP 툴 또는 corepack pnpm run --silent helper …), 코드 작업은 rule-guarded-change 스킬. 작업마다 작업 로그(대상·입력 해시·부른 툴/모드·결과·우회·DF-n)를 남기고 DF는 재현 명령과 함께 기록한다. DF 번호는 rules-7의 DF-18 다음부터.",
+        "인계 문서의 주장은 §6 좌표로 재확인한 뒤 믿는다. 검사기 판정 주장은 그 검사기의 출력 줄로 확인한다. 독립 재현은 워커 외 실행자가 임시 루트(rsync, node_modules 심볼릭)·빈 캐시(AXTRA_HELPER_CACHE)·키 셸 주입만으로 수행하고, 통합 경계에서는 입력 manifest 전후 동일로 쓰기 정지를 증명한다(rules-7 inputs/spec-S4g-integration.md). pnpm은 PATH에 없으므로 corepack pnpm. 프로젝트 전체 포맷터·린터·테스트는 lane이 임의로 돌리지 않는다.",
+        "배정 References에는 사양 파일만 핀한다(plan.md 핀 금지 — reference_drift). [ORCH Response]·큐 승격 뒤에는 반드시 wake_worker를 울린다. helper 코드를 바꾼 배정 뒤에는 사용자에게 MCP 서버 재시작을 요청하고 rules list/scaffold로 새 코드를 관측한 뒤 다음 쓰기 배정을 낸다.",
+        "pi 코어 코드는 수정하지 않는다. 자격 증명·secret 값을 어디에도 넣지 않는다.",
+        "도그푸딩·독립 재현 규약은 rules-7과 같다(작업 로그·DF 번호·워커 외 실행자 재현·manifest 동결)."
+      ]
+    },
+    "shape_of_success": {
+      "definition": "Observable conditions that make the track done. Judging one as met may require reading named sources, observing results, or a user decision the mandate explicitly reserves; that reserved decision is a dependency of the outcome, not of the ORCH's next action.",
+      "items": [
+        "규칙 문안 후보 4건(AR-16↔REL-0019~0022, README#rules-2, DNC-4·5, DF-11/15 표기) 각각에 사용자 결정 기록(채택/보류)이 plan.md 결정 대장에 있고, 채택분은 규칙 낱장·README·템플릿에 적용되어 docs:check 7/7·arch:check 5/5·docs:relations --check가 exit 0이다.",
+        "규칙 문안이 바뀐 규칙마다 카나리 표본 rule_hash가 갱신되어 rules canary의 stale_rules가 []이고, 다섯 코드 규칙(AR-16·AR-2·AR-5·DNC-10·DNC-18) recall 1.00·정상 표본 위반 등급 오탐 0·검토 등급 오탐 0이 빈 캐시 실호출로 재현된다(포착=위반 또는 검토 등급이라는 정의를 명시). README#rules-2 표본이 포착되거나, 보류 결정과 함께 미포착이 이월 항목으로 기록된다.",
+        "helper: rules canary에 표본 rule_hash 갱신 경로가 있어(선택 인자) 직접 편집 없이 stale 표본이 갱신되고, 정상 표본이 사용자가 정한 수만큼(보정에 쓰지 않은 표본으로) 늘어 오탐 0이 유지되며, JEV_API_KEY 상속 사실이 문서(DEVELOPMENT.md 또는 ADR-0035 §2.9, 사용자 확인 후)에 한 문장으로 있다.",
+        "온톨로지 후속: L1 v2 산문 흔적·event factory 키·5-fileclass 옛 파일·likec4 L1-v2 5행 각각에 사용자 처분 기록이 있고 채택분이 적용되어 결정론 3종이 exit 0을 유지한다. 처분이 '유지'인 항목은 그 이유가 기록된다.",
+        "개발자 공유 문서의 반영 위치가 사용자 결정으로 정해지고(레포 안 파일 또는 레포 밖), 레포 안이면 그 파일이 현재 검사 결과·사용법과 일치한다.",
+        "통합 재현 1회(워커 외 실행자, manifest 동결·빈 캐시): pre-commit 3명령(docs:relations 생성 포함, L2 해시 전후 동일)·4검사·카나리·omp 스킬 3·툴 4 로드 관측이 한 실행 ID로 기록된다. plan-review 재검토 1라운드 처분 기록.",
+        "각 단계의 사용자 확인 기록(plan.md 결정 대장)과 사용자가 최종 결과를 읽고 승인했다는 기록이 런 문서에 있다. 커밋·push는 사용자가 위임한 경우에만 ORCH가 수행하고 커밋 해시를 기록한다. 인계 문서(handoff-next-track.md)를 남긴다."
+      ]
+    }
+  }
+}

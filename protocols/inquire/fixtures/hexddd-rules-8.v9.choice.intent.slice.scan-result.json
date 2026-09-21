@@ -1,0 +1,177 @@
+{
+  "version": "2026-09-21.3",
+  "strategy": "choice",
+  "model": "jev-1.13.0",
+  "usage": {
+    "input_tokens": 3031,
+    "output_tokens": 555
+  },
+  "sufficient": 0.06,
+  "passages": [
+    {
+      "id": "mandate.intent.background[0]",
+      "domain": "intent",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.28,
+        "1": 0.5,
+        "2": 0.15,
+        "3": 0.07
+      },
+      "confidence": 0.33
+    },
+    {
+      "id": "mandate.intent.background[1]",
+      "domain": "intent",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.36,
+        "1": 0.46,
+        "2": 0.14,
+        "3": 0.04
+      },
+      "confidence": 0.28
+    },
+    {
+      "id": "mandate.intent.first_activity",
+      "domain": "intent",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0,
+        "1": 1,
+        "2": 0,
+        "3": 0
+      },
+      "confidence": 1
+    },
+    {
+      "id": "mandate.intent.purpose",
+      "domain": "intent",
+      "score": 1,
+      "level": "lookup_named",
+      "probabilities": {
+        "0": 0.07,
+        "1": 0.61,
+        "2": 0.1,
+        "3": 0.22
+      },
+      "confidence": 0.48
+    },
+    {
+      "id": "mandate.intent.work_items[0]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0,
+        "1": 0.2,
+        "2": 0.01,
+        "3": 0.79
+      },
+      "confidence": 0.73
+    },
+    {
+      "id": "mandate.intent.work_items[1]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0,
+        "1": 0.18,
+        "2": 0.12,
+        "3": 0.7
+      },
+      "confidence": 0.6
+    },
+    {
+      "id": "mandate.intent.work_items[2]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0.02,
+        "1": 0.14,
+        "2": 0.15,
+        "3": 0.69
+      },
+      "confidence": 0.58
+    },
+    {
+      "id": "mandate.intent.work_items[3]",
+      "domain": "intent",
+      "score": 3,
+      "level": "decision_missing",
+      "probabilities": {
+        "0": 0,
+        "1": 0.39,
+        "2": 0.03,
+        "3": 0.58
+      },
+      "confidence": 0.43
+    },
+    {
+      "id": "mandate.intent.settled[0]",
+      "domain": "intent",
+      "score": 0,
+      "level": "self_contained",
+      "probabilities": {
+        "0": 0.71,
+        "1": 0.26,
+        "2": 0.01,
+        "3": 0.02
+      },
+      "confidence": 0.62
+    }
+  ],
+  "verdict": {
+    "kept": [
+      {
+        "id": "mandate.intent.background[0]",
+        "score": 1
+      },
+      {
+        "id": "mandate.intent.background[1]",
+        "score": 1
+      },
+      {
+        "id": "mandate.intent.first_activity",
+        "score": 1
+      },
+      {
+        "id": "mandate.intent.purpose",
+        "score": 1
+      },
+      {
+        "id": "mandate.intent.work_items[0]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[1]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[2]",
+        "score": 3
+      },
+      {
+        "id": "mandate.intent.work_items[3]",
+        "score": 3
+      }
+    ]
+  },
+  "elapsed_ms": 774,
+  "kept_ids": [
+    "mandate.intent.background[0]",
+    "mandate.intent.background[1]",
+    "mandate.intent.first_activity",
+    "mandate.intent.purpose",
+    "mandate.intent.work_items[0]",
+    "mandate.intent.work_items[1]",
+    "mandate.intent.work_items[2]",
+    "mandate.intent.work_items[3]"
+  ],
+  "converged": null
+}

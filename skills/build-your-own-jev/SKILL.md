@@ -5,6 +5,12 @@ description: "How this plugin uses TypeSafe Jev (System One) to move reading out
 
 Jev answers fixed questions about text with calibrated probabilities. It never generates. Everything below follows from one goal: **the agent sees the choice, not the text.** Code owns the workflow; Jev supplies the judgment; the calibration log says whether it was right.
 
+## Status (2026-09-21)
+
+- Everything in "What exists" and "Where the judgments fire now" describes branch `review/orch-routing-jev`. The installed plugin is `main` (3.9.0): it has no `mcp/jev/`, no `herdr_jev` tool, no Jev hooks, and no `authoring`/`settlement`/`escalate`/`intake`/`plan` moments. A session on main cannot call any of them; a port of the scan-only path to `main/protocols/inquire` is in progress and is not wired into the server.
+- The method for making a Jev judgment reproduce a reader's — fixed state per stage, a definitions block for every key, per-passage `choice` questions, an adjudicated reference and ablation — is in `skills/jev-delegation/SKILL.md`, with the measurements. Rules 1–3 below still hold; rule 6 ("intent quality is the lever") was superseded for classification tasks: the lever there is the definitions block and the shape of the input document, not the question wording (13/23 → 21/23 with identical questions).
+- The `plan` moment's state `{mandate, plan}` judged whole documents with three nouls; the scan work replaced that with one fixed structured mandate and one question per passage. Treat the `plan` moment as an early design, not the current shape.
+
 ## What exists (read these before adding anything)
 
 | Piece | Purpose | Convention it fixes |
