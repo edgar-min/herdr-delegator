@@ -112,7 +112,7 @@ await rm(sandbox, { recursive: true, force: true });
 console.log(`target layer: ${layerName} (${targetPath})`);
 console.log(`directive: ${JSON.stringify(text)}`);
 console.log("");
-console.log("--- advisory preview (historical guidance.md format; a current run delivers these blocks inline with its prompt) ---");
+console.log("--- guidance.md preview ---");
 console.log(preview);
 
 if (!apply) {

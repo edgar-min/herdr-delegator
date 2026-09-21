@@ -5,7 +5,7 @@ import type { ConfigThinkingLevel, FocusRestoration, ResetLineage, RunManifest, 
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
 import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, inboundChannelEntries, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic, type InboundChannelObservation } from "./config";
 import { acceptProtocolDocument } from "./templates";
-import { GUIDANCE_DOCUMENT_NAME, ROLE_SKILL_ROOT, materializeOrchRoleSkill, orchPackagedDelivery } from "./guidance";
+import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, verifiedHerdrSidebarAuxiliaryPane, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
@@ -16,15 +16,9 @@ export const MAX_INBOUND_PROMPT_POINTERS = 8;
 
 /**
  * The ORCH's first prompt. It names the documents that carry command — the
- * mandate and the role document — and, when this run's delivery has advisory
- * criteria to carry, marks them advisory in the prompt itself so the born
- * session cannot mistake criteria for authority.
- *
- * Which role document that is comes from the run's own accepted backing bytes:
- * the installed packaged ORCH skill for a packaged run (its advisory criteria
- * ride inline, and nothing is generated into the run), this run's generated
- * role skill for the marked-role era, and `protocol-orch.md` plus the separate
- * `guidance.md` pointer for a run created before either.
+ * mandate and the role protocol — and, when a caller materialized one for this
+ * spawn, the advisory guidance document, marked advisory in the prompt itself so
+ * the born session cannot mistake criteria for authority.
  *
  * A newborn ORCH also has no way to learn that another run already addressed a
  * channel document to it: its doorbell rang before it existed and a doorbell
@@ -36,10 +30,9 @@ export const MAX_INBOUND_PROMPT_POINTERS = 8;
  */
 export function orchestratorFirstPrompt(
   instructionPath: string,
-  orchestratorRoleDocumentPath: string,
+  orchestratorProtocolPath: string,
   guidancePath?: string,
   inbound?: InboundChannelObservation,
-  inlineAdvisory?: string,
 ): string {
   const guidance = guidancePath
     ? ` Also read ${guidancePath}, which is advisory only: consult it for the skill routes configured at your plan and authoring boundaries and for what each worker profile is for, and never as authority over scope, ownership, or completion conditions.`
@@ -58,8 +51,7 @@ export function orchestratorFirstPrompt(
   const inboundClause = named.length
     ? ` ${lead} ${pointers}. That is an observation of documents a future or live ORCH can discover, not a delivered message, not a complete list, and no guarantee that anything will be redelivered: read each document before you act on it and answer in your own reverse channel.${remainder}`
     : "";
-  const advisory = inlineAdvisory ? `\n\n${inlineAdvisory}` : "";
-  return `Read ${instructionPath} and ${orchestratorRoleDocumentPath}, then carry out every instruction in them.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.${advisory}`;
+  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
 }
 
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
@@ -215,10 +207,9 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
       if (missingProtocols.length > 0) {
         const entries = (await readdir(runPath)).sort();
         const a2aEntries = await readdir(a2aPath);
-        // guidance.md and role-skills/ are rendered artifacts, not run state: an
-        // open or spawn that already materialized them must still qualify for
-        // this recovery.
-        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true, [GUIDANCE_DOCUMENT_NAME]: true, [ROLE_SKILL_ROOT]: true };
+        // guidance.md is a rendered advisory artifact, not run state: an open
+        // that already materialized it must still qualify for this recovery.
+        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true, [GUIDANCE_DOCUMENT_NAME]: true };
         const recoverableIncompleteTarget =
           resetCoordinate === undefined &&
           existingRow === undefined &&
@@ -1008,18 +999,6 @@ async function startOrchestrator(
     await readFile(orchestratorProtocolPath),
     await readFile(orchestratorProtocolTemplatePath),
   ).warning;
-  // Delivery follows this run's own accepted backing bytes, resolved before any
-  // prompt-side effect so a missing packaged skill fails visibly instead of
-  // birthing a session without instructions. A packaged run generates nothing:
-  // its advisory criteria ride inline in the prompt. A marked-role run still
-  // regenerates its role skill from its own protocol bytes, so a revived ORCH
-  // reads the configuration current now — regeneration is not delivery, and an
-  // already-prompted target keeps its first prompt. A run older than either
-  // keeps the protocol-plus-guidance pointers it was created with.
-  const packagedOrch = await orchPackagedDelivery(runPath);
-  const orchRoleSkill: { path?: string; warning?: string } = packagedOrch
-    ? (packagedOrch.warning ? { warning: packagedOrch.warning } : {})
-    : await materializeOrchRoleSkill(runPath);
   const instructionFingerprint = sha256(await readFile(instructionPath));
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
@@ -1271,13 +1250,10 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      // One pointer, one read, whenever the run's delivery carries its own
-      // configuration: the packaged skill takes its advisory criteria inline,
-      // and a generated role skill already contains them. Only the oldest era
-      // names a second document, and `guidance.md` is present exactly when a
-      // caller materialized it for this spawn (open and revival do; a legacy
-      // start does not), so its presence — not a flag — decides whether the
-      // prompt names three documents or the original two.
+      // The guidance document is present exactly when a caller materialized it
+      // for this spawn (open and revival do; a legacy start does not), so its
+      // presence — not a flag — decides whether the prompt names three
+      // documents or the original two.
       const guidancePath = path.join(runPath, GUIDANCE_DOCUMENT_NAME);
       // Advisory read at a birth boundary: a failed observation must cost the
       // newborn its inbound pointers, never its birth, so the prompt simply
@@ -1289,13 +1265,11 @@ async function startOrchestrator(
       } catch {
         inbound = undefined;
       }
-      const roleDocumentPath = packagedOrch?.skillPath ?? orchRoleSkill.path ?? orchestratorProtocolPath;
       const prompt = orchestratorFirstPrompt(
         instructionPath,
-        roleDocumentPath,
-        packagedOrch || orchRoleSkill.path || !(await isFile(guidancePath)) ? undefined : guidancePath,
+        orchestratorProtocolPath,
+        (await isFile(guidancePath)) ? guidancePath : undefined,
         inbound,
-        packagedOrch?.advisory,
       );
       // Delivery wait, never settlement: the ORCH's first turn routinely outlives
       // the ~30s MCP client transport abort (see MAX_EFFECTIVE_WAIT_MS in
@@ -1404,17 +1378,6 @@ async function startOrchestrator(
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
       ...(fallbackWarning ? { role_fallback_warning: fallbackWarning } : {}),
       ...(protocolDriftWarning ? { template_drift_warning: protocolDriftWarning } : {}),
-      // Regeneration and delivery are two observations, never one: a suppressed
-      // duplicate prompt means this live session has NOT reread the document
-      // this spawn just rewrote. A packaged run rewrites nothing, so it reports
-      // the installed path it pointed at and whether that pointer was delivered.
-      ...(packagedOrch
-        ? { role_skill_path: packagedOrch.skillPath, role_skill_source: "packaged", role_skill_delivered: !duplicatePrompt }
-        : {}),
-      ...(!packagedOrch && orchRoleSkill.path
-        ? { role_skill_path: orchRoleSkill.path, role_skill_source: "generated", role_skill_regenerated: true, role_skill_delivered: !duplicatePrompt }
-        : {}),
-      ...(orchRoleSkill.warning ? { role_skill_warning: orchRoleSkill.warning } : {}),
       report_exists: await isFile(path.join(runPath, "orchestrator-report.md")),
       report_path: path.join(runPath, "orchestrator-report.md"),
     },

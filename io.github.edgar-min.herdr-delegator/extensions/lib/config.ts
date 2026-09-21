@@ -27,7 +27,7 @@ const DEFAULT_CONFIG: DelegatorConfig = {
 
 export const PROTOCOL_TEMPLATE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../../../skills/herdr-create/templates/protocol.md",
+  "../../../skills/herdr-delegation/templates/protocol.md",
 );
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
@@ -240,9 +240,7 @@ function parseConfigPatch(value: unknown, coordinate: string): ConfigPatch {
   if (!isObject(value)) {
     throw new ContractError("invalid_config", `${coordinate}: expected a JSON object.`, "config");
   }
-  // `jev` is schema-valid configuration the extension itself never reads: the Jev module loads it directly
-  // (mcp/jev/config.ts), so this layer only has to stop refusing it.
-  assertExactKeys(value, ["version", "orchestrator", "worker_profiles", "storage", "skill_routing", "jev"], coordinate);
+  assertExactKeys(value, ["version", "orchestrator", "worker_profiles", "storage", "skill_routing"], coordinate);
   if (value.version !== 1) {
     throw new ContractError("invalid_config", `${coordinate}.version: expected 1.`, "config");
   }
@@ -1210,33 +1208,34 @@ function classifyOwnershipToken(raw: string): OwnershipDeclarationClass | undefi
 }
 
 /**
- * Accepted bullet forms, and nothing else: a comma-separated list of tokens, each bare or backticked, after an
- * optional `Yours:` label and with an optional trailing ` (note)` or ` — note` annotation removed first. An
- * author writing `mcp/jev/judge.ts (new)` or `skills/gate/** (new)` declares the path and the glob, not prose,
- * so the annotation is stripped before the token is judged. Anything else — a sentence that happens to contain
- * a path, an absolute path, `..`, a glob other than a terminal `/**` — is one `unclassified`, which is a
- * reportable fact rather than a silent miss.
+ * Accepted bullet forms, and nothing else: a bare token; one backticked token;
+ * or an optional `Yours:` label plus comma-separated backticked tokens. A
+ * backticked form may carry one trailing ` — note` or ` (note)`. Anything else —
+ * a sentence that happens to contain a path, an absolute path, `..`, a glob
+ * other than a terminal `/**` — is one `unclassified`, which is a reportable
+ * fact rather than a silent miss.
  */
 export function classifyOwnershipDeclarations(declaration: string): OwnershipDeclarationClass[] {
   const unclassified: OwnershipDeclarationClass[] = [{ kind: "unclassified" }];
   if (Buffer.byteLength(declaration) > MAX_OWNERSHIP_DECLARATION_BYTES) return unclassified;
   const bullet = declaration.trim();
   if (!bullet) return unclassified;
+  if (!bullet.includes("`")) {
+    const bare = classifyOwnershipToken(bullet);
+    return bare ? [bare] : unclassified;
+  }
   const paren = OWNERSHIP_PAREN_TRAILER_RE.exec(bullet);
   const dash = paren ? undefined : OWNERSHIP_DASH_TRAILER_RE.exec(bullet);
   const trailer = paren ?? dash;
-  const annotated = (trailer && trailer[2].trim() ? trailer[1] : bullet).trim();
-  const label = OWNERSHIP_LABEL_RE.exec(annotated);
-  const listed = (label ? label[1] : annotated).trim();
+  const labelled = (trailer && trailer[2].trim() ? trailer[1] : bullet).trim();
+  const label = OWNERSHIP_LABEL_RE.exec(labelled);
+  const listed = (label ? label[1] : labelled).trim();
   const classes: OwnershipDeclarationClass[] = [];
   const seen = new Set<string>();
   for (const part of listed.split(",")) {
-    const token = part.trim();
-    const quoted = OWNERSHIP_BACKTICK_TOKEN_RE.exec(token);
-    // A bare token is accepted too, but only as a whole token: a backtick anywhere else means the author was
-    // writing prose around a path, and guessing which word is the path is exactly what this never does.
-    if (!quoted && token.includes("`")) return unclassified;
-    const classified = classifyOwnershipToken(quoted ? quoted[1] : token);
+    const quoted = OWNERSHIP_BACKTICK_TOKEN_RE.exec(part.trim());
+    if (!quoted) return unclassified;
+    const classified = classifyOwnershipToken(quoted[1]);
     if (!classified) return unclassified;
     const key = `${classified.kind}:${classified.kind === "unclassified" ? "" : classified.value}`;
     if (seen.has(key)) continue;

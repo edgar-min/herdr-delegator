@@ -41,117 +41,9 @@
     },
     "skill_routing": {
       "$ref": "#/$defs/skillRouting"
-    },
-    "jev": {
-      "$ref": "#/$defs/jev"
     }
   },
   "$defs": {
-    "jev": {
-      "type": "object",
-      "additionalProperties": false,
-      "description": "TypeSafe Jev (System One) settings. There is no on/off flag: Jev is how this plugin reads, and without a credential the tool errors clearly while the hooks pass the untouched result through. Every value below only tunes where reading is narrowed; none of them can drop a result.",
-      "properties": {
-        "model": {
-          "type": "string",
-          "description": "Model name sent with every request. Default jev-latest."
-        },
-        "read_threshold_lines": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "A read of a file with at least this many lines is narrowed to the ranked ranges. Default 200."
-        },
-        "read_view_lines": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Line budget of a narrowed read view; ranges are added in probability order until it is spent. Default 120."
-        },
-        "output_min_lines": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Tool output of at least this many lines is filtered to the ranked blocks, with what was withheld reported. Default 80."
-        },
-        "task_result_chars": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Character cap applied to a subagent result before it enters the parent context; the rest stays in the artifact. Default 1200."
-        },
-        "hint_min_p": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Probability below which a judgment is reported as weak. It only chooses the one-line next action a judgment prints; it never removes a row. Default 0.6."
-        },
-        "moments": {
-          "type": "array",
-          "description": "Moments defined here rather than in code. A moment names when its state exists, what the state is read from, and the fixed questions asked about it.",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "name",
-              "when",
-              "state",
-              "questions"
-            ],
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "Moment name, used as the calibration `stage` of every row it logs."
-              },
-              "when": {
-                "type": "object",
-                "additionalProperties": false,
-                "description": "The event that carries the state: a tool result, a tool call, or a server response, optionally narrowed by path.",
-                "properties": {
-                  "tool_result": {
-                    "type": "string",
-                    "description": "Tool name whose result triggers the moment."
-                  },
-                  "tool_call": {
-                    "type": "string",
-                    "description": "Tool name whose call triggers the moment, before it runs."
-                  },
-                  "server": {
-                    "type": "string",
-                    "description": "Server action whose response triggers the moment, for example herdr_assignment.preflight."
-                  },
-                  "path": {
-                    "type": "string",
-                    "description": "Optional path or glob the trigger is restricted to."
-                  }
-                }
-              },
-              "state": {
-                "type": "object",
-                "additionalProperties": false,
-                "description": "Where the judged state is read from.",
-                "properties": {
-                  "file": {
-                    "type": "string",
-                    "description": "One file whose text becomes the state."
-                  },
-                  "paths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Several paths whose chunks become the state items, in path order."
-                  }
-                }
-              },
-              "questions": {
-                "type": "object",
-                "description": "Fixed questions by id, in the request format: each is a noul, choice, or score question whose instructions name its target by a backticked state path.",
-                "additionalProperties": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "role": {
       "type": "string",
       "pattern": "^@[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
@@ -195,7 +87,7 @@
         },
         "directive": {
           "$ref": "#/$defs/guidanceText",
-          "description": "ORCH-facing execution guidance delivered inline with the orchestrator's first prompt, as the first advisory section (historical runs render it at the top of guidance.md or the generated role skill). Advisory only; never changes authority, scope, or completion conditions."
+          "description": "ORCH-facing execution guidance rendered at the top of guidance.md. Advisory only; never changes authority, scope, or completion conditions."
         }
       }
     },
@@ -219,7 +111,7 @@
         },
         "directive": {
           "$ref": "#/$defs/guidanceText",
-          "description": "Worker-facing execution guidance delivered inline with the assignment prompt of a lane selected with this profile, and never to another profile. Advisory only; never changes the assignment contract, and never supplies a duty missing from the packaged worker skill."
+          "description": "Worker-facing execution guidance rendered only to a lane selected with this profile. Advisory only; never changes the assignment contract."
         }
       }
     },

@@ -1,6 +1,6 @@
 # Track handoff — <source track_id/run_id> to <target track_id/run_id>
 
-Written by the source run's ORCH on <date>. This document transfers state to the target ORCH; conversation memory is not authority. ORCH rules are in the ORCH role skill the target session was born with (a run created before role skills reads `protocol-orch.md` instead).
+Written by the source run's ORCH on <date>. This document transfers state to the target ORCH; conversation memory is not authority. ORCH rules are in `protocol-orch.md`.
 
 # Required core
 
@@ -68,7 +68,7 @@ Written by the source run's ORCH on <date>. This document transfers state to the
 
 ## 4. Responsibility lanes
 
-State only; routing, separation, reuse, inspection, and lifecycle rules are in your ORCH role skill.
+State only; routing, separation, reuse, inspection, and lifecycle rules are in `protocol-orch.md`.
 
 | Run | Worker | Responsibility | Separation | Profile/role | Verified model/thinking | Active assignment | FIFO queue | Last completed | Official session | Lane state/seq | Workspace/tab/root pane | Resume status | Close status |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -79,7 +79,7 @@ State only; routing, separation, reuse, inspection, and lifecycle rules are in y
 
 ## 5. Assignment ledger
 
-State only; assignment vocabulary, authoring, dispatch, settlement, and control rules are in your ORCH role skill.
+State only; assignment vocabulary, authoring, dispatch, settlement, and control rules are in `protocol-orch.md`.
 
 | Assignment | Label | Responsibility/worker | Immutable artifact/hash | Goal summary | Dependencies | State | Report hash/status | Next legal action |
 |---|---|---|---|---|---|---|---|---|
@@ -95,7 +95,7 @@ Label is the artifact's optional display-only frontmatter field, quoted here so 
 
 ## 7. Target startup state
 
-Startup, inspection, revalidation, assignment, and source-lane lifecycle rules are in your ORCH role skill. Record effects and evidence here rather than restating the procedure.
+Startup, inspection, revalidation, assignment, and source-lane lifecycle rules are in `protocol-orch.md`. Record effects and evidence here rather than restating the procedure.
 
 - Target initialization request/result: `<coordinates; init/reset request; result>`
 - Target manifest, protocol set, reset lineage, plan hash, and storage-index verification: `<coordinates and proof>`
