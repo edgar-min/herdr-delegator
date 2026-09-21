@@ -11,7 +11,7 @@ Vocabulary used below — a **track** is one delegation subject, a **run** is on
 at it, a **responsibility lane** (`w<N>`) is a persistent worker session, and **ORCH** is
 the single orchestrator session that commands a run. Herdr **spaces**, **tabs**, and
 **panes** are the live supervision surface. See the
-[README](README.md) and [specification](docs/SPEC.md) for the full model.
+[README](herdr-delegator/README.md) and [specification](docs/SPEC.md) for the full model.
 
 ## [3.11.0] - Unreleased
 

@@ -1,6 +1,10 @@
+---
+kind: template
+---
+
 # Track handoff — <source track_id/run_id> to <target track_id/run_id>
 
-Written by the source run's ORCH on <date>. This document transfers state to the target ORCH; conversation memory is not authority. ORCH rules are in the ORCH role skill the target session was born with (a run created before role skills reads `protocol-orch.md` instead).
+Written by the source run's ORCH on <date>. This document transfers state to the target ORCH; conversation memory is not authority. ORCH rules are in the installed `herdr-orch` role skill the target session was instructed to read.
 
 # Required core
 
@@ -98,10 +102,10 @@ Label is the artifact's optional display-only frontmatter field, quoted here so 
 Startup, inspection, revalidation, assignment, and source-lane lifecycle rules are in your ORCH role skill. Record effects and evidence here rather than restating the procedure.
 
 - Target initialization request/result: `<coordinates; init/reset request; result>`
-- Target manifest, protocol set, reset lineage, plan hash, and storage-index verification: `<coordinates and proof>`
+- Target manifest, reset lineage when applicable, plan hash, and storage-index verification: `<coordinates and proof>`
 - Target plan revisions: `<coordinates and reasons>`
 - `orchestrator-instructions.md`: `<coordinate and SHA-256>`
-- `herdr_track start_orchestrator` observation: `<result/effect/ambiguity>`
+- ORCH birth or revival observation: `<tool action/result/effect/ambiguity>`
 - First target `herdr_track inspect`: `<coordinate and state>`
 - Inherited evidence dispositions: recorded as rows in the `Inherited claims` table below, not as prose here
 - Preserved source-worker inspections and dispositions: `<worker -> evidence and disposition>`
@@ -113,7 +117,7 @@ Startup, inspection, revalidation, assignment, and source-lane lifecycle rules a
 
 ### Inherited claims
 
-Machine-checked. This run's first `herdr_assignment add` refuses to dispatch until every row parses and every `measured` row's sha equals the project's current HEAD (SUC-001 through SUC-006). Nothing in `command` is ever executed by the tool: you run it, then record what you saw. `disposition` is exactly one of `measured`, `unverified`, `withdrawn` — there is no third state for a claim you neither checked nor dropped. A compatibility or version claim needs one row per direction, `old->new` and `new->old`.
+Machine-checked when this document is the target run's canonical `handoff.md`. Every `herdr_assignment add` checks this section when present and refuses registration if a row does not parse or a `measured` row's sha differs from the project's current HEAD (SUC-001 through SUC-006). Nothing in `command` is ever executed by the tool: you run it, then record what you saw. `disposition` is exactly one of `measured`, `unverified`, `withdrawn`. A compatibility or version claim needs one row per direction, `old->new` and `new->old`.
 
 | claim | coordinate | command | observed | disposition |
 |---|---|---|---|---|

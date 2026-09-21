@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "skills": {
+    "aim": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/aim/SKILL.md",
+      "computedHash": "3e6762848e9b3df4bca2c95ed8186bd845ee092f6ce5e89d3095b71397193b0a"
+    },
+    "autobahn": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/autobahn/SKILL.md",
+      "computedHash": "8f435143864bdc95f7eb1f3ea4b85d23a09e9f81596b2a7e5dbefe1da191ce1e"
+    },
+    "catchup": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/catchup/SKILL.md",
+      "computedHash": "782259c1ecb8894a9c94d6d3b46fe8923bbbe3c4f13aedfcd15dc80e65142620"
+    },
+    "debloat": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/debloat/SKILL.md",
+      "computedHash": "0cbba5477413f40f549a43b24e4c5c4248c6827da7c7b22f1df5a41097770fc3"
+    },
+    "dedash": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/dedash/SKILL.md",
+      "computedHash": "21cee7fb06d07202141b1254eaa1ed5b41d9be7c52046aed196baa617c9ef1a8"
+    },
+    "detool": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/detool/SKILL.md",
+      "computedHash": "692a81cce18b7492596c91a6d81b6dc568b49ade73066ebb36f3edb5f4541e44"
+    },
+    "factchk": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/factchk/SKILL.md",
+      "computedHash": "514aed4de9d556dd38d36677a874567ea0cc06dff15630134d84bf7333ff79b2"
+    },
+    "feynman": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/feynman/SKILL.md",
+      "computedHash": "2a54e7bee1fc14d199a61cee058769fa60341e6e70a61e4ed5ad61e606d5c29d"
+    },
+    "hate": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/hate/SKILL.md",
+      "computedHash": "e756f6027bf479154eb26bb048dd57cf58b931fb225eafd45050eb3d9b40743a"
+    },
+    "macrothink": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/macrothink/SKILL.md",
+      "computedHash": "f45f775a94e51d23a63dd436d759bae06110352fb74f57e4d701f9ac546beb60"
+    },
+    "mandela": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/mandela/SKILL.md",
+      "computedHash": "62f5cfb277a438b88b122a0f9904d72893d2002e5d5d1373c0adcdbdf9c2a152"
+    },
+    "modelchk": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/modelchk/SKILL.md",
+      "computedHash": "1018747b5b4557c9ebfcfbd54f3e4bb5d49c2367b70764fadea06c056d0fc33c"
+    },
+    "nba": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/nba/SKILL.md",
+      "computedHash": "98757f2fa7e50e8fba17a5e5a5931da945ac545d369d76ba3bbb222ed94ed3ba"
+    },
+    "prism": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/mesh/prism/SKILL.md",
+      "computedHash": "873ffe6095fc64f90e43cd4abe67812ea76e2110204767162a9d9b44db9d7551"
+    },
+    "re0": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/re0/SKILL.md",
+      "computedHash": "adbe46934d08b2bcc1e1e58eb136abfc03f2184a6fea355b45cff2730c3cfcd9"
+    },
+    "re0-git": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/re0-git/SKILL.md",
+      "computedHash": "be7bc23180934fef49a414179c50af2a4de29b2b58880db62b4ed66ce74840d3"
+    },
+    "re0-loop": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/re0-loop/SKILL.md",
+      "computedHash": "5500d911743d0bc9182508aaf1366495a24e5445d6760a08e451eb85be3b26de"
+    },
+    "re0-memo": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/re0-memo/SKILL.md",
+      "computedHash": "1436d609686f6e85c5d3fef8e35c20d682f1f60a214001b61229fe1bef1bc991"
+    },
+    "re0-merge": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/re0-merge/SKILL.md",
+      "computedHash": "833871b092cd1dd9360514faa6d32c355e84b7c64cb4c5e11ff72b5ae1da5783"
+    },
+    "re0-plan": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/re0-plan/SKILL.md",
+      "computedHash": "966fee958157985177b1eacb981821bd14dfcc1edc96bd50468f4f940c305208"
+    },
+    "re0-release": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/re0-release/SKILL.md",
+      "computedHash": "260ca17244b929fc0d18aeb36407ccaa3237a54eb9301cc0ac28e84f4be3d469"
+    },
+    "re0-upgrade": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/breadth/re0-upgrade/SKILL.md",
+      "computedHash": "fe0df658464226839bf42e6b45bdd5a91b45485edc914cf7faa2a75e22f04e5d"
+    },
+    "re0-work": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/coil/re0-work/SKILL.md",
+      "computedHash": "e2510edf97dff4a71eaa1b24df06115c351e0a8ee6f628e3f40158c13bb3f14e"
+    },
+    "readchk": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/readchk/SKILL.md",
+      "computedHash": "8d35cf15ba2961bcf5201a029d520ef56fbd90a5d184adffe9b414ed16c200f2"
+    },
+    "reorder": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/reorder/SKILL.md",
+      "computedHash": "a9baac63476338c7a7a1ede8f94f56c8355d48337bdf1f11ef2d89bf6bd42a7e"
+    },
+    "shower": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/shower/SKILL.md",
+      "computedHash": "e75eabae18959909a68030a7f7cb2c03294f741572068686f2442a78b9e42aa2"
+    },
+    "sip": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/depth/sip/SKILL.md",
+      "computedHash": "9f433fcf59e0a3fd2c6c72a578c77d3027b694a1b495ea7e2991b47c3fc2840a"
+    },
+    "ssotize": {
+      "source": "LilMGenius/paperthin",
+      "sourceType": "github",
+      "skillPath": "skills/breadth/ssotize/SKILL.md",
+      "computedHash": "1f10a039df47df45518f44a02dfa120d9503971880cb7b03fae3e383eeb596e8"
+    }
+  }
+}

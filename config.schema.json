@@ -195,7 +195,7 @@
         },
         "directive": {
           "$ref": "#/$defs/guidanceText",
-          "description": "ORCH-facing execution guidance delivered inline with the orchestrator's first prompt, as the first advisory section (historical runs render it at the top of guidance.md or the generated role skill). Advisory only; never changes authority, scope, or completion conditions."
+          "description": "ORCH-facing execution guidance delivered inline with the orchestrator's first prompt, as the first advisory section. Advisory only; never changes authority, scope, or completion conditions."
         }
       }
     },

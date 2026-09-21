@@ -92,7 +92,6 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session identity verification, resume, focus, anchor recreation, and guarded close |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/close operations consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
-| `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
 | `mcp/budget.ts` | metering, clamp parsing and token-axis classification, the clamp write helper, covenant math, audit document rendering, verdict parsing, the emergency carve-out's admissibility predicate and document-persisted debt |
 | `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates, and the force-close approval reader |
 | `mcp/succession.ts` | canonical succession coordinate, inherited-claim grammar and parser, sha-freshness gate, read-only HEAD observation |
@@ -140,10 +139,6 @@ The model never supplies this path directly.
 ```text
 <run>/
   run.json
-  protocol.md
-  protocol-orch.md
-  protocol-worker.md
-  guidance.md
   plan.md
   evidence.md
   a2a/
@@ -156,9 +151,9 @@ The model never supplies this path directly.
     w<N>-report.md
 ```
 
-`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders. A run created under the packaged-delivery backing records renders no `guidance.md` and no `role-skills/` at all — its role instructions are the installed packaged skills and its advisory criteria ride inline in the prompt. `guidance.md` is still rendered by `open` and by both `revive` modes for a run whose backing bytes predate packaged delivery, never by `init`, and every layout and reconcile check tolerates its absence and its presence, so runs of every era still load.
+`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders. A run renders no role skill and no guidance document at all: its role instructions are the installed packaged skills and its advisory criteria ride inline in the prompt.
 
-Which delivery a run gets is decided at one required-input boundary shared by the ORCH spawn, direct dispatch, FIFO promotion and the guidance-materialization gate: the run's own `protocol-orch.md` / `protocol-worker.md` is read as a canonical regular file and passed through the same shipped-digest acceptance `init` uses, and only those accepted bytes are then classified as packaged, marked-historical or unmarked-historical. A missing, unreadable or unaccepted record is a refusal — never a silent fall-through to a historical branch — and the refusal happens before the assignment is marked `prompting`, before `prompted_at`, and before anything is submitted to the adapter, so no fallback artifact is written and no lane is told about work it cannot be given instructions for.
+Role delivery is resolved at one required-input boundary shared by the ORCH spawn, direct dispatch and FIFO promotion: the packaged skill the role — or the assignment's profile — selects is read from an explicit package-relative path in the installed package, never from a run artifact and never from a catalog name lookup. A missing or unreadable skill, or a profile with no packaged skill, is a refusal, and the refusal happens before the assignment is marked `prompting`, before `prompted_at`, and before anything is submitted to the adapter, so no fallback artifact is written and no lane is told about work it cannot be given instructions for.
 
 `delegation.json` is the minimal responsibility/assignment routing authority. `herdr-workers.json` remains the lifecycle identity/session/workspace authority. Both and their locks are tool-owned, mode-0600 control-plane files.
 
@@ -266,7 +261,7 @@ Every action also includes `track_id` and `run_id`. Strict discriminated schemas
 
 Configuration may declare `skill_routing` in two cooperating parts. `skills` is a per-skill authored metadata map (`intent`, `trigger`); no installed-presence detection of any kind exists (no lockfile lookup, no SKILL.md disk walk) — a missing skill is a reader-side no-op and skill bodies resolve natively via `skill://`. `rules` accepts two shapes: legacy `boundary` × `surface` rules (optional rule-level `trigger` and `profiles`) parse unchanged, and the newer `{ agent, moment, skills }` shape lowers at parse time into the same internal vocabulary — orch moments `plan|authoring|settlement|reset` are existing boundary names, and a profile agent's `intake`/`report` lower to worker `dispatch`/`completion` scoped to that profile — so resolvers and every delivery site see one shape. The MCP layer surfaces matching rules as `skill_routes` in `init`, `preflight`, and terminal assignment results, and appends worker-surface routes to the dispatch prompt pointer, filtered by the lane's assignment profile. Route lookup never blocks control flow and routes carry no authority.
 
-Resolved configuration reaches a reader as a pure projection — the renderer authors no sentences; every content block maps to a config coordinate, plus a closed set of fixed structural strings. On a packaged run the projection is delivered inline with the prompt: the orchestrator's first prompt carries its `directive` first, then the worker-profile selection table (each profile's `intent`; the legacy `guidance` field serves as `intent` fallback) and the orch-moment routes with each skill's `intent` and `trigger`; a lane's assignment prompt carries only that profile's `directive` and its intake/report routes. Historical runs keep the two rendered documents: `guidance.md` at `open` and both revival modes, `guidance-<profile>.md` at dispatch, named in the dispatch pointer as advisory, and the marked role-template era embeds the same blocks beneath the generated role body. Absence is a no-op everywhere: a profile with neither directive nor routes yields no advisory block, no document and no pointer; an advisory failure degrades to a named-failure document or a warning and never blocks a birth or dispatch, while a required packaged role skill that cannot be resolved fails the call before any prompt effect.
+Resolved configuration reaches a reader as a pure projection — the renderer authors no sentences; every content block maps to a config coordinate, plus a closed set of fixed structural strings. The projection is delivered inline with the prompt: the orchestrator's first prompt carries its `directive` first, then the worker-profile selection table (each profile's `intent`; the legacy `guidance` field serves as `intent` fallback) and the orch-moment routes with each skill's `intent` and `trigger`; a lane's assignment prompt carries only that profile's `directive` and its intake/report routes. Absence is a no-op everywhere: a profile with neither directive nor routes yields no advisory block and no pointer; an advisory failure degrades to a warning and never blocks a birth or dispatch, while a required packaged role skill that cannot be resolved fails the call before any prompt effect.
 
 ## State and transitions
 

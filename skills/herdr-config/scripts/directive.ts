@@ -12,10 +12,11 @@ import path from "node:path";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { loadDelegatorConfig, ompAgentDir, writeAtomic } from "../../../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { renderGuidanceDocument } from "../../../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
+import { renderGuidance } from "../../../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 
 const USAGE = 'usage: bun skills/herdr-config/scripts/directive.ts <cwd> --set "<text>" [--layer project|user] [--apply]';
 const LAYER_FILE = "herdr-delegator.json";
+const ABSENT_ADVISORY = "(no advisory block: this configuration authors no orchestrator directive and no orch-moment route)";
 
 /**
  * A layer as authored. Both layer files this script reads were written by this
@@ -94,10 +95,10 @@ if (sandboxProject) await writeFile(sandboxProjectPath, `${JSON.stringify(sandbo
 
 const priorAgentDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = sandboxAgentDir;
-let preview: string;
+let preview: string | undefined;
 try {
   const { config } = await loadDelegatorConfig(undefined, sandboxCwd);
-  preview = renderGuidanceDocument(config);
+  preview = renderGuidance(config);
 } catch (error: unknown) {
   const code = error instanceof Error && "code" in error ? `${String(error.code)}: ` : "";
   const message = error instanceof Error ? error.message : String(error);
@@ -112,8 +113,8 @@ await rm(sandbox, { recursive: true, force: true });
 console.log(`target layer: ${layerName} (${targetPath})`);
 console.log(`directive: ${JSON.stringify(text)}`);
 console.log("");
-console.log("--- advisory preview (historical guidance.md format; a current run delivers these blocks inline with its prompt) ---");
-console.log(preview);
+console.log("--- advisory preview (the ORCH advisory blocks a run delivers inline with its prompt) ---");
+console.log(preview ?? ABSENT_ADVISORY);
 
 if (!apply) {
   console.log("--- not applied (no --apply); nothing was written ---");
@@ -124,4 +125,4 @@ await mkdir(path.dirname(targetPath), { recursive: true });
 await writeAtomic(targetPath, `${JSON.stringify(candidate, null, 2)}\n`);
 const { config: reloaded } = await loadDelegatorConfig(undefined, projectCwd);
 console.log(`--- applied to ${targetPath}; re-rendered from disk ---`);
-console.log(renderGuidanceDocument(reloaded));
+console.log(renderGuidance(reloaded) ?? ABSENT_ADVISORY);

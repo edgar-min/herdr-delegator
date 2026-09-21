@@ -6,7 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { materializeGuidance, materializeWorkerGuidance, materializeWorkerRoleSkill, requireBackingRecord, workerPackagedDelivery } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
+import { workerPackagedDelivery } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -995,17 +995,15 @@ function frictionHintFor(tool: ToolName, code: string, retryable: boolean): stri
 }
 
 /**
- * Required-delivery input failures: the run's backing record, the packaged
- * role skill, and the profile that selects one. They are refusals about input,
- * not about the work already registered, so a caller that has already changed
- * registry state reports the retained state instead of letting the generic
- * `effect: "none"` imply nothing happened.
+ * Required-delivery input failures: the packaged role skill, and the profile
+ * that selects one. They are refusals about input, not about the work already
+ * registered, so a caller that has already changed registry state reports the
+ * retained state instead of letting the generic `effect: "none"` imply nothing
+ * happened.
  */
 const DELIVERY_INPUT_CODES: Record<string, true> = {
-  backing_record_unavailable: true,
   role_skill_unavailable: true,
   worker_profile_unsupported: true,
-  run_init_conflict: true,
 };
 
 function resultError(tool: ToolName, action: string, run: RunRef, error: unknown): McpResult {
@@ -2062,15 +2060,6 @@ export class CompositeTools {
       `creator verification: ${stampedCreator.verified === false ? "unverified (omp_fact_bridge_mismatch)" : "attested"}`,
       "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
-    // Advisory delivery surface, never a gate: on a pre-packaged run the
-    // document is rendered (or degrades to a document naming its own failure)
-    // before the spawn, and only a failed write is reported — open proceeds
-    // either way. A packaged run materializes nothing: its advisory criteria
-    // ride inline in the first prompt.
-    const guidance = (await requireBackingRecord(store.runPath, "protocol-orch.md")).packaged
-      ? { warning: undefined }
-      : await materializeGuidance(store.runPath);
-
     const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
     if (!birth) {
@@ -2081,7 +2070,7 @@ export class CompositeTools {
     const creatorWarning = stampedCreator.verified === false
       ? "Opening creator is unverified because pane attestation failed with omp_fact_bridge_mismatch; existing-run operations remain fail-closed."
       : undefined;
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, observation.role_skill_warning, guidance.warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.role_skill_warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
     const retirementText = stampedCreator.verified === false
       ? "the unverified opening pane is retired for this track and cannot issue guarded calls"
       : "this session is retired for this track and every guarded call it makes now fails with creator_session_retired";
@@ -2170,14 +2159,6 @@ export class CompositeTools {
       const retirement = await retireOrchestratorSession({ operation: "retire_orch_session", track_id: run.track_id, run_id: run.run_id });
       retired = retirement.observation;
     }
-    // A revived ORCH — resumed or reborn — must see the configuration that is
-    // current now, not the rendering its first birth got. Best-effort as at
-    // open, and skipped entirely on a packaged run, which carries its criteria
-    // inline instead of in a run artifact.
-    const guidance = (await requireBackingRecord(store.runPath, "protocol-orch.md")).packaged
-      ? { warning: undefined }
-      : await materializeGuidance(store.runPath);
-
     const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id });
     const observedSession = stringField(started.orchestrator, ["session_id"]);
     if (mode === "resume" && observedSession && observedSession !== born.official_session_id) {
@@ -2208,7 +2189,7 @@ export class CompositeTools {
       ]).catch(() => undefined);
     }
     const observation = isObject(started.observation) ? started.observation : {};
-    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, observation.role_skill_warning, guidance.warning]) {
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.role_skill_warning]) {
       if (typeof candidate === "string") warnings.push(candidate);
     }
     return {
@@ -3123,7 +3104,6 @@ export class CompositeTools {
     const snapshot = await store.read();
     const record = snapshot.assignments[assignmentId];
     if (!record) throw new McpContractError("assignment_artifact_missing", "Assignment vanished from the registry before dispatch.", "select", "Inspect the minimal registry before prompting.");
-    const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
     const artifactPath = path.join(store.runPath, "a2a", "assignments", `${assignmentId}.md`);
     const reportPath = path.join(store.runPath, "a2a", `${workerId}-report.md`);
     // The lane's profile and its display-only label both live in the canonical
@@ -3134,12 +3114,12 @@ export class CompositeTools {
     const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
     const laneProfile = artifact?.assignment.profile;
     // Required instructions are resolved BEFORE any prompt-side state change:
-    // on a packaged run the profile selects an installed skill, so an unknown
-    // profile or an unreadable package fails here, with the assignment still
-    // registered and the lane still idle, rather than after the lane has been
-    // marked working. The advisory half degrades to a warning either way.
+    // the profile selects an installed packaged skill, so an unknown profile or
+    // an unreadable package fails here, with the assignment still registered
+    // and the lane still idle, rather than after the lane has been marked
+    // working. The advisory half degrades to a warning either way.
     const packagedWorker = await workerPackagedDelivery(store.runPath, laneProfile);
-    if (packagedWorker?.warning) warnings.push(packagedWorker.warning);
+    if (packagedWorker.warning) warnings.push(packagedWorker.warning);
     const promptedAt = nowIso();
     let registry = await store.mutate(timeoutMs, (next) => {
       next.assignments[assignmentId].state = "prompting";
@@ -3153,26 +3133,12 @@ export class CompositeTools {
     const dispatchDrift = await observeReferenceDrift(store, registry, registry.assignments[assignmentId]);
     if (dispatchDrift) warnings.push(dispatchDrift);
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
-    // A marked role-template run keeps generating one worker skill from its own
-    // body, and a run created before role skills keeps the protocol-plus-
-    // guidance pair it was created with, where absence stays a no-op: an
-    // unknown profile, a profile with neither directive nor route, and a failed
-    // render or write all name no path, so the pointer omits the clause.
-    const laneRoleSkill: { path?: string; warning?: string } = packagedWorker
-      ? {}
-      : await materializeWorkerRoleSkill(store.runPath, workerId, laneProfile);
-    if (laneRoleSkill.warning) warnings.push(laneRoleSkill.warning);
-    const laneGuidance = !packagedWorker && !laneRoleSkill.path && laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
-    if (laneGuidance.warning) warnings.push(laneGuidance.warning);
     // The pointer is the worker's first display surface, so it names the full
     // coordinate — A-001 exists in dozens of runs and only <track>/<run>/<id>
     // tells them apart — and the artifact's label when it has one. Identity
     // stays numeric where it is parsed: the completion block the worker must
     // append carries the bare ID, never the coordinate and never the label.
-    const roleSkillPath = packagedWorker?.skillPath ?? laneRoleSkill.path;
-    const roleDocument = roleSkillPath ? `worker skill ${roleSkillPath}` : `worker protocol ${workerProtocolPath}`;
-    const wakeReference = roleSkillPath ? "your worker skill" : "protocol-worker.md";
-    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; ${roleDocument}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per ${wakeReference}.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}${packagedWorker?.advisory ? `\n\n${packagedWorker.advisory}` : ""}`;
+    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker skill ${packagedWorker.skillPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per your worker skill.${skillRoutePointer(workerRoutes)}${packagedWorker.advisory ? `\n\n${packagedWorker.advisory}` : ""}`;
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
@@ -3299,10 +3265,10 @@ export class CompositeTools {
         // Three authoring-time refusals, before anything is registered: the
         // profile a live lane cannot run (friction 17b7fd5328871a88), a
         // `# References` bullet whose document is unpinnable or has moved on,
-        // and — on a packaged run — a profile or installed role skill that
-        // could never be delivered. The last one is read-only capability, not
-        // a new schema: it resolves exactly what dispatch will resolve, so the
-        // refusal arrives while the assignment ID is still unconsumed.
+        // and a profile or installed role skill that could never be delivered.
+        // The last one is read-only capability, not a new schema: it resolves
+        // exactly what dispatch will resolve, so the refusal arrives while the
+        // assignment ID is still unconsumed.
         await assertLaneProfile(store, registry, artifact.assignment);
         await workerPackagedDelivery(store.runPath, artifact.assignment.profile);
         const references = artifact.assignment.references ? await observeReferences(store.runPath, artifact.assignment.references) : [];
@@ -3319,15 +3285,6 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership, ...authoringJev } };
       }
       if (input.action === "add") {
-        const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
-        try {
-          const protocolStat = await lstat(workerProtocolPath);
-          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(workerProtocolPath)) !== workerProtocolPath) {
-            throw new Error("protocol path is not canonical");
-          }
-        } catch {
-          throw new McpContractError("invalid_run_layout", "protocol-worker.md is missing or not a canonical regular file.", "validate", "Re-initialize and reconcile the exact run before dispatching an assignment.");
-        }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
         // Succession claim gate (SUC-001..SUC-006), before the budget judgment:
@@ -3421,8 +3378,8 @@ export class CompositeTools {
         const warnings: string[] = [...sweepWarnings];
         const until = input.wait?.until ?? ["idle", "done", "blocked"];
         // The capability gate above ran before `select`, so reaching this point
-        // and still failing on required delivery input means the package or the
-        // backing record was lost in between. The registration, the seal and
+        // and still failing on required delivery input means the installed
+        // package was lost in between. The registration, the seal and
         // possibly a live lane are real, so the failure reports the retained
         // state rather than the generic `effect: "none"`, which would read as
         // "nothing happened" for work the registry is now holding.

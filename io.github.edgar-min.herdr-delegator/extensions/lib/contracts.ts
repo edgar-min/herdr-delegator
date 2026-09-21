@@ -95,15 +95,15 @@ export type ModelProfile = {
   guidance?: string;
   /**
    * Optional ORCH-facing selection criteria, including what NOT to assign to
-   * this profile. It renders only to the selector (`guidance.md`) and never
+   * this profile. It renders only into the ORCH's own advisory block and never
    * resolves a model, a role, or authority. When absent, `guidance` — the
    * field it supersedes — is rendered in its place.
    */
   intent?: string;
   /**
    * Optional execution guidance. On the orchestrator profile it renders at the
-   * top of `guidance.md`; on a worker profile it renders only to the selected
-   * lane. It remains advisory.
+   * top of the ORCH's advisory block; on a worker profile it renders only into
+   * the selected lane's. It remains advisory.
    */
   directive?: string;
 };

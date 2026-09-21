@@ -4,7 +4,6 @@ import { constants as fsConstants, type Stats } from "node:fs";
 import { copyFile, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunManifest, SkillMetadata, SkillRoute, SkillRouteBoundary, SkillRouteSurface, SkillRoutingConfig, TargetOrchestratorRecord, ThinkingLevel, ToolParams, WorkerMoment } from "./contracts";
 import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_METADATA_ENTRIES, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, ORCH_MOMENTS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_MOMENTS, WORKER_RE, assertExactKeys, compactMessage, isObject, sha256 } from "./contracts";
 
@@ -24,11 +23,6 @@ const DEFAULT_CONFIG: DelegatorConfig = {
     slow: { role: "@default", thinking: "inherit" },
   },
 };
-
-export const PROTOCOL_TEMPLATE_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../../skills/herdr-create/templates/protocol.md",
-);
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return typeof value === "string" && THINKING_LEVELS.some((level) => level === value);
@@ -757,20 +751,13 @@ export async function resolveRunCoordinate(
     throw new ContractError("run_manifest_mismatch", "run.json identity, path, or cwd conflicts with the requested coordinate.", "validate");
   }
   const a2aPath = path.join(runPath, "a2a");
-  const protocolPath = path.join(runPath, "protocol.md");
   let canonicalA2a: string;
-  let canonicalProtocol: string;
   try {
-    [canonicalA2a, canonicalProtocol] = await Promise.all([realpath(a2aPath), realpath(protocolPath)]);
+    canonicalA2a = await realpath(a2aPath);
   } catch {
-    throw new ContractError("invalid_run_layout", "The initialized run must contain protocol.md and a2a/.", "validate");
+    throw new ContractError("invalid_run_layout", "The initialized run must contain a2a/.", "validate");
   }
-  if (
-    canonicalA2a !== a2aPath ||
-    canonicalProtocol !== protocolPath ||
-    !(await isDirectory(a2aPath)) ||
-    !(await isFile(protocolPath))
-  ) {
+  if (canonicalA2a !== a2aPath || !(await isDirectory(a2aPath))) {
     throw new ContractError("invalid_run_layout", "The initialized run layout is not canonical.", "validate");
   }
   const loaded = await loadDelegatorConfig(runPath, manifest.cwd);
