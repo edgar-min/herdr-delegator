@@ -1,0 +1,51 @@
+{
+  "repo": "https://github.com/jongwony/epistemic-protocols",
+  "commit": "b87b2e98435aa2515402e207e0537f3c943d77f8",
+  "license": "MIT",
+  "fetched_at": "2026-09-22T08:54:04.730Z",
+  "protocols": {
+    "inquire": {
+      "source": "aitesis/skills/inquire",
+      "plugin_version": "7.0.0",
+      "files": {
+        "SKILL.md": "2dd54afb57fee6aa577b4b381add291b8e4fcdc3eaa62cf07f284033c03e8789",
+        "references/round-composition.md": "107f44250364445aa26071e2785ae045df2bd985c73907b485cd1d88bd73e726"
+      }
+    },
+    "elicit": {
+      "source": "euporia/skills/elicit",
+      "plugin_version": "1.0.3",
+      "files": {
+        "SKILL.md": "597dd5118c9652c2c882c831341d941e04c7b47b0b9d925dcc7e031a2c182cfd",
+        "references/round-composition.md": "a8ceb3077c437f8f7143b301ac0344abe51d2ce9e6f3333c1e613b2495aaea12"
+      }
+    },
+    "sketch": {
+      "source": "hypotyposis/skills/sketch",
+      "plugin_version": "1.4.0",
+      "files": {
+        "SKILL.md": "f5e8c413ea8f0f33a5852ed2f11b2efa68f386f76d7d5eb346e8bfd9300cd4b8",
+        "references/round-composition.md": "737ab8677d31c378f1d3f2af133151beacbf2a0d984bb7b1d3c2cbe4f2bb4435"
+      }
+    },
+    "preview": {
+      "source": "proplasma/skills/preview",
+      "plugin_version": "1.1.0",
+      "files": {
+        "SKILL.md": "4718cafce4322255dc6f6b8c10d3bc864aa027f3c99d55ee633540a2eece60f2",
+        "references/round-composition.md": "acf859c50fe7b4f126eb3d17b230a826a6d13d7641674c439f534fe24e734bca"
+      }
+    },
+    "ideate": {
+      "source": "heuresis/skills/ideate",
+      "plugin_version": "1.0.6",
+      "files": {
+        "SKILL.md": "1680cbed564fd75b45815184b33354d2592892238f24ca0e826bbddaec7d36d3",
+        "references/blank-entry.md": "97e471ee953598cb6ffa69ae6a7f880a25ff87d012069a04e84339c24a9bfd7f",
+        "references/chain-reference.md": "bd0ea6fd990d52d27e6b675f888cccf963a8f155e46b1ef7dba64379b11b6dce",
+        "references/round-composition.md": "00d725392132637b692d4b0d6e5e3007e231b03a58fb5104bb70f4e488ae2649",
+        "references/seeded-entry.md": "edb2255cf4ce1c4df1c83f6adc7927c5e120a1143449f5c0ea27edb256065e91"
+      }
+    }
+  }
+}
