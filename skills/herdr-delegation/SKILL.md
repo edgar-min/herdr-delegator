@@ -74,6 +74,13 @@ about to hand away; an interview held here leaves its context here.
    text the protocol will actually receive, naming the bound `open` and `substrate`
    items. If no gate holds, the mandate is not ready: record why in `open[]` and do
    not open.
+6. **Self-contained for the judge.** Every decision the mandate depends on is carried
+   in `settled[].decision` as the user made it; `source` is provenance, never a
+   substitute for the text. `done_when` and `forbidden` may only rely on what the
+   mandate itself carries, because the check judges the mandate alone and cannot
+   open the documents it points at. Refresh the draft every time a decision lands:
+   a mandate written before a decision and opened after it is how a track inherits
+   a contradiction no check can see.
 
 ## Check before you open
 
