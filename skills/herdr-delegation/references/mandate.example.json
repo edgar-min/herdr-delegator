@@ -1,0 +1,93 @@
+{
+  "mandate_version": 2,
+  "purpose": "Make an ORCH's first action land as the user intended by fixing the mandate form, the creator contract, and the information the ORCH reads on its first turn.",
+  "language": "ko",
+  "entry": {
+    "protocol": "sketch",
+    "utterance": "Make the mandate form (a JSON schema with an example) and the creator contract that produces it, starting from the settled decisions recorded in /Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-01 to D-07 and the draft at skills/herdr-delegation/references/mandate.schema.json; the user will mark each version, and the open item 'which parts of the ORCH first turn stay server-rendered' stays open until the user recognizes a version.",
+    "reason": "The user knows a good mandate form when they see one but cannot specify it in advance, and the prior material is already committed in plan.md, so the sketch gate holds."
+  },
+  "settled": [
+    {
+      "decision": "The mandate is written in English, as JSON, must be classifiable by Jev, and carries only what a new track cannot learn on its own.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-03",
+      "reason": "These four rules are the minimum that keeps a mandate machine-checkable and free of noise."
+    },
+    {
+      "decision": "The mandate is the invocation of one planning protocol and names it in entry.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-03",
+      "reason": "Reducing the first turn to one choice makes that choice measurable."
+    },
+    {
+      "decision": "The creator does not interview the user; open questions travel in open[] and are resolved in the new track.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-03",
+      "reason": "An interview held in the creator session leaves its context there."
+    },
+    {
+      "decision": "Upstream protocol skills are imported verbatim from jongwony/epistemic-protocols at commit b87b2e98435aa2515402e207e0537f3c943d77f8 and replaced by Jev plus scripts only gradually.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-04",
+      "reason": "The port-and-adapter structure exists to follow upstream revisions."
+    },
+    {
+      "decision": "The improved opening flow is applied to the MCP server and the OMP extension in this track.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-02, D-06",
+      "reason": "Dogfooding only counts when the next track runs on the real server."
+    },
+    {
+      "decision": "The dogfooding environment is isolated with a project-scoped plugin link and a separate storage.root; the global mount and the main worktree stay unchanged.",
+      "source": "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md D-07",
+      "reason": "Editing the mount would stale this session's server and affect other tracks."
+    }
+  ],
+  "substrate": [
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md section '결정 대장' records the operative decisions D-01 to D-07 of this track; the old mandate at /Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/inputs/mandate.json is historical evidence only.",
+    "skills/herdr-delegation/SKILL.md in the working tree (100 lines deleted by the user, uncommitted) is the user's own start on the creator contract.",
+    "skills/herdr-orch/templates/SKILL.ko.md is the user's draft of the ORCH skill.",
+    "skills/herdr-orch/references/procedure/procedure-planning.md is the user's draft of the planning procedure.",
+    "mcp/tools.ts herdr_track open on branch open-contract validates the mandate_version 2 object, writes <run>/mandate.json and fingerprints its bytes.",
+    "io.github.edgar-min.herdr-delegator/extensions/lib/track.ts line 48 composes the ORCH birth prompt from the instruction path and the packaged ORCH skill path.",
+    "io.github.edgar-min.herdr-delegator/extensions/lib/config.ts validateOrchestratorRun() on branch open-contract requires mandate.json in the run layout.",
+    "mcp/revival.ts and mcp/budget.ts on branch open-contract read mandate.json as the mandate; the plan-vs-mandate judge exists only on branch review/orch-routing-jev (mcp/jev/judge.ts) and still names orchestrator-instructions.md.",
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/inputs/ctx/out/inquire-align.pass1.prospect-prime.json is the inquire landing of the old mandate and shows zero items the user had to answer at that time.",
+    "protocols/UPSTREAM.json pins the imported inquire, elicit and sketch skills at commit b87b2e98435aa2515402e207e0537f3c943d77f8.",
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/a2a/w1-report.md is the adversarial review of mandate form v2 with findings F-01 to F-10."
+  ],
+  "open": [
+    {
+      "item": "Does the herdr_track open call take the mandate as an inline JSON object or as a path to a file inside the project?",
+      "candidates": [
+        "The creator passes the mandate object inline and the server writes mandate.json",
+        "The creator writes a file inside the project and passes its path"
+      ]
+    },
+    {
+      "item": "Which of the ORCH first-turn rules now in protocol-orch.md move into skills/herdr-orch/SKILL.md and which stay rendered by the server?"
+    },
+    {
+      "item": "Which area handed to the next track is the topic of the first dogfooding track?"
+    }
+  ],
+  "done_when": [
+    "skills/herdr-delegation contains one SKILL.md, references/mandate.schema.json and references/mandate.example.json.",
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md records the user's decision naming the version of the mandate form they recognized.",
+    "protocols/UPSTREAM.json pins inquire, elicit and sketch at an upstream commit.",
+    "bun protocols/scripts/upstream-sync.ts --check exits 0 in the development worktree.",
+    "herdr_track open accepts a mandate_version 2 JSON and writes <run>/mandate.json.",
+    "herdr_track open writes no orchestrator-instructions.md.",
+    "bun run check passes in the development worktree after the server change.",
+    "skills/herdr-orch/SKILL.md routes the first turn to reading mandate.json and executing entry.protocol from protocols/<protocol>/upstream/SKILL.md.",
+    "skills/herdr-orch/SKILL.md states that protocol execution never authorizes implementation, dispatch or close before the user's recorded decision.",
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md records, for one track opened with the new flow, the trace of its ORCH first turn: the entry protocol activity, its handoff to the user, no implementation or dispatch before the user's decision, and the user's landing judgment.",
+    "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/handoff-next-track.md exists."
+  ],
+  "forbidden": [
+    "Do not modify lanes, registries or reports of inquire-stages/r1 or skills-jev-dialogue-review/r2.",
+    "Do not align protocols/inquire domain and ports, split ports/stage.ts, build the Ctx driver or derive channels in this track; those areas go to the next track.",
+    "Do not modify the mounted plugin or /Users/jsmin/Projects/herdr-delegator-main during this track; the dogfooding environment is a project-scoped link to the development worktree."
+  ],
+  "budget": {
+    "tokens": 2000000,
+    "minutes": 600,
+    "doorbell_policy": "notify"
+  }
+}
