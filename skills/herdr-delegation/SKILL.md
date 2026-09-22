@@ -77,17 +77,24 @@ about to hand away; an interview held here leaves its context here.
 
 ## Check before you open
 
-Run the deterministic check on the draft:
+Run the check on the draft, from the project the track will run in:
 
-    bun skills/herdr-delegation/scripts/mandate-check.ts <draft.json>
+    bun skills/herdr-delegation/scripts/mandate-check.ts <draft.json> --cwd <project dir>
 
-It validates the schema, refuses an `entry.protocol` that `protocols/UPSTREAM.json`
-does not pin, enforces the structural gate conjuncts (`preview` needs a bound open
-item with at least two candidates, `elicit` needs at least one substrate item), and
-flags judged units that break the one-unit rule. Fix and rerun until it exits 0. When
-a Jev semantic check is installed it runs in the same command and reports, on a state
-that omits `entry`, whether an independent judge routes to the same protocol; a
-disagreement is shown to the user with both readings, never resolved silently.
+Its deterministic half validates the schema, refuses an `entry.protocol` that
+`protocols/UPSTREAM.json` does not pin, enforces the structural gate conjuncts
+(`preview` needs a bound open item with at least two candidates, `elicit` needs at
+least one substrate item), flags judged units that break the one-unit rule, and
+refuses a substrate path that does not exist where the track will run. Its judged
+half asks a Jev judge four questions on a state that omits `entry`: which protocol's
+gate holds (a disagreement is shown with both readings and never resolved silently,
+and a judge at or under 0.35 confidence leaves your choice standing), whether a
+settled decision or forbidden item contradicts each `done_when`, whether each
+substrate sentence still describes what its coordinate holds, and whether any judged
+unit is universal rather than track-specific. Without a Jev key the judged half
+prints `ok semantic: skipped (no Jev key)` and the deterministic verdict stands;
+`--no-semantic` skips it explicitly and `--semantic-only` runs it alone. Fix and
+rerun until it exits 0.
 
 ## Show, then open once
 

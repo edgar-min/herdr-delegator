@@ -1,4 +1,4 @@
-// bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>]
+// bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]
 //
 // The deterministic half of the mandate check: everything about a mandate that
 // can be decided without a judge. It validates the document against
@@ -8,11 +8,13 @@
 //
 // Every check prints one `ok <rule>: <detail>` or `FAIL <rule>: <detail>` line
 // and any FAIL exits 1, so it is usable both by a creator reading the output and
-// by a script reading the exit code. The semantic/routing check that asks a
-// judge the same question lives behind `semanticChecks()` and is not installed.
+// by a script reading the exit code. The judged half — routing, consistency,
+// coverage and noise, asked of a Jev judge — lives in `semanticChecks()` below;
+// it needs a Jev key and prints its own skip line when there is none.
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ChoiceAnswer, ChoiceQuestion, JevResponse } from "../../../mcp/jev/client";
 
 const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_ROOT = path.resolve(SKILL_DIR, "../..");
@@ -30,7 +32,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function usage(message: string): never {
   console.error(`mandate-check: ${message}`);
-  console.error("usage: bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>]");
+  console.error("usage: bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]");
   process.exit(2);
 }
 
@@ -38,6 +40,8 @@ const argv = process.argv.slice(2);
 let mandatePath: string | undefined;
 let upstreamPath = DEFAULT_UPSTREAM_PATH;
 let projectDir = process.cwd();
+let skipSemantic = false;
+let semanticOnly = false;
 for (let index = 0; index < argv.length; index += 1) {
   const argument = argv[index];
   if (argument === "--upstream") {
@@ -54,6 +58,8 @@ for (let index = 0; index < argv.length; index += 1) {
     index += 1;
     continue;
   }
+  if (argument === "--no-semantic") { skipSemantic = true; continue; }
+  if (argument === "--semantic-only") { semanticOnly = true; continue; }
   if (argument.startsWith("-")) usage(`unknown option ${argument}`);
   if (mandatePath) usage("pass exactly one mandate file");
   mandatePath = path.resolve(argument);
@@ -242,27 +248,245 @@ const missingPaths = substrate.flatMap((item, index) => {
 if (missingPaths.length) fail("substrate-path", missingPaths.slice(0, 8).join("; "));
 else ok("substrate-path", `${substrate.length} substrate item(s) name paths that exist under ${projectDir} or absolutely`);
 
-// --- semantic seam ----------------------------------------------------------
+// --- the semantic gate ------------------------------------------------------
 /**
- * The Jev semantic gate — the checks a judge must make and this script cannot.
- * Not installed here; the next track implements it behind this seam so the
- * exit code stays deterministic until then. Its contract:
- *   1. routing: on a state that omits `entry`, ask which protocol's gate holds
- *      (choice over the pinned protocols plus "none"); disagreement with
- *      entry.protocol is a FAIL that shows both readings.
- *   2. consistency: for every done_when item, ask whether any settled decision
- *      or forbidden item contradicts it (the first sandbox track found
- *      done_when items requiring an edit a settled decision forbade).
- *   3. coverage: for every substrate item, ask whether the sentence names what
- *      the coordinate actually holds (a stale "D-01 to D-07" against a document
- *      that carries D-15 is the observed case).
- *   4. noise: for every judged unit, ask whether it would be true in another
- *      track; a "yes" is a FAIL naming the unit.
+ * The Jev semantic gate — the four judgments a judge must make and the
+ * deterministic rules above cannot:
+ *   1. routing: on a state that OMITS `entry`, which protocol's gate holds;
+ *      disagreement with entry.protocol is a FAIL showing both readings, and a
+ *      judge under the undecided threshold leaves the creator's choice standing.
+ *   2. consistency: for every done_when item, whether a settled decision or a
+ *      forbidden item contradicts it.
+ *   3. coverage: for every substrate item, whether its sentence describes what
+ *      its coordinate holds as far as the mandate itself shows.
+ *   4. noise: for every judged unit, whether it would be true of another track.
+ *
+ * The gate never changes a deterministic verdict; it adds lines of its own. A
+ * creator without a Jev key still gets the deterministic verdict, and the skip
+ * is printed rather than silent.
  */
-function semanticChecks(): Line[] {
-  return [];
+const QUESTION_VERSION = "mandate-gate-2026-09-22.1";
+/** Ctx-pass rule recorded in inquire-align/r1/plan.md: at or below this, the judge decided nothing. */
+const UNDECIDED_CONFIDENCE = 0.35;
+const DEFINITION_FIELDS = ["purpose", "language", "settled", "substrate", "open", "done_when", "forbidden"] as const;
+
+/** The gate asks only `choice` questions; `Choice` is the client's own question type narrowed to that. */
+type Choice = ChoiceQuestion;
+
+/** The five gate sentences, split out of entry.protocol's own description. */
+function protocolGates(): { gates: Record<string, string>; precedence: string } {
+  const entrySchema = isRecord(schema.properties) && isRecord(schema.properties.entry) ? schema.properties.entry : {};
+  const protocolSchema = isRecord(entrySchema.properties) && isRecord(entrySchema.properties.protocol) ? entrySchema.properties.protocol : {};
+  const description = typeof protocolSchema.description === "string" ? protocolSchema.description : "";
+  const names = Array.isArray(protocolSchema.enum) ? protocolSchema.enum.filter((value): value is string => typeof value === "string") : [];
+  const marks = names
+    .map((name) => ({ name, at: description.indexOf(`${name} (`) }))
+    .filter((mark) => mark.at >= 0)
+    .sort((left, right) => left.at - right.at);
+  const precedenceAt = description.indexOf("Routing precedence");
+  const gates: Record<string, string> = {};
+  for (const [index, mark] of marks.entries()) {
+    const end = index + 1 < marks.length ? marks[index + 1].at : (precedenceAt >= 0 ? precedenceAt : description.length);
+    gates[mark.name] = description.slice(mark.at, end).trim();
+  }
+  return { gates, precedence: precedenceAt >= 0 ? description.slice(precedenceAt).trim() : "" };
 }
-lines.push(...semanticChecks());
+
+function probabilityText(answer: ChoiceAnswer): string {
+  const ordered = Object.entries(answer.probabilities).sort((left, right) => right[1] - left[1]);
+  return `${ordered.map(([label, value]) => `${label}=${value.toFixed(2)}`).join(" ")}, confidence ${answer.confidence.toFixed(2)}`;
+}
+
+const quote = (text: string): string => `"${text.length > 110 ? `${text.slice(0, 107)}…` : text}"`;
+
+/** State and questions: the mandate WITHOUT `entry`, plus the schema's own definitions. */
+function gateRequest(): { state: unknown; questions: Record<string, Choice>; targets: Record<string, string> } {
+  const { gates, precedence } = protocolGates();
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const definitions: Record<string, string> = {};
+  for (const field of DEFINITION_FIELDS) {
+    const node = isRecord(properties[field]) ? properties[field] : undefined;
+    if (node && typeof node.description === "string") definitions[field] = node.description;
+  }
+  for (const [name, sentence] of Object.entries(gates)) definitions[`protocol.${name}`] = sentence;
+  // The judge routes the invocation, not the whole document: it must see what
+  // the first turn is asked to do (entry.utterance) and must not see the
+  // creator's answer (entry.protocol, entry.reason). The first measurement
+  // over the example, with the utterance removed too, routed "none" over
+  // "sketch" twice: the form to be made lived only in the utterance.
+  const { entry: creatorEntry, ...withoutEntry } = document;
+  const utterance = isRecord(creatorEntry) && typeof creatorEntry.utterance === "string" ? creatorEntry.utterance : "";
+  const state = { definitions, mandate: { ...withoutEntry, invocation: utterance } };
+
+  const questions: Record<string, Choice> = {};
+  const targets: Record<string, string> = {};
+  questions.routing = {
+    type: "choice",
+    instructions: {
+      ask: "Which protocol's gate holds for what mandate.invocation asks of the first turn, given the mandate's open items, settled decisions and substrate? Judge only from the state: the creator's chosen protocol and reason have been removed from it.",
+      precedence,
+      answer_with: "the protocol whose gate description matches the deficit this mandate carries, or none when no gate holds",
+    },
+    criteria: { ...gates, none: "No gate holds: the mandate is not ready for any planning protocol as it stands." },
+  };
+  targets.routing = "entry.protocol (removed from the state; entry.utterance kept as mandate.invocation)";
+  doneWhen.forEach((item, index) => {
+    questions[`consistency[${index}]`] = {
+      type: "choice",
+      instructions: {
+        ask: `Does any settled decision or forbidden item in this mandate contradict done_when[${index}]?`,
+        item,
+        answer_with: "contradicted when reaching this condition would require an act the mandate settles against or forbids, otherwise consistent",
+      },
+      criteria: {
+        consistent: "No settled decision and no forbidden item stands in the way of reaching this condition.",
+        contradicted: "A settled decision or a forbidden item makes this condition unreachable as written.",
+      },
+    };
+    targets[`consistency[${index}]`] = `done_when[${index}] ${quote(item)}`;
+  });
+  substrate.forEach((item, index) => {
+    questions[`coverage[${index}]`] = {
+      type: "choice",
+      instructions: {
+        ask: `Does substrate[${index}]'s sentence describe what its coordinate holds, as far as this mandate itself shows?`,
+        item,
+        answer_with: "stale only when another part of the mandate shows the description is out of date; unknowable when the mandate cannot show either way",
+      },
+      criteria: {
+        accurate: "The sentence describes what the named coordinate holds, consistently with the rest of the mandate.",
+        stale: "The rest of the mandate shows this description is out of date for that coordinate.",
+        unknowable: "Nothing in the mandate settles whether the description still fits; only opening the coordinate would.",
+      },
+    };
+    targets[`coverage[${index}]`] = `substrate[${index}] ${quote(item)}`;
+  });
+  const noiseUnits = [
+    ...settled.flatMap((item, index) => (typeof item.decision === "string" ? [{ where: `settled[${index}].decision`, unit: item.decision }] : [])),
+    ...forbidden.map((unit, index) => ({ where: `forbidden[${index}]`, unit })),
+    ...doneWhen.map((unit, index) => ({ where: `done_when[${index}]`, unit })),
+  ];
+  noiseUnits.forEach(({ where, unit }, index) => {
+    questions[`noise[${index}]`] = {
+      type: "choice",
+      instructions: {
+        ask: "Would this sentence be true of any other track in this project?",
+        sentence: unit,
+        answer_with: "universal when it states a rule that holds for every track, track-specific when it only holds for this mandate's own work",
+      },
+      criteria: {
+        "track-specific": "The sentence names something true of this track's own work and false or vacuous elsewhere.",
+        universal: "The sentence states a rule that would hold in any other track of this project; it belongs in the ORCH skill, not in a mandate.",
+      },
+    };
+    targets[`noise[${index}]`] = `${where} ${quote(unit)}`;
+  });
+  return { state, questions, targets };
+}
+
+/** Groups in request order; a group too large for one request is split further, never dropped. */
+function planRequests(
+  state: unknown,
+  questions: Record<string, Choice>,
+  fits: (batch: Record<string, Choice>) => boolean,
+): Record<string, Choice>[] {
+  if (fits(questions)) return [questions];
+  const groups = ["routing", "consistency", "coverage", "noise"];
+  const batches: Record<string, Choice>[] = [];
+  for (const group of groups) {
+    const entries = Object.entries(questions).filter(([id]) => id === group || id.startsWith(`${group}[`));
+    if (!entries.length) continue;
+    let pending = entries;
+    while (pending.length) {
+      let size = pending.length;
+      while (size > 1 && !fits(Object.fromEntries(pending.slice(0, size)))) size -= 1;
+      batches.push(Object.fromEntries(pending.slice(0, size)));
+      pending = pending.slice(size);
+    }
+  }
+  return batches;
+}
+
+async function semanticChecks(): Promise<Line[]> {
+  if (skipSemantic) return [{ ok: true, rule: "semantic", detail: "skipped (--no-semantic)" }];
+  // Optional dependency, loaded late on purpose: the deterministic half of this
+  // check must keep working in a tree that carries the skill without the
+  // server's mcp/jev client, and a creator without a Jev key must still get a
+  // verdict. A static import would make both cases a crash.
+  let jev: typeof import("../../../mcp/jev/client");
+  try { jev = await import("../../../mcp/jev/client"); }
+  catch { return [{ ok: true, rule: "semantic", detail: "skipped (jev client not installed)" }]; }
+  try { jev.apiKey(); }
+  catch { return [{ ok: true, rule: "semantic", detail: "skipped (no Jev key)" }]; }
+
+  const { state, questions, targets } = gateRequest();
+  const fits = (batch: Record<string, Choice>): boolean => {
+    try { jev.assertBudget(state, batch); return true; }
+    catch { return false; }
+  };
+  const batches = planRequests(state, questions, fits);
+  const answers: Record<string, ChoiceAnswer> = {};
+  const usage: string[] = [];
+  let model = "";
+  for (const batch of batches) {
+    let response: JevResponse;
+    try { response = await jev.ask(state, batch); }
+    catch (error: unknown) {
+      return [{ ok: false, rule: "semantic", detail: `the judge could not be asked: ${error instanceof Error ? error.message : String(error)}` }];
+    }
+    model = response.model;
+    usage.push(`${response.usage ? `${response.usage.input_tokens} in / ${response.usage.output_tokens} out` : "usage not reported"}`);
+    for (const [id, answer] of Object.entries(response.answers)) {
+      if (answer.type === "choice") answers[id] = answer;
+    }
+  }
+
+  const results: Line[] = [{
+    ok: true,
+    rule: "semantic",
+    detail: `${model || "jev"}, question version ${QUESTION_VERSION}, state ≈${jev.estimateTokens(state)} tokens, ${batches.length} request(s) [${usage.join("; ")}]`,
+  }];
+
+  const routing = answers.routing;
+  if (!routing) results.push({ ok: false, rule: "routing", detail: "the judge returned no routing answer" });
+  else if (routing.confidence <= UNDECIDED_CONFIDENCE) {
+    results.push({ ok: true, rule: "routing", detail: `judge undecided (${probabilityText(routing)}), creator's choice ${protocol ?? "(none)"} stands` });
+  } else if (protocol && routing.choice !== protocol) {
+    results.push({ ok: false, rule: "routing", detail: `judge routes to ${routing.choice}, the mandate names ${protocol} (${probabilityText(routing)}); ${targets.routing}` });
+  } else {
+    results.push({ ok: true, rule: "routing", detail: `judge routes to ${routing.choice}, the mandate names ${protocol ?? "(none)"} (${probabilityText(routing)})` });
+  }
+
+  // A passing group still reports what the judge actually said per item: an
+  // `accurate` and an `unknowable` are different answers, and a creator reading
+  // only "ok" would not see which items the judge could not settle.
+  // The same undecided rule as routing: a verdict at or below the threshold is
+  // reported, never failed on. Measured on the example, half of the noise flags
+  // sat at 0.00-0.28 confidence and would otherwise block a creator on noise.
+  const group = (name: string, failOn: string[], okDetail: (count: number) => string): void => {
+    const entries = Object.entries(answers).filter(([id]) => id.startsWith(`${name}[`));
+    const failing = entries.filter(([, answer]) => failOn.includes(answer.choice) && answer.confidence > UNDECIDED_CONFIDENCE);
+    const undecided = entries.filter(([, answer]) => failOn.includes(answer.choice) && answer.confidence <= UNDECIDED_CONFIDENCE);
+    for (const [id, answer] of failing) {
+      results.push({ ok: false, rule: name, detail: `${targets[id] ?? id} is ${answer.choice} (${probabilityText(answer)})` });
+    }
+    for (const [id, answer] of undecided) {
+      results.push({ ok: true, rule: name, detail: `judge undecided on ${targets[id] ?? id} (${probabilityText(answer)}); not failed` });
+    }
+    if (failing.length || undecided.length) return;
+    const perItem = entries.map(([id, answer]) => `${id.slice(name.length)} ${answer.choice} ${answer.confidence.toFixed(2)}`).join("; ");
+    results.push({ ok: true, rule: name, detail: `${okDetail(entries.length)} [${perItem}]` });
+  };
+  group("consistency", ["contradicted"], (count) => `${count} done_when item(s) are consistent with settled and forbidden`);
+  group("coverage", ["stale"], (count) => `${count} substrate item(s) are accurate or unknowable from the mandate alone`);
+  group("noise", ["universal"], (count) => `${count} judged unit(s) are track-specific`);
+  return results;
+}
+
+// `--semantic-only` reports the judged half alone; the deterministic lines are
+// dropped rather than re-judged, so its exit code answers only the gate.
+if (semanticOnly) lines.length = 0;
+lines.push(...(await semanticChecks()));
 
 for (const line of lines) console.log(`${line.ok ? "ok" : "FAIL"} ${line.rule}: ${line.detail}`);
 const failures = lines.filter((line) => !line.ok).length;
