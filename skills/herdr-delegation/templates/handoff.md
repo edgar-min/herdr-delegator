@@ -100,7 +100,7 @@ Startup, inspection, revalidation, assignment, and source-lane lifecycle rules a
 - Target initialization request/result: `<coordinates; init/reset request; result>`
 - Target manifest, protocol set, reset lineage, plan hash, and storage-index verification: `<coordinates and proof>`
 - Target plan revisions: `<coordinates and reasons>`
-- `orchestrator-instructions.md`: `<coordinate and SHA-256>`
+- `mandate.json`: `<coordinate and SHA-256>`
 - `herdr_track start_orchestrator` observation: `<result/effect/ambiguity>`
 - First target `herdr_track inspect`: `<coordinate and state>`
 - Inherited evidence dispositions: recorded as rows in the `Inherited claims` table below, not as prose here
