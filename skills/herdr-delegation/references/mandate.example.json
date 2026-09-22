@@ -42,8 +42,8 @@
   "substrate": [
     "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/plan.md section '결정 대장' records the operative decisions D-01 to D-07 of this track; the old mandate at /Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/inputs/mandate.json is historical evidence only.",
     "skills/herdr-delegation/SKILL.md in the working tree (100 lines deleted by the user, uncommitted) is the user's own start on the creator contract.",
-    "skills/herdr-orch/templates/SKILL.ko.md is the user's draft of the ORCH skill.",
-    "skills/herdr-orch/references/procedure/procedure-planning.md is the user's draft of the planning procedure.",
+    "review/orch-routing-jev:skills/herdr-orch/templates/SKILL.ko.md (branch-qualified; not on this checkout) is the user's draft of the ORCH skill.",
+    "review/orch-routing-jev:skills/herdr-orch/references/procedure/procedure-planning.md (branch-qualified; not on this checkout) is the user's draft of the planning procedure.",
     "mcp/tools.ts herdr_track open on branch open-contract validates the mandate_version 2 object, writes <run>/mandate.json and fingerprints its bytes.",
     "io.github.edgar-min.herdr-delegator/extensions/lib/track.ts line 48 composes the ORCH birth prompt from the instruction path and the packaged ORCH skill path.",
     "io.github.edgar-min.herdr-delegator/extensions/lib/config.ts validateOrchestratorRun() on branch open-contract requires mandate.json in the run layout.",

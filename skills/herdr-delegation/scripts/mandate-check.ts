@@ -1,4 +1,4 @@
-// bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>]
+// bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>]
 //
 // The deterministic half of the mandate check: everything about a mandate that
 // can be decided without a judge. It validates the document against
@@ -10,7 +10,7 @@
 // and any FAIL exits 1, so it is usable both by a creator reading the output and
 // by a script reading the exit code. The semantic/routing check that asks a
 // judge the same question lives behind `semanticChecks()` and is not installed.
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,19 +30,27 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function usage(message: string): never {
   console.error(`mandate-check: ${message}`);
-  console.error("usage: bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>]");
+  console.error("usage: bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>]");
   process.exit(2);
 }
 
 const argv = process.argv.slice(2);
 let mandatePath: string | undefined;
 let upstreamPath = DEFAULT_UPSTREAM_PATH;
+let projectDir = process.cwd();
 for (let index = 0; index < argv.length; index += 1) {
   const argument = argv[index];
   if (argument === "--upstream") {
     const value = argv[index + 1];
     if (!value) usage("--upstream needs a path");
     upstreamPath = path.resolve(value);
+    index += 1;
+    continue;
+  }
+  if (argument === "--cwd") {
+    const value = argv[index + 1];
+    if (!value) usage("--cwd needs a path");
+    projectDir = path.resolve(value);
     index += 1;
     continue;
   }
@@ -213,12 +221,43 @@ const reasonDefects = settled.flatMap((item, index) => {
 if (reasonDefects.length) fail("settled-reason", reasonDefects.slice(0, 8).join("; "));
 else ok("settled-reason", `${settled.length} settled decision(s) carry a stated reason or "unstated"`);
 
+// --- (g) substrate paths exist ---------------------------------------------
+// A substrate item is a channel the born ORCH will read. A path that does not
+// exist where the track will run is a channel that yields nothing, and the
+// first sandbox track found two such items the creator check had let through.
+// The path is the first token of the item that looks like one: absolute, or
+// relative and containing a `/` or a file extension. URLs and commit-qualified
+// coordinates (`branch:path`) are not checked; the project dir defaults to the
+// cwd and is the directory the track will be opened in.
+const PATH_TOKEN = /(?:^|[\s(`'"])((?:\/|~\/|\.{1,2}\/)?[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+|[A-Za-z0-9_\-]+\.[a-z]{1,5})(?=[\s)`'",;:]|$)/;
+const missingPaths = substrate.flatMap((item, index) => {
+  if (/https?:\/\//.test(item) || /\b[a-z0-9._\/-]+:[a-z0-9._\/-]+\/[a-z0-9._\/-]+/i.test(item)) return [];
+  const match = PATH_TOKEN.exec(item);
+  if (!match) return [];
+  const token = match[1].replace(/^~\//, `${process.env.HOME ?? ""}/`);
+  const resolved = path.isAbsolute(token) ? token : path.resolve(projectDir, token);
+  try { statSync(resolved); return []; }
+  catch { return [`substrate[${index}] names ${token}, which does not exist at ${resolved}`]; }
+});
+if (missingPaths.length) fail("substrate-path", missingPaths.slice(0, 8).join("; "));
+else ok("substrate-path", `${substrate.length} substrate item(s) name paths that exist under ${projectDir} or absolutely`);
+
 // --- semantic seam ----------------------------------------------------------
 /**
- * The Jev semantic/routing check: it asks a judge the routing question on a
- * state that omits `entry` and reports disagreement as a blocker. Not
- * implemented here — this seam is where the next track installs it, and it
- * returns no line until then, so the exit code stays deterministic.
+ * The Jev semantic gate — the checks a judge must make and this script cannot.
+ * Not installed here; the next track implements it behind this seam so the
+ * exit code stays deterministic until then. Its contract:
+ *   1. routing: on a state that omits `entry`, ask which protocol's gate holds
+ *      (choice over the pinned protocols plus "none"); disagreement with
+ *      entry.protocol is a FAIL that shows both readings.
+ *   2. consistency: for every done_when item, ask whether any settled decision
+ *      or forbidden item contradicts it (the first sandbox track found
+ *      done_when items requiring an edit a settled decision forbade).
+ *   3. coverage: for every substrate item, ask whether the sentence names what
+ *      the coordinate actually holds (a stale "D-01 to D-07" against a document
+ *      that carries D-15 is the observed case).
+ *   4. noise: for every judged unit, ask whether it would be true in another
+ *      track; a "yes" is a FAIL naming the unit.
  */
 function semanticChecks(): Line[] {
   return [];
