@@ -782,15 +782,15 @@ export async function resolveRunCoordinate(
 export async function validateOrchestratorRun(resolved: ResolvedRun): Promise<ResetLineage | undefined> {
   const { runPath, manifest, storageRoot } = resolved;
   const planPath = path.join(runPath, "plan.md");
-  const instructionPath = path.join(runPath, "orchestrator-instructions.md");
+  const mandatePath = path.join(runPath, "mandate.json");
   try {
-    if ((await realpath(instructionPath)) !== instructionPath || !(await isFile(instructionPath))) {
+    if ((await realpath(mandatePath)) !== mandatePath || !(await isFile(mandatePath))) {
       throw new Error("not canonical");
     }
   } catch {
     throw new ContractError(
       "invalid_orchestrator_layout",
-      "The run must contain a canonical orchestrator-instructions.md before start or inspection.",
+      "The run must contain a canonical mandate.json before start or inspection.",
       "validate",
     );
   }
@@ -860,13 +860,13 @@ export async function validateOrchestratorRun(resolved: ResolvedRun): Promise<Re
 }
 
 export async function canonicalOrchestratorInstruction(runPath: string): Promise<string> {
-  const expected = path.join(runPath, "orchestrator-instructions.md");
+  const expected = path.join(runPath, "mandate.json");
   try {
     if ((await realpath(expected)) !== expected || !(await isFile(expected))) throw new Error("not canonical");
   } catch {
     throw new ContractError(
       "invalid_instruction_path",
-      "orchestrator-instructions.md is missing or not canonical inside the resolved run.",
+      "mandate.json is missing or not canonical inside the resolved run.",
       "validate",
     );
   }

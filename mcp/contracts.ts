@@ -81,18 +81,25 @@ export const FRICTION_REPORTERS = ["agent", "human"] as const;
 export const MAX_FRICTION_SUMMARY = 500;
 export const MAX_FRICTION_EVIDENCE = 2_000;
 export const FRICTION_FINGERPRINT_RE = /^[a-f0-9]{16}$/;
-// Mandate bounds (identity/comms redesign, decision 5). The bootstrapper distills
-// the conversation into WHAT and WHY; HOW belongs to the born ORCH. Every limit
-// below is published in the tool schema up front and named with the observed size
-// in its rejection message, per the goal-4096 lesson (friction 29239ed8).
-export const MAX_MANDATE_INTENT = 4_096;
-export const MAX_MANDATE_ITEM = 500;
+// Mandate bounds (mandate form v2). A mandate is the invocation of ONE planning
+// protocol in a new track, and `skills/herdr-delegation/references/mandate.schema.json`
+// is its authority: the zod object below mirrors that schema bound for bound, so
+// the advertised contract IS the enforced one. The only limit added here is a
+// cap on the whole serialized document, named with the observed size in its
+// rejection message per the goal-4096 lesson (friction 29239ed8).
+export const MANDATE_VERSION = 2 as const;
+export const MANDATE_PROTOCOLS = ["inquire", "elicit", "sketch", "preview", "ideate"] as const;
+export const MAX_MANDATE_SENTENCE = 400;
+export const MAX_MANDATE_UTTERANCE = 800;
+export const MAX_MANDATE_SOURCE = 200;
+export const MAX_MANDATE_CANDIDATE = 200;
+export const MAX_MANDATE_CANDIDATES = 8;
 export const MAX_MANDATE_ITEMS = 32;
-export const MAX_MANDATE_BYTES = 16_384;
-// Hard transport ceilings. They exist only so an absurd payload cannot reach the
-// named-limit validator; the published limits above are the contract.
+export const MAX_MANDATE_BYTES = 65_536;
+// Hard transport ceiling for the bounded one-line fields below. It exists only
+// so an absurd payload cannot reach the named-limit validator; the published
+// limits are the contract.
 const MANDATE_TRANSPORT_STRING = 64_000;
-const MANDATE_TRANSPORT_ITEMS = 256;
 
 // Budget = justification cadence, not a wall (identity/comms redesign, decisions
 // 7-8). Metering is a run-level aggregate over the ORCH and every lane session,
@@ -432,17 +439,43 @@ export type PinnedRolesRecord = {
   source: string;
 };
 
+export type MandateProtocol = (typeof MANDATE_PROTOCOLS)[number];
+
 export type MandateBudget = {
-  tokens?: number;
-  minutes?: number;
-  doorbell_policy?: BudgetPolicy;
+  tokens: number;
+  minutes: number;
+  doorbell_policy: BudgetPolicy;
 };
 
+export type MandateEntry = {
+  protocol: MandateProtocol;
+  utterance: string;
+  reason: string;
+};
+
+export type MandateDecision = {
+  decision: string;
+  source: string;
+  reason: string;
+};
+
+export type MandateOpenItem = {
+  item: string;
+  candidates?: string[];
+};
+
+/** The mandate form v2 object, shaped exactly like references/mandate.schema.json. */
 export type Mandate = {
-  intent: string;
-  constraints: string[];
-  shape_of_success: string[];
-  budget?: MandateBudget;
+  mandate_version: typeof MANDATE_VERSION;
+  purpose: string;
+  language: string;
+  entry: MandateEntry;
+  settled: MandateDecision[];
+  substrate: string[];
+  open: MandateOpenItem[];
+  done_when: string[];
+  forbidden: string[];
+  budget: MandateBudget;
 };
 
 export type BudgetPolicy = (typeof BUDGET_POLICIES)[number];
@@ -664,16 +697,37 @@ const separation = z.object({
   conflicts_with_worker_id: workerId,
 }).strict();
 const mandateBudget = z.object({
-  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).optional().describe(`Declared token estimate for the whole run — a calibration seed, never a contract; crossing it parks the run until the ORCH justifies an extension. Estimate what this mandate's scope should take: a single-lane implementation track spends tokens fast against little wall clock, so its token figure is the axis that binds. Undeclared falls back to ${DEFAULT_BUDGET_TOKENS}, which is a fallback and deliberately tight.`),
-  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).optional().describe(`Declared wall-clock estimate in minutes, measured from the first metered guarded op — the same calibration seed in time, never a contract. A track that coordinates several lanes or waits on human gates burns minutes without burning tokens, so its minute figure is the axis that binds. Undeclared falls back to ${DEFAULT_BUDGET_MINUTES}, which is a fallback and deliberately tight.`),
-  doorbell_policy: z.enum(BUDGET_POLICIES).optional().describe("Who decides an extension. notify (the fallback): the machine audit decides each one and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap. Choose full when the run's spend needs human authority, notify when the audit is sufficient."),
-}).strict().optional().describe("Budget seed and extension policy. Declare an estimate calibrated to this mandate's scope — the tokens and minutes the work should take, not a ceiling to wish for. The two axes are independent ceilings and the narrower one parks the run, so what you are really declaring is an implicit rate: tokens divided by minutes. Check that rate against runs this mandate resembles — measured rates on this project's own closed runs span roughly 1,000 to 15,000 generative tokens per minute, and a seed rate several times off its run's real rate is what parks a run on the axis nobody was watching. An undeclared seed falls back to tight documented defaults that will park a nontrivial run early.");
+  tokens: z.number().int().positive().max(MAX_BUDGET_TOKENS).describe(`Declared token estimate for the whole run — a calibration seed, never a contract; crossing it parks the run until the ORCH justifies an extension. Estimate what this mandate's scope should take: a single-lane implementation track spends tokens fast against little wall clock, so its token figure is the axis that binds.`),
+  minutes: z.number().int().positive().max(MAX_BUDGET_MINUTES).describe(`Declared wall-clock estimate in minutes, measured from the open that spawns the ORCH — the same calibration seed in time, never a contract. A track that coordinates several lanes or waits on human gates burns minutes without burning tokens, so its minute figure is the axis that binds.`),
+  doorbell_policy: z.enum(BUDGET_POLICIES).describe("Who decides an extension. notify: the machine audit decides each one and the human is only notified. full: the human approves every extension by raising the human-owned clamp file, and no audit verdict alone raises the cap."),
+}).strict().describe("Budget seed and extension policy. The two axes are independent ceilings and the narrower one parks the run, so what you are really declaring is an implicit rate: tokens divided by minutes. Measured rates on this project's own closed runs span roughly 1,000 to 15,000 generative tokens per minute, and a seed rate several times off its run's real rate is what parks a run on the axis nobody was watching.");
+const mandateEntry = z.object({
+  protocol: z.enum(MANDATE_PROTOCOLS).describe("The one protocol the ORCH runs on its first turn, chosen by the gate descriptions in references/mandate.schema.json. inquire: facts the task needs are missing and some are reachable through the substrate. elicit: the intent is articulated but its decision coordinates are implicit in the substrate. sketch: a form has to be made that the user would recognize on sight. preview: a direction commitment is imminent and at least two named candidates cannot be judged from their descriptions. ideate: the space of options itself is what is missing. Enum membership is not availability — a protocol that protocols/UPSTREAM.json does not pin is refused with mandate_protocol_unavailable."),
+  utterance: z.string().min(1).max(MAX_MANDATE_UTTERANCE).describe(`The invocation text the protocol receives, self-contained, naming the bound open[] and substrate[] items by their inline coordinates. The ORCH passes it to the protocol unchanged. Limit ${MAX_MANDATE_UTTERANCE} characters.`),
+  reason: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`One sentence naming the deficit that chose this protocol, in the gate's own terms. Limit ${MAX_MANDATE_SENTENCE} characters.`),
+}).strict().describe("The one protocol the ORCH runs first and the exact input it is invoked with.");
+const mandateDecision = z.object({
+  decision: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`The decision as the user made it, one sentence. Limit ${MAX_MANDATE_SENTENCE} characters.`),
+  source: z.string().min(1).max(MAX_MANDATE_SOURCE).describe(`Where the decision was made: a run document with its section (plan.md D-03), or "user, creator conversation <date>". Limit ${MAX_MANDATE_SOURCE} characters.`),
+  reason: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`The reason the user stated, or exactly "unstated". Never a reason the creator supplied.`),
+}).strict();
+const mandateOpenItem = z.object({
+  item: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`The open question as the user would say it, self-contained. Limit ${MAX_MANDATE_SENTENCE} characters.`),
+  candidates: z.array(z.string().min(1).max(MAX_MANDATE_CANDIDATE)).max(MAX_MANDATE_CANDIDATES).optional().describe(`Alternatives already named in the conversation, subordinate data of the item. At most ${MAX_MANDATE_CANDIDATES} entries of ${MAX_MANDATE_CANDIDATE} characters. Candidate count is one input to routing, never a routing decision.`),
+}).strict();
+const mandateSentences = (what: string): z.ZodArray<z.ZodString> => z.array(z.string().min(1).max(MAX_MANDATE_SENTENCE)).max(MAX_MANDATE_ITEMS).describe(`${what} At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_SENTENCE} characters each; pass an empty array when there are none.`);
 const mandate = z.object({
-  intent: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`Why this track exists and what it must achieve, in the user's terms. WHAT and WHY only — HOW is the born ORCH's to decide. Limit ${MAX_MANDATE_INTENT} characters.`),
-  constraints: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).max(MANDATE_TRANSPORT_ITEMS).describe(`Boundaries the ORCH may not cross: budgets, forbidden surfaces, required approvals. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each; pass an empty array when there are none.`),
-  shape_of_success: z.array(z.string().min(1).max(MANDATE_TRANSPORT_STRING)).min(1).max(MANDATE_TRANSPORT_ITEMS).describe(`Observable conditions that make the track done. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_ITEM} characters each.`),
+  mandate_version: z.literal(MANDATE_VERSION).describe("The mandate form version. Only 2 is accepted."),
+  purpose: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`Why this track exists and what it must achieve, one sentence in the user's own terms. Limit ${MAX_MANDATE_SENTENCE} characters.`),
+  language: z.string().regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/).describe("BCP-47 tag of the language the creator conversation was held in (ko, en, ja-JP). The ORCH presents the entry protocol and every later turn in this language."),
+  entry: mandateEntry,
+  settled: z.array(mandateDecision).max(MAX_MANDATE_ITEMS).describe(`Decisions the user already made, each with its source and the reason the user gave or exactly "unstated". A creator-added interpretation is not a decision and belongs in open[]. At most ${MAX_MANDATE_ITEMS} entries.`),
+  substrate: mandateSentences("Where the user's externalized thinking lives, one place per item, coordinate inline. One item must point at the run document that records the currently operative decisions."),
+  open: z.array(mandateOpenItem).max(MAX_MANDATE_ITEMS).describe(`What the conversation did not settle, kept open on purpose for the new track to resolve with the user. The creator never closes an open item by guessing. At most ${MAX_MANDATE_ITEMS} entries.`),
+  done_when: z.array(z.string().min(1).max(MAX_MANDATE_SENTENCE)).min(1).max(MAX_MANDATE_ITEMS).describe(`Observable conditions that make the track done, each verifiable by a delegate from a durable record and never a restatement of purpose. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_SENTENCE} characters each.`),
+  forbidden: mandateSentences("Track-specific prohibitions and every action the user reserves in this track: stage progression, lifecycle, remote changes, acceptance."),
   budget: mandateBudget,
-}).strict().describe(`Bounded mandate persisted as orchestrator-instructions.md and fingerprinted at the ORCH's first prompt. The whole rendered document is limited to ${MAX_MANDATE_BYTES} bytes.`);
+}).strict().describe(`The mandate: the invocation of ONE planning protocol in a new track, shaped exactly like skills/herdr-delegation/references/mandate.schema.json. It is persisted verbatim as <run>/mandate.json and fingerprinted at the ORCH's first prompt, so it is settled before birth and never edited behind a living ORCH. The whole serialized document is limited to ${MAX_MANDATE_BYTES} bytes.`);
 const justification = z.object({
   done: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What the run has already delivered, in observable terms. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
   remaining: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What concretely remains before the shape of success is met. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),

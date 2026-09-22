@@ -6,6 +6,7 @@ import type { ZodError, ZodType } from "zod";
 import { HerdrAdapter } from "./herdr-adapter";
 import { mountedBuild } from "./registry";
 import { ASSIGNMENT_ID_GUIDANCE, COORDINATE_RE, herdrAssignmentInputShape, herdrAssignmentSchema, herdrFrictionInputShape, herdrFrictionSchema, herdrMessageInputShape, herdrMessageSchema, herdrTrackInputShape, herdrTrackSchema, herdrWorkerInputShape, herdrWorkerSchema, type McpResult, type ToolName } from "./contracts";
+import { registerProtocolResources } from "./resources";
 import { CompositeTools } from "./tools";
 
 // A tool result echoes the action it was asked for, so a rejected one may only
@@ -79,6 +80,10 @@ async function main(): Promise<void> {
   server.registerTool("herdr_worker", { description: "List, inspect, resume, or safely close registry-owned responsibility workers.", inputSchema: herdrWorkerInputShape }, guarded("herdr_worker", herdrWorkerSchema, (parsed) => tools.worker(parsed)));
   server.registerTool("herdr_message", { description: "Ring a bounded non-authoritative doorbell. Every action points at a document and carries no content: wake ORCH after a completion block or decision request, wake a peer lane after a channel append, wake your own worker after appending an [ORCH Response] to its report, or ring another run's ORCH after appending an entry to this run's inter-run channel document (a2a/orch-to-<to_track_id>_<to_run_id>.md, which notify_run requires to exist). Delivery is a soft observation; documents stay the only authority.", inputSchema: herdrMessageInputShape }, guarded("herdr_message", herdrMessageSchema, (parsed) => tools.message(parsed)));
   server.registerTool("herdr_friction", { description: "Record a standardized dogfooding friction observation to the global append-only local log (never an external tracker), or list/group prior reports. Report when the contract itself — not your input — proved the obstacle: after resolving or abandoning a difficulty, not on every error; also transcribe user-observed issues with reporter:'human'. Duplicate symptoms group by fingerprint; a report result returns prior_reports for the same fingerprint.", inputSchema: herdrFrictionInputShape }, guarded("herdr_friction", herdrFrictionSchema, (parsed) => tools.friction(parsed)));
+  // Read-only documents, never a tool surface: the pinned upstream protocol
+  // texts, so a born ORCH reads its entry protocol at a URI instead of
+  // resolving a plugin-package path from a run directory it does not live in.
+  registerProtocolResources(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

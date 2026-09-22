@@ -4,6 +4,7 @@ import { appendFile, chmod, lstat, mkdir, readFile, realpath } from "node:fs/pro
 import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
@@ -14,7 +15,7 @@ import { ContractError as LegacyContractError, type WorkerResult } from "../io.g
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
-import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_MANDATE_INTENT, MAX_MANDATE_ITEM, MAX_MANDATE_ITEMS, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type Separation, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
+import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MAX_ASSIGNMENT_REFERENCE_BYTES, MAX_ASSIGNMENT_REFERENCES, MAX_EFFECTIVE_WAIT_MS, MAX_MANDATE_BYTES, MAX_TIMEOUT_MS, MIN_EXTENSION_INTERVAL_MS, MIN_TIMEOUT_MS, McpContractError, nowIso, ompRuntimeFactsSchema, sha256, type AdvisoryUnownedChanges, type AssignmentArtifact, type AssignmentRecord, type AssignmentSettlementObservation, type AssignmentState, type BudgetMetering, type BudgetParkReason, type BudgetRecord, type DelegationRegistry, type EmergencyRequest, type ErrorPhase, type FrictionRecord, type HerdrAssignmentInput, type HerdrFrictionInput, type HerdrMessageInput, type HerdrTrackInput, type HerdrWorkerInput, type InterRunOwnershipOverlap, type InterRunOwnershipReport, type LaneState, type Mandate, type MandateProtocol, type McpResult, type MessageDelivery, type OmpRuntimeFacts, type OrchBirthOrigin, type OrchBirthRecord, type RunRef, type Separation, type TokenUsageObservation, type ToolName, type TrackTotals, type WorkerLaneRecord, type WorkerStalenessObservation } from "./contracts";
 import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, minutesStepCap, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, policyFloor, projectApplied, readAuditDocument, readClamp, refreshApplied, releaseCondition, renderAuditInput, renderEmergencyAuditInput, requestedAxes, requiredClamp, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, usableAxes, writeClampMaxTokens, type AppliedAxes, type BudgetApprovalView, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
@@ -1548,32 +1549,47 @@ function assertLiveWorkerSession(
   return liveSequence;
 }
 // ---------------------------------------------------------------------------
-// Mandate (identity/comms redesign, decision 5). The bootstrapper distills the
-// conversation into WHAT and WHY; HOW belongs to the born ORCH, which writes
-// plan.md in clean context with the user. The document is persisted as
-// orchestrator-instructions.md, which start_orch fingerprints at first prompt
-// and refuses to replay after a change — so a mandate is settled before birth,
-// never edited behind a living ORCH.
+// Mandate (mandate form v2). A mandate is the invocation of ONE planning
+// protocol in a new track. The server renders nothing: the caller's validated
+// object is persisted verbatim as <run>/mandate.json, which start_orch
+// fingerprints at first prompt and refuses to replay after a change — so a
+// mandate is settled before birth, never edited behind a living ORCH.
 //
-// Every published limit is enforced here and names the observed size in its
-// rejection (goal-4096 lesson, friction 29239ed8): a caller learns the bound
-// from the failure instead of by bisection.
+// The shape and its bounds are enforced by the zod object in contracts.ts,
+// which mirrors skills/herdr-delegation/references/mandate.schema.json. Only
+// two judgments are left here: the whole document's size, and whether this
+// build can actually run the entry protocol.
 // ---------------------------------------------------------------------------
 
-function mandateBullets(values: readonly string[], field: string): string[] {
-  if (values.length > MAX_MANDATE_ITEMS) {
-    throw new McpContractError("mandate_too_large", `${field} has ${values.length} entries; the limit is ${MAX_MANDATE_ITEMS}.`, "validate", `Keep at most ${MAX_MANDATE_ITEMS} entries; fold the rest into the intent or leave them to the ORCH's plan.`);
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const UPSTREAM_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "UPSTREAM.json");
+
+/** The canonical bytes of a mandate: the validated object, pretty-printed, LF-terminated. */
+export function canonicalMandate(mandate: Mandate): string {
+  const document = `${JSON.stringify(mandate, null, 2)}\n`;
+  const bytes = Buffer.byteLength(document);
+  if (bytes > MAX_MANDATE_BYTES) {
+    throw new McpContractError("mandate_too_large", `The serialized mandate is ${bytes} bytes; the limit is ${MAX_MANDATE_BYTES}.`, "validate", `Shorten the mandate until the whole document fits in ${MAX_MANDATE_BYTES} bytes; detail belongs in the plan the born ORCH writes, not in the mandate.`);
   }
-  return values.map((value, index) => {
-    const item = singleLine(value);
-    if (!item) throw new McpContractError("mandate_invalid", `${field} entry ${index + 1} is empty after single-line normalization.`, "validate", "Give each entry one concrete line, or drop it.");
-    if (item.length > MAX_MANDATE_ITEM) {
-      throw new McpContractError("mandate_too_large", `${field} entry ${index + 1} is ${item.length} characters; the limit is ${MAX_MANDATE_ITEM}.`, "validate", `Shorten the entry to at most ${MAX_MANDATE_ITEM} characters; a mandate names the boundary, not its reasoning.`);
-    }
-    return item;
-  });
+  return document;
 }
 
+/**
+ * Availability, which enum membership never stands for: the ORCH executes
+ * `entry.protocol` verbatim from `protocols/<protocol>/upstream/SKILL.md`, so a
+ * protocol this build does not pin would be a mandate nobody can carry out.
+ */
+export async function assertEntryProtocolAvailable(protocol: MandateProtocol): Promise<void> {
+  let manifest: unknown;
+  try { manifest = JSON.parse(await readFile(UPSTREAM_MANIFEST_PATH, "utf8")); }
+  catch {
+    throw new McpContractError("mandate_protocol_unavailable", `This build cannot read its pinned protocol manifest at ${UPSTREAM_MANIFEST_PATH}, so no entry protocol can be shown to be available.`, "validate", "Repair or reinstall the package so protocols/UPSTREAM.json is present and parses, then retry the identical open.");
+  }
+  const pinned = isObject(manifest) && isObject(manifest.protocols) ? Object.keys(manifest.protocols) : [];
+  if (!pinned.includes(protocol)) {
+    throw new McpContractError("mandate_protocol_unavailable", `entry.protocol "${protocol}" is not pinned in ${UPSTREAM_MANIFEST_PATH}; this build pins ${pinned.length ? pinned.join(", ") : "no protocol at all"}.`, "validate", "Name an entry protocol this build pins, or import the missing protocol upstream before opening the track.");
+  }
+}
 
 // A clean auditor session on the strongest configured reasoning profile. The
 // responsibility key exists only to name its pane on the supervision surface:
@@ -1587,22 +1603,6 @@ const AUDIT_PROFILE = "slow";
 // a cadence. Silence past this point is a machine failure to escalate to the
 // human, not a verdict to keep waiting for (friction 183b6d4102ddfbfa).
 const MAX_AUDIT_LANDING_ATTEMPTS = 4;
-
-/** The mandate's budget section: a declared estimate plus the cadence it buys. */
-function budgetSection(mandate: Mandate): string {
-  const seeded = seedBudget(mandate, nowIso());
-  const declared = mandate.budget?.tokens || mandate.budget?.minutes ? "declared in the mandate" : "not declared; these are the documented defaults";
-  return [
-    `- seed: ${seeded.seed_tokens} tokens / ${seeded.seed_minutes} minutes (${declared})`,
-    `- doorbell policy: ${seeded.doorbell_policy}`,
-    "",
-    "This seed is a calibration estimate, never a contract. Crossing it parks the run;",
-    "you then justify an extension (done / remaining / why more) through",
-    "herdr_track budget_extend, a clean auditor judges your run documents against the",
-    "machine facts, and the verdict is recorded in budget-ledger.md. Keep plan.md and",
-    "the lane reports current: an audit reads them, so stale documents cost budget.",
-  ].join("\n");
-}
 
 /**
  * The audit ordinal a clamp write cites in its server note: the latest settled
@@ -1628,53 +1628,6 @@ function machineFacts(registry: DelegationRegistry): string[] {
     facts.push(`assignment ${assignment.assignment_id} (${assignment.responsibility_key}, lane ${assignment.worker_id}): state ${assignment.state}${assignment.report_sha256 ? `, report sha256=${assignment.report_sha256}` : ", no verified report hash"}${assignment.completed_at ? `, settled ${assignment.completed_at}` : ""}`);
   }
   return facts.slice(0, 64);
-}
-
-export function renderMandate(run: RunRef, mandate: Mandate): string {
-  const intent = mandate.intent.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim();
-  if (!intent) throw new McpContractError("mandate_invalid", "The mandate intent is empty after normalization.", "validate", "State why this track exists and what it must achieve, in the user's terms.");
-  if (intent.length > MAX_MANDATE_INTENT) {
-    throw new McpContractError("mandate_too_large", `The mandate intent is ${intent.length} characters; the limit is ${MAX_MANDATE_INTENT}.`, "validate", `Shorten the intent to at most ${MAX_MANDATE_INTENT} characters; a mandate carries WHAT and WHY, and the ORCH writes the detail into plan.md.`);
-  }
-  const constraints = mandateBullets(mandate.constraints, "Constraints");
-  const success = mandateBullets(mandate.shape_of_success, "Shape of success");
-  const document = `---
-version: 1
-track_id: ${run.track_id}
-run_id: ${run.run_id}
----
-
-# Mandate
-
-You are the orchestrator born for run ${run.track_id}/${run.run_id}. This document is
-your mandate: it fixes what this track must achieve and why, and deliberately says
-nothing about how. The session that wrote it has died for this track and will not
-answer for it — the user converses with you now, in this pane.
-
-Before delegating anything, write plan.md in this run directory in conversation with
-the user. The plan is yours; it is the only place how belongs.
-
-## Intent
-
-${intent}
-
-## Constraints
-
-${constraints.length ? constraints.map((item) => `- ${item}`).join("\n") : "- None recorded at open; the mandate imposes no boundary beyond the intent above."}
-
-## Shape of success
-
-${success.map((item) => `- ${item}`).join("\n")}
-
-## Budget
-
-${budgetSection(mandate)}
-`;
-  const bytes = Buffer.byteLength(document);
-  if (bytes > MAX_MANDATE_BYTES) {
-    throw new McpContractError("mandate_too_large", `The rendered mandate is ${bytes} bytes; the limit is ${MAX_MANDATE_BYTES}.`, "validate", `Shorten the intent or drop entries until the whole document fits in ${MAX_MANDATE_BYTES} bytes.`);
-  }
-  return document;
 }
 
 export class CompositeTools {
@@ -1974,9 +1927,11 @@ export class CompositeTools {
    * recovery text and reused by the retry; nothing is orphaned silently.
    */
   private async openTrack(input: Extract<HerdrTrackInput, { action: "open" }>, run: RunRef): Promise<McpResult> {
-    // Cheapest gate first: a malformed mandate is the caller's own input and is
+    // Cheapest gates first: a malformed mandate, an oversized one, or an entry
+    // protocol this build does not pin is the caller's own input and is
     // rejected without spending an attestation round trip.
-    const document = renderMandate(run, input.mandate);
+    const document = canonicalMandate(input.mandate);
+    await assertEntryProtocolAvailable(input.mandate.entry.protocol);
     const mandateHash = sha256(document);
     const freshCoordinate = !(await runAlreadyInitialized(input.track_id, input.run_id, input.cwd));
     const creatorAttempt = await loadOpenCreator(this.adapter, freshCoordinate);
@@ -1991,20 +1946,20 @@ export class CompositeTools {
     }
     const born = latestBirth(opened);
     if (born) {
-      return { ok: true, tool: "herdr_track", action: "open", run, effect: "none", retryable: false, registry_revision: opened.revision, data: { already_open: true, creator, creator_verified: creator?.verified !== false, orch_birth: born, orch_pane_id: born.pane_id, space: `herdr/${input.track_id}`, orch_pane: `ORCH ${input.track_id}/${input.run_id}`, mandate: { path: path.join(store.runPath, "orchestrator-instructions.md"), sha256: mandateHash }, next_step: `This track is already commanded by its ORCH pane ${born.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Direct the user there and do no further work on this track here.` } };
+      return { ok: true, tool: "herdr_track", action: "open", run, effect: "none", retryable: false, registry_revision: opened.revision, data: { already_open: true, creator, creator_verified: creator?.verified !== false, orch_birth: born, orch_pane_id: born.pane_id, space: `herdr/${input.track_id}`, orch_pane: `ORCH ${input.track_id}/${input.run_id}`, mandate: { path: path.join(store.runPath, "mandate.json"), sha256: mandateHash }, next_step: `This track is already commanded by its ORCH pane ${born.pane_id} ("ORCH ${input.track_id}/${input.run_id}"). Direct the user there and do no further work on this track here.` } };
     }
     if (creator && !sameOpenCreator(creator, creatorAttempt.identity)) {
       throw new McpContractError("track_open_in_progress", "Another caller is opening this run and its ORCH is not born yet.", "attest", "Let the opening caller finish or retry its identical open; a second opener would race the same birth.");
     }
 
-    const instructionPath = path.join(store.runPath, "orchestrator-instructions.md");
+    const mandatePath = path.join(store.runPath, "mandate.json");
     let existingMandate: Buffer | undefined;
-    try { existingMandate = await readFile(instructionPath); }
-    catch (error: unknown) { if (!isObject(error) || error.code !== "ENOENT") throw new McpContractError("mandate_unreadable", "The run's orchestrator-instructions.md cannot be read safely.", "storage", "Inspect the run directory; never overwrite an unreadable mandate."); }
+    try { existingMandate = await readFile(mandatePath); }
+    catch (error: unknown) { if (!isObject(error) || error.code !== "ENOENT") throw new McpContractError("mandate_unreadable", "The run's mandate.json cannot be read safely.", "storage", "Inspect the run directory; never overwrite an unreadable mandate."); }
     if (existingMandate && sha256(existingMandate) !== mandateHash) {
-      throw new McpContractError("mandate_conflict", "This run already holds a different orchestrator-instructions.md.", "validate", "Open a sibling run for a different mandate; the instruction file is fingerprinted at first prompt and never replayed after a change.");
+      throw new McpContractError("mandate_conflict", "This run already holds a different mandate.json.", "validate", "Open a sibling run for a different mandate; the mandate is fingerprinted at first prompt and never replayed after a change.");
     }
-    if (!existingMandate) await writeAtomic(instructionPath, document);
+    if (!existingMandate) await writeAtomic(mandatePath, document);
 
     const stamped = await store.mutate(DEFAULT_TIMEOUT_MS, (next) => {
       if (creatorAttempt.mismatch && next.orch_creator) throw creatorAttempt.mismatch;
@@ -2065,7 +2020,7 @@ export class CompositeTools {
         orch_pane: typeof observation.pane_label === "string" ? observation.pane_label : `ORCH ${input.track_id}/${input.run_id}`,
         orch_pane_id: birth.pane_id,
         orch_birth: birth,
-        mandate: { path: instructionPath, sha256: mandateHash, bytes: Buffer.byteLength(document) },
+        mandate: { path: mandatePath, sha256: mandateHash, bytes: Buffer.byteLength(document) },
         creator: stampedCreator,
         creator_verified: stampedCreator.verified !== false,
         ...(stampedCreator.session_id ? { creator_retired: stampedCreator.session_id } : {}),

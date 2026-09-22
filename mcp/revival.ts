@@ -89,7 +89,7 @@ export async function readRebirthApproval(runPath: string, nextGeneration: numbe
  * rather than performed and discovered empty.
  */
 export async function assertRevivalDocuments(runPath: string): Promise<{ path: string; bytes: number; sha256: string }[]> {
-  const required = ["orchestrator-instructions.md", "plan.md"];
+  const required = ["mandate.json", "plan.md"];
   const proofs: { path: string; bytes: number; sha256: string }[] = [];
   const missing: string[] = [];
   for (const name of required) {

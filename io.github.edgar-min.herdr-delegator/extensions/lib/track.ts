@@ -15,6 +15,42 @@ const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-wo
 export const MAX_INBOUND_PROMPT_POINTERS = 8;
 
 /**
+ * The entry protocol is served by this package's MCP server as a resource, and
+ * the OMP `read` tool reaches it through its `mcp://<resource-uri>` route
+ * (packages/coding-agent/src/internal-urls/mcp-protocol.ts). A born ORCH lives
+ * in a run directory, not in the plugin package, so naming a package path in
+ * the prompt made the first turn depend on resolving a path the session could
+ * not see — the rt-test/r1 ORCH halted on exactly that.
+ */
+const PROTOCOL_RESOURCE_READ_PREFIX = "mcp://herdr://protocol";
+const UPSTREAM_MANIFEST_PATH = path.resolve(path.dirname(PROTOCOL_TEMPLATE_PATH), "../../../protocols/UPSTREAM.json");
+
+/** The mandate's entry protocol, refused at spawn when this build does not pin it. */
+export async function entryProtocolResource(mandatePath: string, mandateBytes: Buffer): Promise<string> {
+  let mandate: unknown;
+  try { mandate = JSON.parse(mandateBytes.toString("utf8")); }
+  catch {
+    throw new ContractError("invalid_mandate", `${mandatePath} is not valid JSON, so the entry protocol cannot be named in the first prompt.`, "validate");
+  }
+  const entry = isObject(mandate) && isObject(mandate.entry) ? mandate.entry : undefined;
+  const protocol = typeof entry?.protocol === "string" ? entry.protocol : undefined;
+  if (!protocol) {
+    throw new ContractError("invalid_mandate", `${mandatePath} names no entry.protocol; an ORCH born from it would have no first action.`, "validate");
+  }
+  let pinned: string[];
+  try {
+    const manifest: unknown = JSON.parse(await readFile(UPSTREAM_MANIFEST_PATH, "utf8"));
+    pinned = isObject(manifest) && isObject(manifest.protocols) ? Object.keys(manifest.protocols) : [];
+  } catch {
+    throw new ContractError("entry_protocol_unavailable", `This build cannot read ${UPSTREAM_MANIFEST_PATH}, so no entry protocol resource can be named.`, "validate");
+  }
+  if (!pinned.includes(protocol)) {
+    throw new ContractError("entry_protocol_unavailable", `entry.protocol "${protocol}" is not pinned in ${UPSTREAM_MANIFEST_PATH}; this build serves ${pinned.join(", ") || "no protocol at all"}.`, "validate", { recovery: "Open a sibling run with a protocol this build pins, or import the missing protocol upstream; never prompt an ORCH toward a protocol it cannot read." });
+  }
+  return `${PROTOCOL_RESOURCE_READ_PREFIX}/${protocol}`;
+}
+
+/**
  * The ORCH's first prompt. It names the documents that carry command — the
  * mandate and the role protocol — and, when a caller materialized one for this
  * spawn, the advisory guidance document, marked advisory in the prompt itself so
@@ -31,6 +67,7 @@ export const MAX_INBOUND_PROMPT_POINTERS = 8;
 export function orchestratorFirstPrompt(
   instructionPath: string,
   orchestratorProtocolPath: string,
+  protocolResourceUri: string,
   guidancePath?: string,
   inbound?: InboundChannelObservation,
 ): string {
@@ -51,7 +88,7 @@ export function orchestratorFirstPrompt(
   const inboundClause = named.length
     ? ` ${lead} ${pointers}. That is an observation of documents a future or live ORCH can discover, not a delivered message, not a complete list, and no guarantee that anything will be redelivered: read each document before you act on it and answer in your own reverse channel.${remainder}`
     : "";
-  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. Then read the entry protocol as an MCP resource: ${protocolResourceUri}.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
 }
 
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
@@ -999,7 +1036,12 @@ async function startOrchestrator(
     await readFile(orchestratorProtocolPath),
     await readFile(orchestratorProtocolTemplatePath),
   ).warning;
-  const instructionFingerprint = sha256(await readFile(instructionPath));
+  const mandateBytes = await readFile(instructionPath);
+  const instructionFingerprint = sha256(mandateBytes);
+  // Refused here rather than prompted: an ORCH pointed at a protocol this build
+  // does not serve would halt on its first action, which is the failure this
+  // resource route exists to remove.
+  const protocolResourceUri = await entryProtocolResource(instructionPath, mandateBytes);
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
   const { registryPath } = registryPaths(runPath);
@@ -1233,7 +1275,7 @@ async function startOrchestrator(
       if (current.prompt_sha256 && current.prompt_sha256 !== instructionFingerprint) {
         throw new ContractError(
           "instruction_changed",
-          "orchestrator-instructions.md changed after its first recorded fingerprint.",
+          "mandate.json changed after its first recorded fingerprint.",
           "prompt_prepare",
           { recovery: "Create or revise a sibling run before launch; never replay a changed target ORCH prompt." },
         );
@@ -1268,6 +1310,7 @@ async function startOrchestrator(
       const prompt = orchestratorFirstPrompt(
         instructionPath,
         orchestratorProtocolPath,
+        protocolResourceUri,
         (await isFile(guidancePath)) ? guidancePath : undefined,
         inbound,
       );

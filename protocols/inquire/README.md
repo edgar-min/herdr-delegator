@@ -18,13 +18,12 @@ copy of the Jev client for exactly that reason — this directory imports nothin
 
 ```
 bun protocols/inquire/scripts/scan.ts <mandate.json> [keepFrom=1]
-bun protocols/inquire/scripts/mandate-to-open.ts <mandate.json>
 ```
 
 `scan.ts` prints the per-passage table and writes `<mandate>.scan-result.json` beside
 the input. It needs a Jev API key in `TYPESAFE_API_KEY` or `JEV_API_KEY`, in the
-environment or in `<agent dir>/herdr-delegator/.env`. `mandate-to-open.ts` prints the
-flattened `mandate` object for `herdr_track open`.
+environment or in `<agent dir>/herdr-delegator/.env`. `herdr_track open` takes the
+mandate object itself, so nothing flattens it any more.
 
 ```
 bun test protocols/inquire

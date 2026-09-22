@@ -158,7 +158,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.2 `herdr_track`
 
-- **RUN-001**: `open` MUST be the single atomic entry for a new track and MUST, in one call, lay out the run, fix the bounded mandate as `orchestrator-instructions.md`, stamp the creator, spawn the ORCH pre-aligned to the configured orchestrator role, and record the ORCH birth. `cwd` MUST be an existing absolute canonical project path.
+- **RUN-001**: `open` MUST be the single atomic entry for a new track and MUST, in one call, lay out the run, fix the bounded mandate as `mandate.json`, stamp the creator, spawn the ORCH pre-aligned to the configured orchestrator role, and record the ORCH birth. `cwd` MUST be an existing absolute canonical project path.
 - **RUN-001a**: `open` MUST stamp the creator record before the spawn, so a failed spawn leaves a run no other caller can command and only the same creator coordinate can complete; it MUST be re-entrant under an identical mandate and MUST refuse a different mandate with `mandate_conflict`.
 - **RUN-001b**: An attested creator session MUST be retired for that run, and its later guarded calls MUST fail `creator_session_retired`. A degraded opening pane MUST likewise be retired from guarded calls but has no session ID to record as retired. The result MUST carry a redirection pointer naming the ORCH pane.
 - **RUN-001c**: Mandate limits MUST be published up front and named with the observed size on rejection: intent 4096 characters, each list entry 500 characters, at most 32 entries per list, whole rendered document 16384 bytes.

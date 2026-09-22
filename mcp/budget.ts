@@ -812,7 +812,7 @@ ${machineFacts.map((fact) => `- ${fact}`).join("\n")}
 
 Every document named here is a real file inside this run's directory,
 \`${runPath}\`, and you read it with your ordinary file tools: read
-\`orchestrator-instructions.md\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
+\`mandate.json\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
 and every \`a2a/w<N>-report.md\` under that path. A \`local://\` or session-scoped
 URL is NOT how these are reached — you have no session history with this run, so
 that form would resolve to nothing. Then decide:
@@ -1108,7 +1108,7 @@ ${machineFacts.map((fact) => `- ${fact}`).join("\n")}
 
 Every document named here is a real file inside this run's directory,
 \`${runPath}\`, read with your ordinary file tools: this run's
-\`orchestrator-instructions.md\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
+\`mandate.json\` (the mandate), \`plan.md\`, \`budget-ledger.md\`,
 and every \`a2a/w<N>-report.md\` under that path. A \`local://\` or session-scoped
 URL resolves to nothing here, because you have no session history with this run.
 Then decide:
