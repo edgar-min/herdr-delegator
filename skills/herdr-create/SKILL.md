@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "4.0.0"
+  version: "4.0.1"
 ---
 
 # Herdr track creation
@@ -34,7 +34,7 @@ Everything true of every track belongs in the common contract (`herdr-delegator:
 
 ## How the ORCH receives it
 
-The born ORCH's first prompt names its `mandate.json` and the skill `herdr-orch`; that skill's `references/first-turn.md` makes it execute `entry.protocol` verbatim from `herdr-delegator://protocol/<protocol>` with `entry.utterance` as its input and stops it at the continuation guard. The interview with the user happens **in the new track**, through the protocol — never here.
+The born ORCH's first prompt names its `mandate.json` and the skill `herdr-orch`; that skill's `skill://herdr-orch/references/first-turn.md` makes it execute `entry.protocol` verbatim from `herdr-delegator://protocol/<protocol>` with `entry.utterance` as its input and stops it at the continuation guard. The interview with the user happens **in the new track**, through the protocol — never here.
 
 ## Distill, do not interview
 

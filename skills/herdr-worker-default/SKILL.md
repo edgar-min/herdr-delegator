@@ -1,6 +1,6 @@
 ---
 name: herdr-worker-default
-description: Execute an immutable Herdr assignment on the general-purpose default lane: faithful, precise, simplest-sufficient execution with direct evidence.
+description: Execute an immutable Herdr assignment on the general-purpose default lane — faithful, precise, simplest-sufficient execution with direct evidence.
 ---
 
 # Default worker profile

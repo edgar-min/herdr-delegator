@@ -44,7 +44,9 @@ artifact is one UTF-8 Markdown file at `<run>/a2a/assignments/<assignment_id>.md
 line endings only, at most 65536 bytes. Frontmatter is `---`, then `assignment_id`,
 `responsibility_key`, `profile` in that order, optionally `label`, then `---`, then a
 blank line — one space after each colon, no other key, no repeated key, no blank line
-inside the block. The body is the five required H1 sections, all of them, in this order:
+inside the block. `label` is display only and never identity: 1 to 48 characters of
+letters, digits, `-` or `_`, beginning and ending with a letter or digit — no spaces, no
+prose. The body is the five required H1 sections, all of them, in this order:
 `# Goal`, `# Completion conditions`, `# Write ownership`, `# Dependencies`,
 `# User boundaries`, each heading followed by one blank line, optionally followed by a
 trailing `# References` section and nothing after it. `# Goal` is prose of at most 4096

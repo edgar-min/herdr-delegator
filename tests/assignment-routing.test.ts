@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { judgeRouting, routingRequest, type RoutingInput, type RoutingResult } from "../mcp/jev/routing";
@@ -7,6 +7,8 @@ import type { AskOptions, ChoiceQuestion } from "../mcp/jev/client";
 import { DelegationStore } from "../mcp/registry";
 import { CompositeTools } from "../mcp/tools";
 import type { HerdrAdapter } from "../mcp/herdr-adapter";
+import { z } from "zod";
+import { herdrAssignmentInputShape, herdrAssignmentSchema, sha256, type DelegationRegistry } from "../mcp/contracts";
 
 const rules = await readFile(new URL("../skills/herdr-orch/references/delegation.md", import.meta.url), "utf8");
 const envKeys = ["TYPESAFE_API_KEY", "JEV_API_KEY", "PI_CODING_AGENT_DIR"] as const;
@@ -22,8 +24,6 @@ beforeEach(async () => {
   process.env.PI_CODING_AGENT_DIR = root;
   process.env.TYPESAFE_API_KEY = "offline-fixture";
   delete process.env.JEV_API_KEY;
-  await mkdir(path.join(root, "skills/herdr-orch/references"), { recursive: true });
-  await writeFile(path.join(root, "skills/herdr-orch/references/delegation.md"), rules);
   input = {
     cwd: root,
     assignment: {
@@ -79,6 +79,35 @@ function verdict(result: RoutingResult) {
   return result;
 }
 
+async function routeFixture(fetchImpl: NonNullable<AskOptions["fetchImpl"]>) {
+  await mkdir(path.join(root, "a2a"));
+  const registryPath = path.join(root, "a2a", "delegation.json");
+  const registryBytes = JSON.stringify({
+    revision: 7, responsibilities: {},
+    assignments: { "A-001": { worker_id: "w1", responsibility_key: "routing", instructions_sha256: "a".repeat(64), state: "completed" } },
+    lanes: {
+      w1: { worker_id: "w1", responsibility_key: "routing", state: "idle", last_completed_assignment_id: "A-001" },
+      w2: { worker_id: "w2", responsibility_key: "new-work", state: "idle" },
+    },
+  });
+  await writeFile(registryPath, registryBytes);
+  const registryBefore = await stat(registryPath);
+  const store = {
+    cwd: root, runPath: root,
+    read: async () => JSON.parse(await readFile(registryPath, "utf8")) as DelegationRegistry,
+    assignmentFile: async () => ({ assignment: input.assignment }),
+  } as unknown as DelegationStore;
+  const storeSpy = spyOn(DelegationStore, "resolve").mockResolvedValue(store);
+  restoreStore = () => storeSpy.mockRestore();
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(fetchImpl);
+  restoreFetch = () => fetchSpy.mockRestore();
+  return {
+    tools: new CompositeTools({} as HerdrAdapter),
+    request: { action: "route" as const, track_id: "routing-test", run_id: "r1", goal: "Decide the direction.\nKeep ownership of this judgment." },
+    registryPath, registryBytes, registryBefore, fetchSpy,
+  };
+}
+
 describe("assignment routing", () => {
   test("judge agrees with frontmatter without seeing the author's answers", async () => {
     const result = verdict(await judgeRouting(input, { fetchImpl: fakeFetch({}, 0.9, (state) => {
@@ -94,6 +123,7 @@ describe("assignment routing", () => {
     }) }));
     expect(result.agreement).toEqual({ profile: "agrees", reuse: "agrees" });
     expect(result.route.choice).toBe("responsibility-lane");
+    expect(result.question_version).toBe("2026-09-23.6");
   });
 
   test("profile disagreement is advisory and preserves the registered preflight", async () => {
@@ -150,10 +180,13 @@ describe("assignment routing", () => {
     expect(verdict(await judgeRouting(input, { fetchImpl: fakeFetch() })).agreement.reuse).toBe("disagrees");
   });
 
-  test("rules are read at call time, whole and unedited; a missing profile table skips judgment", async () => {
-    await routingRequest(input);
-    await writeFile(path.join(root, "skills/herdr-orch/references/delegation.md"), rules.replace("## Profile selection", "## Removed profiles"));
-    expect(await judgeRouting(input, { fetchImpl: fakeFetch() })).toEqual({ skipped: "delegation rules not found" });
+  test("rules are the bundled document, read at call time whole and unedited, in any project cwd; a missing profile table skips judgment", async () => {
+    // `root` is an empty temp project with no skills/ tree: the rules must not be looked for there.
+    const { state } = await routingRequest(input);
+    expect(state.delegation_rules).toBe(rules);
+    const edited = path.join(root, "delegation.md");
+    await writeFile(edited, rules.replace("## Profile selection", "## Removed profiles"));
+    expect(await judgeRouting({ ...input, rules_path: edited }, { fetchImpl: fakeFetch() })).toEqual({ skipped: "delegation rules not found" });
   });
 
   test("oversized state is reported without truncating or sending it", async () => {
@@ -168,5 +201,117 @@ describe("assignment routing", () => {
   test("transport errors skip advisory routing without exposing response text", async () => {
     const fetchImpl = (async () => Response.json({ error: "private transport body" }, { status: 500 })) as typeof fetch;
     expect(await judgeRouting(input, { fetchImpl })).toEqual({ skipped: "routing judge unavailable" });
+  });
+});
+
+describe("goal routing action", () => {
+  test("orch-self advises before an assignment, records one sample and leaves the registry untouched", async () => {
+    const fixture = await routeFixture(fakeFetch({ route: "orch-self" }));
+    const result = await fixture.tools.assignment(herdrAssignmentSchema.parse({
+      ...fixture.request, write_ownership: ["src/router.ts"], dependencies: [], user_boundaries: ["Do not commit."],
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.effect).toBe("none");
+    const data = result.data as { routing: RoutingResult; next_step: string };
+    expect(verdict(data.routing).route.choice).toBe("orch-self");
+    expect(data.next_step.toLowerCase()).toContain("do this in your own session");
+    const lines = (await readFile(path.join(root, "a2a", "routing-gate.jsonl"), "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(lines).toEqual([{
+      at: expect.any(String), session_id: null, tool: "route",
+      goal_sha256: sha256(fixture.request.goal), goal_head: fixture.request.goal.replace(/\s+/g, " "),
+      verdict: data.routing, decision: "advise", why_or_reason: data.next_step,
+    }]);
+    expect(await readFile(fixture.registryPath, "utf8")).toBe(fixture.registryBytes);
+    expect((await stat(fixture.registryPath)).mtimeMs).toBe(fixture.registryBefore.mtimeMs);
+    expect((await readdir(path.join(root, "a2a"))).sort()).toEqual(["delegation.json", "routing-gate.jsonl"]);
+  });
+
+  test("no Jev key advises reading the rules and deciding with a recorded ground, without fetching or logging", async () => {
+    const fixture = await routeFixture(fakeFetch());
+    delete process.env.TYPESAFE_API_KEY;
+    const result = await fixture.tools.assignment(fixture.request);
+    expect(result.ok).toBe(true);
+    expect(result.effect).toBe("none");
+    const data = result.data as { routing: RoutingResult; next_step: string };
+    expect(data.routing).toEqual({ skipped: "no Jev key" });
+    expect(data.next_step).toContain("skill://herdr-orch/references/delegation.md §Three routes");
+    expect(data.next_step).toContain("decide yourself");
+    expect(data.next_step).toContain("recording the ground in plan.md");
+    expect(fixture.fetchSpy).not.toHaveBeenCalled();
+    expect(await readdir(path.join(root, "a2a"))).toEqual(["delegation.json"]);
+    expect(await readFile(fixture.registryPath, "utf8")).toBe(fixture.registryBytes);
+  });
+
+  test("lane, host and undecided verdicts give their alternative and each appends rather than replacing samples", async () => {
+    const fixture = await routeFixture(fakeFetch());
+    for (const [route, confidence, expected] of [
+      ["responsibility-lane", 0.9, "canonical assignment and preflight"],
+      ["host-subagent", 0.9, "host subagent; the routing gate will pass it"],
+      ["responsibility-lane", 0.3, "decide yourself"],
+    ] as const) {
+      fixture.fetchSpy.mockImplementation(fakeFetch({ route }, confidence));
+      const result = await fixture.tools.assignment(fixture.request);
+      expect(result.ok).toBe(true);
+      expect(result.data).toMatchObject({ next_step: expect.stringContaining(expected) });
+    }
+    const lines = (await readFile(path.join(root, "a2a", "routing-gate.jsonl"), "utf8")).trimEnd().split("\n").map((line) => JSON.parse(line));
+    expect(lines.map((line) => [line.verdict.route.choice, line.decision])).toEqual([
+      ["responsibility-lane", "advise"], ["host-subagent", "advise"], ["undecided", "advise"],
+    ]);
+  });
+
+  test("observation append failures do not change the advice", async () => {
+    const fixture = await routeFixture(fakeFetch({ route: "orch-self" }));
+    await mkdir(path.join(root, "a2a", "routing-gate.jsonl"));
+    const result = await fixture.tools.assignment(fixture.request);
+    expect(result.ok).toBe(true);
+    expect(result.effect).toBe("none");
+    expect(result.data).toMatchObject({ routing: { route: { choice: "orch-self" } } });
+  });
+
+  test("preflight and goal routing see identical lanes with completed-artifact fallbacks", async () => {
+    const states: Array<{ lanes: unknown }> = [];
+    const fixture = await routeFixture(fakeFetch({}, 0.9, (state) => { states.push(state as { lanes: unknown }); }));
+    const routed = await fixture.tools.assignment(fixture.request);
+    const preflighted = await fixture.tools.assignment({ action: "preflight", track_id: "routing-test", run_id: "r1", assignment_id: "A-001", responsibility_key: "routing" });
+    expect(routed.ok).toBe(true);
+    expect(preflighted.ok).toBe(true);
+    expect(states.map((state) => state.lanes)).toEqual([0, 1].map(() => [
+      { worker_id: "w1", responsibility_key: "routing", profile: "task", state: "idle", last_completed_assignment_id: "A-001", last_completed_label: "judge-routing" },
+      { worker_id: "w2", responsibility_key: "new-work", profile: null, state: "idle", last_completed_assignment_id: null, last_completed_label: null },
+    ]));
+  });
+
+  test("route schema accepts the published goal-only call and rejects unknown or cross-action fields", () => {
+    const request = { action: "route", track_id: "routing-test", run_id: "r1", goal: "Choose who should execute this." };
+    expect(z.object(herdrAssignmentInputShape).parse(request)).toEqual(request);
+    expect(herdrAssignmentSchema.parse(request)).toEqual(request);
+    for (const field of ["unknown", "assignment_id", "responsibility_key", "profile", "wait"]) {
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: "unexpected" }).success).toBe(false);
+    }
+    expect(herdrAssignmentSchema.safeParse({ ...request, goal: "" }).success).toBe(false);
+    expect(herdrAssignmentSchema.safeParse({ ...request, goal: "x".repeat(4096) }).success).toBe(true);
+    expect(herdrAssignmentSchema.safeParse({ ...request, goal: "x".repeat(4097) }).success).toBe(false);
+    for (const field of ["write_ownership", "dependencies", "user_boundaries"]) {
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: [] }).success).toBe(true);
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: Array(64).fill("x".repeat(1000)) }).success).toBe(true);
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: Array(65).fill("x") }).success).toBe(false);
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: ["x".repeat(1001)] }).success).toBe(false);
+      expect(herdrAssignmentSchema.safeParse({ ...request, [field]: [""] }).success).toBe(false);
+    }
+    expect(herdrAssignmentSchema.safeParse({ action: "preflight", track_id: "routing-test", run_id: "r1" }).success).toBe(false);
+  });
+
+  test("goal subject frames unwritten work without changing existing subjects or the other questions", async () => {
+    const assignment = await routingRequest(input);
+    const host = await routingRequest({ ...input, subject: "host-subagent-call" });
+    const goal = await routingRequest({ ...input, subject: "goal" });
+    const instructions = goal.questions.route.instructions as { note: string };
+    expect(instructions.note).toBe("No assignment exists yet: the ORCH is deciding who will do this work before anything is written. Judge the work the goal demands, not who is asking. Use delegation_rules.");
+    expect(JSON.stringify(assignment.questions.route.instructions)).toContain("An assignment exists, so the ORCH already chose to delegate");
+    expect(JSON.stringify(host.questions.route.instructions)).toContain("A host subagent call exists, so the ORCH already chose a one-shot subagent");
+    expect(goal.questions.reuse).toEqual(assignment.questions.reuse);
+    expect(goal.questions.profile).toEqual(assignment.questions.profile);
+    expect(verdict(await judgeRouting({ ...input, subject: "goal" }, { fetchImpl: fakeFetch() })).question_version).toBe("2026-09-23.6");
   });
 });

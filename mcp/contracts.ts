@@ -782,7 +782,7 @@ const urgent = z.boolean().optional().describe("Insert this assignment at the HE
 // source rather than restated independently.
 export const ASSIGNMENT_GRAMMAR_GUIDANCE = `The canonical assignment is one UTF-8 Markdown file at <run>/a2a/assignments/<assignment_id>.md, LF line endings only, at most ${MAX_ASSIGNMENT_ARTIFACT_BYTES} bytes.
 
-Frontmatter: "---", then exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally "label: <display-only label>", then "---", then a blank line. One space after each colon, no quoting, no trailing space. No other key, no repeated key, no blank line inside the block. Each value has its own published grammar: assignment_id on the assignment_id field of this same schema, responsibility_key a bounded lowercase coordinate, profile the configured-profile grammar (letters, digits, ".", "_" or "-", beginning alphanumeric, up to 64 characters — not lowercase-only), label on ASN-003a. A refusal quotes the offending line and the pattern it had to match.
+Frontmatter: "---", then exactly "assignment_id: <A-nnn>", "responsibility_key: <key>", "profile: <profile>", optionally "label: <display-only label>", then "---", then a blank line. One space after each colon, no quoting, no trailing space. No other key, no repeated key, no blank line inside the block. Each value has its own published grammar: assignment_id on the assignment_id field of this same schema, responsibility_key a bounded lowercase coordinate, profile the configured-profile grammar (letters, digits, ".", "_" or "-", beginning alphanumeric, up to 64 characters — not lowercase-only), label — display only, never identity — 1 to ${MAX_ASSIGNMENT_LABEL} characters of letters, digits, "-" or "_", beginning and ending alphanumeric, no spaces (${ASSIGNMENT_LABEL_RE.source}). A refusal quotes the offending line and the pattern it had to match.
 
 Body: the ${ASSIGNMENT_SECTIONS.length} required H1 sections, all of them, in this order — ${ASSIGNMENT_SECTIONS.map((section) => `"# ${section}"`).join(", ")} — each heading followed by one blank line, optionally followed by a trailing "# ${ASSIGNMENT_REFERENCES_SECTION}" section and nothing after it. "# Goal" is free prose of at most ${MAX_ASSIGNMENT_GOAL} characters. The other four are Markdown bullets only: at least one and at most ${MAX_ASSIGNMENT_SECTION_LINES} lines each, every line "- <text>" of 1 to ${MAX_ASSIGNMENT_BULLET} characters, with no blank lines, no wrapped continuation lines, no nested indentation and no sub-headings. An empty bullet section is refused: a section with nothing in it states nothing.
 
@@ -793,10 +793,20 @@ Trap: a line beginning "# " at column 1 starts a new section wherever it appears
 Settlement grammar: the worker appends, at the END of its own lane report and at column 1, "[Assignment Completion: <assignment_id>]" on one line — the bare ID, never the coordinate and never the label — and one recognized status line on the next. The three recognized lines are exactly "status: completed", "status: failed" and "status: blocked": lowercase key, lowercase value, no heading marker before the header, exactly one of them per block. Only completed and failed settle; blocked is recorded as a reported boundary that settles nothing, and a later completed/failed block is what settles. When a report carries several valid blocks for one assignment the LAST one in file order is acted on; a block appended after the assignment already settled changes nothing and is reported as \`completion_block_after_terminal\`.
 
 add makes the registered artifact read-only (0444). It is immutable from that instant: author a NEW assignment rather than editing a dispatched one.`;
+const routingGoal = z.string().min(1).max(MAX_ASSIGNMENT_GOAL);
+const routingSection = z.array(z.string().min(1).max(MAX_ASSIGNMENT_BULLET)).max(MAX_ASSIGNMENT_SECTION_LINES);
+const routingBounds = {
+  write_ownership: routingSection.optional(),
+  dependencies: routingSection.optional(),
+  user_boundaries: routingSection.optional(),
+};
+
 export const herdrAssignmentInputShape = {
   ...run,
-  action: z.enum(["add", "preflight", "wait"]).describe(`preflight validates the canonical assignment file and decides nothing; add registers it immutably and dispatches it; wait observes the lane holding it.\n\n${ASSIGNMENT_GRAMMAR_GUIDANCE}`),
-  assignment_id: assignmentId,
+  action: z.enum(["route", "add", "preflight", "wait"]).describe(`Call route with a goal before writing an assignment or reading the delegation rules to ask who should do the work; it is advisory and read-only. preflight validates the canonical assignment file and decides nothing; add registers it immutably and dispatches it; wait observes the lane holding it.\n\n${ASSIGNMENT_GRAMMAR_GUIDANCE}`),
+  goal: routingGoal.optional(),
+  ...routingBounds,
+  assignment_id: assignmentId.optional(),
   responsibility_key: coordinate.optional(),
   instructions_sha256: hash.optional(),
   separation: separation.optional(),
@@ -848,6 +858,7 @@ export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("close"), expected_registry_revision: z.number().int().nonnegative() }).strict(),
 ]);
 export const herdrAssignmentSchema = z.discriminatedUnion("action", [
+  z.object({ ...run, action: z.literal("route"), goal: routingGoal, ...routingBounds }).strict(),
   z.object({ ...run, action: z.literal("add"), assignment_id: assignmentId, responsibility_key: coordinate, instructions_sha256: hash, separation: separation.optional(), urgent, emergency, wait }).strict(),
   z.object({ ...run, action: z.literal("preflight"), assignment_id: assignmentId, responsibility_key: coordinate }).strict(),
   z.object({ ...run, action: z.literal("wait"), assignment_id: assignmentId, wait }).strict(),

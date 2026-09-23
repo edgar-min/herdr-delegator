@@ -254,7 +254,7 @@ export async function ensureWorker(
           throw commandError(
             created,
             "tab_create",
-            "Read the owned workspace tab list by deterministic label before retrying ensure_worker.",
+            "Read the owned workspace tab list by deterministic label before retrying the dispatch (herdr_assignment add or herdr_worker resume).",
             created.timedOut,
           );
         }
@@ -481,7 +481,7 @@ export async function inspectWorker(params: ToolParams, signal?: AbortSignal): P
       false,
     ),
   ]);
-  if (!agent.ok) throw commandError(agent, "inspect", "Reconcile the identity with ensure_worker.");
+  if (!agent.ok) throw commandError(agent, "inspect", "Observe the lane with herdr_worker inspect and reconcile its identity with herdr_worker resume.");
   if (!pane.ok) throw commandError(pane, "inspect", "Check the registry root pane, then retry pane observation.");
   assertAgentBelongsToRecord(existing, agent.data);
   if (!output.ok) throw commandError(output, "inspect", "Check the registry root pane, then retry pane read.");
@@ -741,7 +741,7 @@ export async function failureResult(
       message: compactMessage(known?.message, "herdr_worker encountered an internal error."),
       phase: known?.phase ?? "internal",
       ambiguous_effect: known?.ambiguousEffect ?? false,
-      recovery: known?.recovery ?? "Inspect the current coordinates and state with inspect_worker before retrying.",
+      recovery: known?.recovery ?? "Inspect the current coordinates and state with herdr_worker inspect before retrying.",
     },
   };
 }

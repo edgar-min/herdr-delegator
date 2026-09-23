@@ -323,7 +323,7 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
           "storage",
           {
             ambiguousEffect: true,
-            recovery: `Reconcile the exact ${trackId}/${runId} manifest and canonical run path before retrying init_run; never delete the committed target automatically.`,
+            recovery: `Reconcile the exact ${trackId}/${runId} manifest and canonical run path before retrying herdr_track open; never delete the committed target automatically.`,
           },
         );
       }
@@ -358,7 +358,7 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
           {
             retryable: true,
             ambiguousEffect: true,
-            recovery: `Call init_run again with exact track_id=${trackId}, run_id=${runId}, and cwd=${cwd}; it must reconcile this manifest before retrying index.json. Never delete the committed target.`,
+            recovery: `Call herdr_track open again with exact track_id=${trackId}, run_id=${runId}, and cwd=${cwd}; it must reconcile this manifest before retrying index.json. Never delete the committed target.`,
           },
         );
       }
@@ -725,7 +725,7 @@ async function startTargetOrchestratorAgent(
           "session_identity_mismatch",
           "The target ORCH observed after an ambiguous resume has a different official session path.",
           "orch_start",
-          { ambiguousEffect: true, recovery: "Use inspect_orch; do not start or prompt another target ORCH." },
+          { ambiguousEffect: true, recovery: "Use herdr_track inspect; do not start or prompt another target ORCH." },
         );
       }
       return inspected.data;
@@ -733,7 +733,7 @@ async function startTargetOrchestratorAgent(
     throw commandError(
       started,
       "orch_start",
-      "Use inspect_orch before retrying; never replay an ambiguous target ORCH start blindly.",
+      "Use herdr_track inspect before retrying; never replay an ambiguous target ORCH start blindly.",
       started.timedOut || /timeout|not_ready/i.test(`${started.code} ${started.message}`),
     );
   }
@@ -746,7 +746,7 @@ async function startTargetOrchestratorAgent(
       "session_identity_mismatch",
       "The resumed target ORCH did not re-report its registry-recorded official session path.",
       "orch_verify",
-      { recovery: "Preserve the anchor and inspect_orch; do not prompt it." },
+      { recovery: "Preserve the anchor and observe it with herdr_track inspect; do not prompt it." },
     );
   }
   return live.data;
@@ -848,7 +848,7 @@ async function inspectOrchestrator(
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
-  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id);
+  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id, params.cwd);
   const runPath = coordinate.runPath;
   const lineage = await validateOrchestratorRun(coordinate);
   const runKey = sha256(runPath);
@@ -944,7 +944,7 @@ async function startOrchestrator(
   signal?: AbortSignal,
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
-  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id);
+  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id, params.cwd);
   const runPath = coordinate.runPath;
   const lineage = await validateOrchestratorRun(coordinate);
   const cwd = coordinate.manifest.cwd;
@@ -1142,7 +1142,7 @@ async function startOrchestrator(
             "session_reference_missing",
             "A previously prompted target ORCH has no official session path for safe recovery.",
             "orch_reconcile",
-            { recovery: "Preserve the run and use inspect_orch; never create a substitute ORCH." },
+            { recovery: "Preserve the run and use herdr_track inspect; never create a substitute ORCH." },
           );
         }
         const started = await startTargetOrchestratorAgent(
@@ -1262,7 +1262,7 @@ async function startOrchestrator(
         throw commandError(
           prompted,
           "orch_prompt",
-          "Use inspect_orch; a prompting fingerprint is never replayed blindly.",
+          "Use herdr_track inspect; a prompting fingerprint is never replayed blindly.",
           prompted.timedOut || /stalled|timeout/i.test(`${prompted.code} ${prompted.message}`),
         );
       }
@@ -1352,7 +1352,7 @@ async function trackFailureResult(
       message: compactMessage(known?.message, "herdr_track encountered an internal error."),
       phase: known?.phase ?? "internal",
       ambiguous_effect: known?.ambiguousEffect ?? false,
-      recovery: known?.recovery ?? "Use inspect_orch before retrying any target ORCH effect.",
+      recovery: known?.recovery ?? "Use herdr_track inspect before retrying any target ORCH effect.",
     },
   };
 }
@@ -1394,7 +1394,7 @@ async function labelOwnedPane(paneId: string, label: string, signal?: AbortSigna
  */
 async function retireOrchestratorSession(params: TrackParams, signal?: AbortSignal): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
-  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id);
+  const coordinate = await resolveRunCoordinate(params.track_id, params.run_id, params.cwd);
   const runPath = coordinate.runPath;
   const runKey = sha256(runPath);
   const { registryPath } = registryPaths(runPath);

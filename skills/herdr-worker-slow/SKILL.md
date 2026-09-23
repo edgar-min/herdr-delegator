@@ -1,6 +1,6 @@
 ---
 name: herdr-worker-slow
-description: Execute an immutable Herdr assignment on the slow lane: reasoning-first review, adversarial analysis, and audits, never production patches.
+description: Execute an immutable Herdr assignment on the slow lane — reasoning-first review, adversarial analysis, and audits, never production patches.
 ---
 
 # Slow worker profile

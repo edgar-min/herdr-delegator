@@ -576,8 +576,15 @@ export type LaneSelection = { lane: WorkerLaneRecord; assignment: AssignmentReco
 export class DelegationStore {
   private constructor(readonly runPath: string, readonly cwd: string, readonly registryPath: string, readonly lockPath: string) {}
 
-  static async resolve(trackId: string, runId: string): Promise<DelegationStore> {
-    const resolved = await resolveRunCoordinate(trackId, runId);
+  /**
+   * `cwd` is the project directory whose layered configuration names the storage
+   * root. Without it the run is resolved against `process.cwd()` — the directory
+   * the server was launched from — which is right for every action on an already
+   * mounted run and wrong for `open`, whose `cwd` argument may name another
+   * project with its own storage root (friction 953e3c2999682ecc).
+   */
+  static async resolve(trackId: string, runId: string, cwd?: string): Promise<DelegationStore> {
+    const resolved = await resolveRunCoordinate(trackId, runId, cwd);
     const a2a = path.join(resolved.runPath, "a2a");
     if (await realpath(a2a) !== a2a) throw new McpContractError("run_not_canonical", "Run a2a directory is not canonical.", "storage", "Reconcile the deterministic run before using MCP.");
     return new DelegationStore(resolved.runPath, resolved.manifest.cwd, path.join(a2a, "delegation.json"), path.join(a2a, ".delegation.lock"));

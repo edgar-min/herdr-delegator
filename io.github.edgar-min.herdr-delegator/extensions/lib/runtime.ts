@@ -1009,7 +1009,7 @@ export async function verifyWorkerSession(
       "session_identity_mismatch",
       "The official OMP session identity changed during model verification.",
       "session_verify",
-      { recovery: "Do not prompt; reconcile the live agent and session path with ensure_worker." },
+      { recovery: "Do not prompt; observe the lane with herdr_worker inspect and reconcile its session with herdr_worker resume." },
     );
   }
   record.agent_session_path = beforePath;
@@ -1493,7 +1493,7 @@ export async function ensureRunWorkspace(
       throw commandError(workspace, "workspace_reconcile", "Read the registered workspace again.");
     }
     if (options?.recreateDeadAnchor) {
-      throw commandError(workspace, "workspace_reconcile", "Call ensure_worker to recover the run workspace.");
+      throw commandError(workspace, "workspace_reconcile", "Retry the dispatch (herdr_assignment add, or herdr_worker resume for an existing lane) to recover the run workspace.");
     }
     run.workspace_state = "workspace-creating";
     delete run.workspace_id;
@@ -1640,7 +1640,7 @@ export async function assertRunWorkspaceLive(
       "run_workspace_not_ready",
       "The registry has no complete owned run workspace.",
       "workspace_reconcile",
-      { recovery: "Call ensure_worker to reconcile the canonical run workspace." },
+      { recovery: "Retry the dispatch (herdr_assignment add, or herdr_worker resume for an existing lane) to reconcile the canonical run workspace." },
     );
   }
   const [workspace, snapshot, anchor] = await Promise.all([
@@ -1648,7 +1648,7 @@ export async function assertRunWorkspaceLive(
     runHerdr(binary, ["api", "snapshot"], timeoutMs, signal),
     runHerdr(binary, ["pane", "get", run.anchor_pane_id], timeoutMs, signal),
   ]);
-  if (!workspace.ok) throw commandError(workspace, "workspace_reconcile", "Call ensure_worker to recover the run workspace.");
+  if (!workspace.ok) throw commandError(workspace, "workspace_reconcile", "Retry the dispatch (herdr_assignment add, or herdr_worker resume for an existing lane) to recover the run workspace.");
   if (!snapshot.ok) throw commandError(snapshot, "workspace_reconcile", "Read a fresh Herdr snapshot.");
   if (!anchor.ok) throw commandError(anchor, "workspace_reconcile", "Read the run anchor pane again.");
   const liveWorkspace = collectMatchingObjects(

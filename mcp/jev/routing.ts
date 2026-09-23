@@ -1,9 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AssignmentArtifact, WorkerLaneRecord } from "../contracts";
 import { apiKey, ask, assertBudget, BudgetExceeded, type AskOptions, type ChoiceAnswer, type ChoiceQuestion } from "./client";
 
-const QUESTION_VERSION = "2026-09-23.4";
+const QUESTION_VERSION = "2026-09-23.6";
 const UNDECIDED_CONFIDENCE = 0.35;
 
 export type RoutingLane = Pick<WorkerLaneRecord, "worker_id" | "responsibility_key" | "state"> & {
@@ -16,6 +17,9 @@ export type RoutingInput = {
   assignment: AssignmentArtifact;
   lanes: RoutingLane[];
   resolved_lane: { responsibility_key: string; lane_reuse: boolean };
+  subject?: "assignment" | "host-subagent-call" | "goal";
+  /** Test seam only: the rules document to judge against instead of the bundled one. */
+  rules_path?: string;
 };
 type RoutingAnswer = Pick<ChoiceAnswer, "choice" | "confidence" | "probabilities">;
 type Agreement = "agrees" | "disagrees" | "undecided";
@@ -37,6 +41,9 @@ function section(text: string, heading: string): string | undefined {
   return lines.slice(start, end < 0 ? undefined : end).join("\n").trimEnd();
 }
 
+/** The bundled rules document, resolved from this package: the judge must work in any project, not only in this repository's own tree (4.0.0 read it from the project cwd, so preflight routing was skipped everywhere but this repository). */
+export const DELEGATION_RULES_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../skills/herdr-orch/references/delegation.md");
+
 /**
  * Read the single source of delegation rules anew for each preflight: the whole
  * file, unedited, so the judge sees exactly what the ORCH would. The route
@@ -47,7 +54,7 @@ function section(text: string, heading: string): string | undefined {
  * with the earlier "first matching row" lookup.
  */
 export async function routingRequest(input: RoutingInput) {
-  const text = await readFile(path.join(input.cwd, "skills/herdr-orch/references/delegation.md"), "utf8");
+  const text = await readFile(input.rules_path ?? DELEGATION_RULES_PATH, "utf8");
   const profiles = section(text, "Profile selection");
   if (!profiles) throw new Error("delegation rules not found");
   const profileCriteria: Record<string, string> = {};
@@ -83,7 +90,11 @@ export async function routingRequest(input: RoutingInput) {
       type: "choice",
       instructions: {
         ask: "Which executor is the most suitable to achieve this assignment's goal: the ORCH itself, a one-shot host subagent, or a persistent responsibility lane?",
-        note: "An assignment exists, so the ORCH already chose to delegate; answering orch-self means this assignment should not have been written and the ORCH should do the work in its own session instead. Judge the work the goal demands, not the author who wrote the goal. Use delegation_rules.",
+        note: input.subject === "goal"
+          ? "No assignment exists yet: the ORCH is deciding who will do this work before anything is written. Judge the work the goal demands, not who is asking. Use delegation_rules."
+          : input.subject === "host-subagent-call"
+          ? "A host subagent call exists, so the ORCH already chose a one-shot subagent; answering responsibility-lane means an assignment should be written for a persistent lane instead, and orch-self means the ORCH should do this work in its own session. Judge the work the goal demands, not the author who wrote the goal. Use delegation_rules."
+          : "An assignment exists, so the ORCH already chose to delegate; answering orch-self means this assignment should not have been written and the ORCH should do the work in its own session instead. Judge the work the goal demands, not the author who wrote the goal. Use delegation_rules.",
         answer_with: "the most suitable executor",
       },
       criteria: Object.fromEntries(Object.entries(routeSignals).map(([route, signals]) => [route, signals.join(" — or — ")])),

@@ -1616,6 +1616,26 @@ function machineFacts(registry: DelegationRegistry): string[] {
   return facts.slice(0, 64);
 }
 
+async function assignmentRoutingLanes(store: DelegationStore, registry: DelegationRegistry): Promise<RoutingLane[]> {
+  const lifecycle = await readRegistry(path.join(store.runPath, "a2a", "herdr-workers.json")).catch(() => undefined);
+  const profiles = new Map(Object.values(lifecycle?.workers ?? {}).map((worker) => [worker.worker_id, worker.selected_profile]));
+  return Promise.all(Object.values(registry.lanes).map(async (lane) => {
+    let completed: AssignmentArtifact | undefined;
+    if (lane.last_completed_assignment_id) {
+      const record = registry.assignments[lane.last_completed_assignment_id];
+      completed = (await store.assignmentFile(lane.last_completed_assignment_id, record.responsibility_key, record.instructions_sha256)).assignment;
+    }
+    return {
+      worker_id: lane.worker_id,
+      responsibility_key: lane.responsibility_key,
+      profile: profiles.get(lane.worker_id) ?? completed?.profile ?? null,
+      state: lane.state,
+      last_completed_assignment_id: lane.last_completed_assignment_id ?? null,
+      last_completed_label: completed?.label ?? null,
+    };
+  }));
+}
+
 /** Read-only routing inputs; unavailable metadata must not change preflight eligibility. */
 async function advisoryAssignmentRouting(
   store: DelegationStore,
@@ -1631,19 +1651,7 @@ async function advisoryAssignmentRouting(
       return (await store.assignmentFile(id, record.responsibility_key, record.instructions_sha256)).assignment;
     };
     const assignment = artifact ?? await registeredArtifact(assignmentId);
-    const lifecycle = await readRegistry(path.join(store.runPath, "a2a", "herdr-workers.json")).catch(() => undefined);
-    const profiles = new Map(Object.values(lifecycle?.workers ?? {}).map((worker) => [worker.worker_id, worker.selected_profile]));
-    const lanes: RoutingLane[] = await Promise.all(Object.values(registry.lanes).map(async (lane) => {
-      const completed = lane.last_completed_assignment_id ? await registeredArtifact(lane.last_completed_assignment_id) : undefined;
-      return {
-        worker_id: lane.worker_id,
-        responsibility_key: lane.responsibility_key,
-        profile: profiles.get(lane.worker_id) ?? completed?.profile ?? null,
-        state: lane.state,
-        last_completed_assignment_id: lane.last_completed_assignment_id ?? null,
-        last_completed_label: completed?.label ?? null,
-      };
-    }));
+    const lanes = await assignmentRoutingLanes(store, registry);
     const routing = await judgeRouting({ cwd: store.cwd, assignment, lanes, resolved_lane: { responsibility_key: responsibility, lane_reuse: laneReuse } });
     const warnings: string[] = [];
     if (!("skipped" in routing)) {
@@ -1717,10 +1725,16 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
       if (input.action === "revive") return await this.reviveTrack(input, run, store, runtime);
+      // The revision is judged FIRST: `authorizeClose` may record a birth claim
+      // and `judgeBudget` may park, resume or stamp a warning, each of which
+      // advances the registry, and a close that ran them before comparing
+      // reported the revision the caller had just read from inspect as stale
+      // (friction fab9d8c4). Everything below re-reads the store, so the claim
+      // is only ever compared against the revision it was made about.
+      if ((await store.read()).revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
       const forced = await this.authorizeClose(store, run, runtime.facts);
       const closeJudgment = await this.judgeBudget(store, run, "close");
       const opening = await store.read();
-      if (opening.revision !== input.expected_registry_revision) throw new McpContractError("stale_registry_revision", "Track close registry revision is stale.", "close", "Inspect the track and retry only from its fresh revision.", false, true);
       // The sweep runs AFTER the revision check, so the caller's freshness claim
       // is judged against the revision it actually read, and a settlement this
       // call performs cannot invalidate its own precondition. It runs at all
@@ -1983,7 +1997,10 @@ export class CompositeTools {
     const creatorAttempt = await loadOpenCreator(this.adapter, freshCoordinate);
 
     const scaffolding = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd });
-    const store = await DelegationStore.resolve(input.track_id, input.run_id);
+    // The run was just laid out under the storage root of `input.cwd`'s
+    // configuration, so it is resolved against that same cwd — not the server's
+    // launch directory, which may belong to a project with a different root.
+    const store = await DelegationStore.resolve(input.track_id, input.run_id, input.cwd);
     const opened = await store.read();
     const creator = opened.orch_creator;
     if (creatorAttempt.mismatch && (creator || latestBirth(opened))) throw creatorAttempt.mismatch;
@@ -2033,7 +2050,7 @@ export class CompositeTools {
     ]).catch(() => undefined);
 
 
-    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
+    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd });
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
     if (!birth) {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
@@ -3172,7 +3189,7 @@ export class CompositeTools {
         current.updated_at = nowIso();
       });
       if (conflict) warnings.push(`ambiguity_not_recorded: post-dispatch verification of ${assignmentId} failed, but the ambiguity was not written because ${conflict}.`);
-      const recovery = "The assignment prompt was already delivered; inspect_worker to observe the lane's real state instead of re-adding or re-prompting the assignment.";
+      const recovery = "The assignment prompt was already delivered; use herdr_worker inspect to observe the lane's real state instead of re-adding or re-prompting the assignment.";
       if (error instanceof McpContractError) throw new McpContractError(error.code, error.message, error.phase, recovery, true, false);
       if (error instanceof LegacyContractError) throw new McpContractError(error.code, error.message, normalizeLegacyPhase(error.phase), recovery, true, false);
       throw new McpContractError("prompt_verification_failed", error instanceof Error ? error.message : String(error), "prompt", recovery, true, false);
@@ -3205,6 +3222,44 @@ export class CompositeTools {
     const run = runRef(input);
     try {
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
+      if (input.action === "route") {
+        const registry = await store.read();
+        let routing: RoutingResult;
+        try {
+          const lanes = await assignmentRoutingLanes(store, registry);
+          routing = await judgeRouting({
+            cwd: store.cwd,
+            subject: "goal",
+            assignment: {
+              assignment_id: "A-999", responsibility_key: "unrouted", profile: "task",
+              goal: input.goal, completion_conditions: [],
+              write_ownership: input.write_ownership ?? [],
+              dependencies: input.dependencies ?? [],
+              user_boundaries: input.user_boundaries ?? [],
+            },
+            lanes,
+            resolved_lane: { responsibility_key: "unrouted", lane_reuse: false },
+          });
+        } catch {
+          routing = { skipped: "routing assignment or lane metadata unavailable" };
+        }
+        let next_step = "Read skill://herdr-orch/references/delegation.md §Three routes and decide yourself, recording the ground in plan.md.";
+        if (!("skipped" in routing)) {
+          switch (routing.route.choice) {
+            case "responsibility-lane": next_step = "Write the canonical assignment and preflight it with herdr_assignment."; break;
+            case "orch-self": next_step = "Do this in your own session."; break;
+            case "host-subagent": next_step = "Spawn the host subagent; the routing gate will pass it."; break;
+          }
+          try {
+            await appendFile(path.join(store.runPath, "a2a", "routing-gate.jsonl"), `${JSON.stringify({
+              at: nowIso(), session_id: null, tool: "route",
+              goal_sha256: sha256(input.goal), goal_head: input.goal.slice(0, 200).replace(/\s+/g, " "),
+              verdict: routing, decision: "advise", why_or_reason: next_step,
+            })}\n`, { flag: "a" });
+          } catch { /* Observations never change advisory routing. */ }
+        }
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { routing, next_step } };
+      }
       if (input.action === "preflight") {
         const registry = await store.read();
         const existing = registry.assignments[input.assignment_id];
@@ -3343,8 +3398,18 @@ export class CompositeTools {
       if (!assignment) throw new McpContractError("assignment_artifact_missing", "Assignment is not registered to a lane.", "select", "Add the canonical assignment first.");
       if (assignment.state === "queued") {
         const queuedWarnings: string[] = [];
+        // A queued assignment waits behind whatever its lane holds, so waiting on
+        // it is a look at that lane: the head's reported completion is settled
+        // here, and the promotion that settlement performs is what the dispatch
+        // below acts on. Without this the ORCH that waited on the NEXT assignment
+        // saw the previous one stay `working` for as long as nobody called add,
+        // inspect or close (friction 7b170d921a511a70).
+        const beforeSweep = registry.revision;
+        registry = await sweepSettlements(store, run, registry, queuedWarnings);
         const dispatched = budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, assignment.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), queuedWarnings);
-        if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
+        if (!dispatched) {
+          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: registry.revision !== beforeSweep ? "confirmed" : "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: registry.assignments[input.assignment_id].state }, ...(queuedWarnings.length ? { data: { settlement_sweep: queuedWarnings } } : {}) };
+        }
         const fresh = dispatched.assignments[input.assignment_id];
         const dispatchSettlement = settlementObservation(fresh, queuedWarnings.length ? queuedWarnings.join(" | ") : undefined);
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: dispatched.revision, worker: dispatched.lanes[assignment.worker_id], assignment: { assignment_id: input.assignment_id, state: fresh.state, ...(dispatchSettlement ? { settlement: dispatchSettlement } : {}) } };

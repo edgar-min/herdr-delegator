@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 4.0.0 and the bundled `herdr-create` skill 4.0.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 4.0.1 and the bundled `herdr-create` skill 4.0.1.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,8 +11,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `4.0.0`.
-- **ID-003**: The public skill MUST be named `herdr-create` and versioned `4.0.0` under frontmatter metadata.
+- **ID-002**: The package and plugin version MUST be `4.0.1`.
+- **ID-003**: The public skill MUST be named `herdr-create` and versioned `4.0.1` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -180,6 +180,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **ASN-014b**: `preflight` MAY additionally return `data.inter_run_ownership` as a bounded read-only observation of the ownership other runs already declare. It MUST enumerate the storage-root index once, keep only rows whose canonical project directory equals this run's, exclude this run, order candidates by descending `created_at` with the `<track_id>/<run_id>` coordinate ascending as the tie-break, and scan at most 128 peer runs, reporting at most 64 overlaps. Only assignments in `prompting`, `working`, `blocked`, or `ambiguous` MUST count as held ownership; queued assignments MUST be excluded. Overlap MUST be symmetric lexical prefix containment of classified declarations only, and each row MUST carry `track_id`, `run_id`, `assignment_id`, `state`, and the sorted unique requested values it matched. `unclassified_declarations` MUST count every declaration the classifier rejected across both sides of the comparison — the requesting artifact and each active peer artifact that was read successfully — so an empty overlap list is never mistaken for an exhaustive one. Exceeding either bound MUST set `truncated` and name `inter_run_scan_truncated` or `inter_run_overlaps_truncated`; an unreadable index or peer MUST name `inter_run_scan_unavailable` or `inter_run_peer_unreadable` and MUST NOT fail the call. The report MUST remain an observation: `preflight` stays non-mutating under ASN-014a, an overlap MUST NOT refuse, reserve, or lease anything, and negotiation stays with the orchestrators (NG-012).
 - **ASN-014c**: When the responsibility already has a live lane, `preflight` and `add` MUST compare the artifact's `profile` with the profile that lane was launched under and refuse a mismatch as `model_profile_mismatch` in phase `validate`, before the assignment ID is consumed. The recovery MUST name both profiles and the two ways forward: match the lane's profile, or dispatch under a `separation` that binds a new lane. The check MUST NOT replace the launch-time gate, which stays the authority for a lane already being ensured.
 - **ASN-014d**: `preflight` MUST return advisory `data.routing` for route, lane reuse, and profile (or an explicit skip reason), using delegation rules, assignment Goal and Completion conditions without frontmatter, and registry lanes; disagreements MUST be warnings, never a refusal ground, and the ORCH's declared choice MUST stand.
+- **ASN-014e**: `herdr_assignment` MUST accept `action: "route"` with `goal` (1 to 4096 characters) and optional `write_ownership`, `dependencies`, `user_boundaries` (each at most 64 strings of 1 to 1000 characters) and no other field. It MUST be advisory and read-only — no attestation, no registry write, no artifact — returning `effect: "none"` with `data.routing` (the ASN-014d verdict judged under the goal subject, or an explicit skip) and a one-sentence `data.next_step`. Every judged call MUST append one observation line to `<run>/a2a/routing-gate.jsonl` with `tool: "route"` and `decision: "advise"`; a skipped judgment MUST append nothing, and a failed append MUST NOT change the advice.
+- **ASN-014f**: The OMP extension MUST register a `tool_call` hook that, only in the session equal to the run's latest ORCH birth, judges every host-subagent (`task`) call with the same routing judge (host-subagent-call subject), blocks the call with the verdict, the alternative, and the `routing-override:` escape as the reason when the route is `orch-self` or `responsibility-lane`, and allows it on `host-subagent`, `undecided`, a skipped or timed-out judgment, any internal error, or an override ground of at least 20 characters in the call's `context`. Every judged call MUST append one line to `<run>/a2a/routing-gate.jsonl`; the file is an observation log and MUST NOT be read for authority. The judge deadline MUST default to 20 000 ms and be injectable for tests.
 - **ASN-015**: `add` MUST require `assignment_id`, `responsibility_key`, and `instructions_sha256`; it MAY accept `separation`, `wait`, the `emergency` claim of BUD-016, and `urgent`. `urgent` MUST decide queue placement only: it MUST insert at the queue head instead of appending, MUST NOT interrupt, recall, or reorder anything already dispatched, MUST NOT relax the parked-run promotion guard, and MUST NOT be persisted in any artifact, identifier, label, or registry record (ASN-003a). Every successful `add` result MUST echo `data.queue_position` — the 0-based queue index, `"active"` when the lane holds the assignment active, or `"none"` when a duplicate `add` names a record that is already terminal — merged into the same `data` object as that call's gate observations rather than replacing them.
 - **ASN-016**: `add` MUST verify the immutable artifact before routing, select exact responsibility reuse or valid separation, place the assignment by ASN-015's insertion discipline, ensure session/model identity, record prompt intent, send only a canonical pointer, wait to a natural boundary, and verify persisted identity after prompt.
 - **ASN-017**: A duplicate identical assignment MUST return a no-effect observation; a queued assignment MUST remain queued without lifecycle wait.
@@ -356,12 +358,13 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 4.0.0, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 4.0.1, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server that survives a stripped spawn environment: command `sh` with args `["-c", "exec \"${PLUGIN_ROOT:-.}/bin/herdr-delegator-mcp\""]` and an env carrying a guaranteed baseline `PATH` (`/usr/bin:/bin`); `.mcp.json` MUST NOT exist. (friction 9072a9da598edd89)
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 4.0.0, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 4.0.1, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
 - **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, CHANGELOG, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST first prepend `${HOME}/.local/bin`, `${HOME}/.bun/bin`, and `/usr/local/bin` to `PATH` (so its own Bun lookup and the server's Herdr binary discovery survive a stripped spawn environment), resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
 - **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
+- **PKG-007**: Every directory under `skills/` MUST carry a `SKILL.md` whose frontmatter passes the OMP Agent Plugins loader unchanged — strict YAML (no repair) and the closed Agent Skills field set — and `bun run check` MUST run that validator (`scripts/check-skills.ts`) and fail on any skill the loader would skip, because the loader skips silently and the born session then answers `Unknown skill` to its dispatch pointer (4.0.0 shipped three worker skills with an unquoted `: ` in `description`).
 
 ## 12. Module architecture
 
@@ -420,7 +423,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 4.0.0.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 4.0.1.
 - [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`; the namespaced OMP extension is bridge-only and registers no command.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.

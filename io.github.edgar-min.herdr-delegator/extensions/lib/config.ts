@@ -270,7 +270,7 @@ export async function resolveLaunchProfile(
   if (typeof params.profile !== "string" || !PROFILE_RE.test(params.profile)) {
     throw new ContractError(
       "invalid_profile",
-      "ensure_worker.profile is required and must name a configured worker profile.",
+      "The worker profile is required and must name a configured worker profile.",
       "validate",
     );
   }

@@ -13,6 +13,27 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [4.0.1] - 2026-09-23
+
+Patch for the defects recorded while dogfooding 4.0.0. No documented behavior changes beyond the fixes below.
+
+### Fixed
+
+- `herdr_track open` resolves the run it just laid out against the `cwd` it was given, not the server's launch directory: opening a track for a project whose configuration names another storage root no longer fails with `run_not_initialized` (friction 953e3c2999682ecc).
+- `herdr_assignment wait` on a queued assignment first settles what its lane already reported and promotes the queue, so a completed or failed head no longer sits unsettled until an unrelated `add`, `inspect` or `close` sweeps it (friction 7b170d921a511a70).
+- The optional assignment `label` grammar (1 to 48 characters of letters, digits, `-` or `_`, alphanumeric at both ends) is stated in `herdr-delegator://contract` and in the `herdr_assignment` action description instead of being learned from a preflight refusal (frictions 30bdc2141adbcbe1, 9b13cf97).
+- `herdr_track close` compares `expected_registry_revision` before its budget and authorization judgments can advance the registry, so a close issued with the revision `inspect` just returned is no longer refused as stale (friction fab9d8c4).
+- Error `recovery` texts name mounted MCP actions (`herdr_worker inspect`, `herdr_worker resume`, `herdr_track inspect`, `herdr_track open`, `herdr_assignment add`) instead of the retired native operations `inspect_worker`, `ensure_worker`, `inspect_orch`, `init_run` (frictions 953e3c2999682ecc, cc5c9c74).
+- The advisory routing judge reads `delegation.md` from the installed package rather than from the project directory, so `herdr_assignment preflight` returns a routing verdict in any project instead of `skipped: delegation rules not found` everywhere except this repository.
+- Role and creator skills name their references as `skill://herdr-orch/references/<name>.md` URIs, which OMP's `read` resolves directly, instead of bare relative paths that sent the born ORCH searching for the skill directory.
+- The three worker profile skills `herdr-worker-default`, `herdr-worker-slow`, `herdr-worker-task` are visible to OMP again. Their `description` carried an unquoted `: `, which the Agent Plugins loader's strict YAML parse rejects, so every born worker of 4.0.0 got `Unknown skill` for its own dispatch pointer. `bun run check` now runs `scripts/check-skills.ts`, the loader's own validator over `skills/`, so a skill OMP would skip fails the release check instead of disappearing at runtime.
+
+### Added
+
+- A routing gate in the OMP extension: in the born ORCH session every host-subagent (`task`) call is judged by the Jev routing judge against `delegation.md` §Three routes and is blocked, with the verdict and the alternative as the reason, when the work routes to `orch-self` or `responsibility-lane`; `routing-override: <ground>` in the call's context lets the ORCH overrule a verdict it judges wrong, and every judged call is appended to the run's `a2a/routing-gate.jsonl` as a real route sample. The ORCH skill's `Always` section names the rule.
+- `skills/herdr-orch/references/planning.md` requires the plan to name an executor (ORCH, host subagent, or responsibility lane) for every piece of work before it is frozen, and makes the adversarial plan review a recorded trade of what it can catch against what it costs rather than a default the user's approval waives.
+- `herdr_assignment route`: a goal-only routing verdict — route, lane reuse and profile judged by Jev on a goal and optional ownership, dependencies and boundaries — before any assignment is written, returning `data.routing` and a one-sentence `data.next_step`; judged calls are appended to `a2a/routing-gate.jsonl` beside the gate's. The ORCH skill now routes first: the router is asked before an assignment, a host subagent, or the delegation rules themselves are read, because reading the rules pulls the decision into the session the host prompt biases toward subagents; and the skill's identity paragraph states the measure of both obligations — the track completed within its budget, judgments delegated where they can be and only their reasonableness judged.
+
 ## [4.0.0] - 2026-09-23
 
 Rollback: this release lands on `main` as one merge commit tagged `v4.0.0`; the previous

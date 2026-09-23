@@ -1,6 +1,6 @@
 ---
 name: herdr-worker-task
-description: Execute an immutable Herdr assignment on the task lane: implementation, refactors, and integration under a mature specification, with verification attached to every change.
+description: Execute an immutable Herdr assignment on the task lane — implementation, refactors, and integration under a mature specification, with verification attached to every change.
 ---
 
 # Task worker profile

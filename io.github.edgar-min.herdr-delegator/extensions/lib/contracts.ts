@@ -387,7 +387,7 @@ export class ContractError extends Error {
     this.phase = phase;
     this.retryable = options.retryable ?? false;
     this.ambiguousEffect = options.ambiguousEffect ?? false;
-    this.recovery = options.recovery ?? "Check the input and current worker coordinates, then call inspect_worker.";
+    this.recovery = options.recovery ?? "Check the input and the current run and worker coordinates, then observe with herdr_worker inspect (or herdr_track inspect for the run) before retrying.";
   }
 }
 
