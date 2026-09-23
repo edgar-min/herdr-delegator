@@ -1,7 +1,7 @@
 # inquire — Phase 0 scan over a structured mandate
 
 The scan reads a structured mandate (the JSON shape in
-`skills/herdr-delegation/references/mandate-authoring.md`), asks one judgment per
+`skills/herdr-create/references/mandate-authoring.md`), asks one judgment per
 passage, and reports which passages an ORCH could not act on from the mandate alone.
 Each passage is placed on four ordered levels: `self_contained`, `lookup_named`,
 `facts_unnamed`, `decision_missing`. Passages at or above `keepFrom` (default 1)

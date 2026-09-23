@@ -3,7 +3,7 @@
 `herdr-delegator` routes substantial independent OMP work to persistent Herdr responsibility lanes. A worker keeps one official OMP session across sequential assignments with the same responsibility. Deterministic files remain the audit record; MCP supplies bounded control; Herdr supplies live observation.
 
 - Package/plugin: `herdr-delegator` 2.0.0
-- Skill: `herdr-delegation` 2.0.0
+- Skill: `herdr-create` 2.0.0
 - Public tools: `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, `herdr_friction`
 - Official runtime: OMP only
 - License: Apache-2.0
@@ -16,7 +16,7 @@ The package follows Agent Plugins 1.0.0:
 
 - `plugin.json` is the portable package manifest;
 - `mcp.json` declares one Bun stdio MCP server;
-- `skills/herdr-delegation/SKILL.md` is the portable Agent Skill;
+- `skills/herdr-create/SKILL.md` is the portable Agent Skill;
 - `io.github.edgar-min.herdr-delegator/extensions/herdr-delegator.ts` is the bridge-only OMP client extension;
 - `package.json#omp.extensions` retains the namespaced entry solely for current OMP extension-module compatibility.
 
@@ -142,7 +142,7 @@ Treat a routing rule like a dependency declaration: routed skill names become in
 4. Invoke the bundled skill and let ORCH drive:
 
 ```text
-/skill:herdr-delegation
+/skill:herdr-create
 ```
 
 5. Optionally wire `skill_routing` rules to your trusted skills before the first real track — see above.
@@ -317,4 +317,4 @@ bun run check
 - [Architecture](docs/ARCHITECTURE.md)
 - [Configuration schema](config.schema.json)
 - [Configuration example](config.example.json)
-- [Delegation skill](skills/herdr-delegation/SKILL.md)
+- [Delegation skill](skills/herdr-create/SKILL.md)

@@ -1,5 +1,5 @@
 ---
-name: herdr-delegation
+name: herdr-create
 description: Create a Herdr track from a session outside it by writing a mandate — the invocation of one planning protocol — and handing it to the born orchestrator. Creator-only; not an ORCH or worker operating guide.
 license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
@@ -86,7 +86,7 @@ about to hand away; an interview held here leaves its context here.
 
 Run the check on the draft, from the project the track will run in:
 
-    bun skills/herdr-delegation/scripts/mandate-check.ts <draft.json> --cwd <project dir>
+    bun skills/herdr-create/scripts/mandate-check.ts <draft.json> --cwd <project dir>
 
 Its deterministic half validates the schema, refuses an `entry.protocol` that
 `protocols/UPSTREAM.json` does not pin, verifies `protocols/contract.md` against

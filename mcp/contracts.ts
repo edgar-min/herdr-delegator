@@ -82,7 +82,7 @@ export const MAX_FRICTION_SUMMARY = 500;
 export const MAX_FRICTION_EVIDENCE = 2_000;
 export const FRICTION_FINGERPRINT_RE = /^[a-f0-9]{16}$/;
 // Mandate bounds (mandate form v2). A mandate is the invocation of ONE planning
-// protocol in a new track, and `skills/herdr-delegation/references/mandate.schema.json`
+// protocol in a new track, and `skills/herdr-create/references/mandate.schema.json`
 // is its authority: the zod object below mirrors that schema bound for bound, so
 // the advertised contract IS the enforced one. The only limit added here is a
 // cap on the whole serialized document, named with the observed size in its
@@ -727,7 +727,7 @@ const mandate = z.object({
   done_when: z.array(z.string().min(1).max(MAX_MANDATE_SENTENCE)).min(1).max(MAX_MANDATE_ITEMS).describe(`Observable conditions that make the track done, each verifiable by a delegate from a durable record and never a restatement of purpose. At most ${MAX_MANDATE_ITEMS} entries of ${MAX_MANDATE_SENTENCE} characters each.`),
   forbidden: mandateSentences("Track-specific prohibitions and every action the user reserves in this track: stage progression, lifecycle, remote changes, acceptance."),
   budget: mandateBudget,
-}).strict().describe(`The mandate: the invocation of ONE planning protocol in a new track, shaped exactly like skills/herdr-delegation/references/mandate.schema.json. It is persisted verbatim as <run>/mandate.json and fingerprinted at the ORCH's first prompt, so it is settled before birth and never edited behind a living ORCH. The whole serialized document is limited to ${MAX_MANDATE_BYTES} bytes.`);
+}).strict().describe(`The mandate: the invocation of ONE planning protocol in a new track, shaped exactly like skills/herdr-create/references/mandate.schema.json. It is persisted verbatim as <run>/mandate.json and fingerprinted at the ORCH's first prompt, so it is settled before birth and never edited behind a living ORCH. The whole serialized document is limited to ${MAX_MANDATE_BYTES} bytes.`);
 const justification = z.object({
   done: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What the run has already delivered, in observable terms. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),
   remaining: z.string().min(1).max(MANDATE_TRANSPORT_STRING).describe(`What concretely remains before the shape of success is met. One line, limit ${MAX_JUSTIFICATION_ITEM} characters.`),

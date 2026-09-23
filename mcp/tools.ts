@@ -1580,7 +1580,7 @@ function assertLiveWorkerSession(
 // mandate is settled before birth, never edited behind a living ORCH.
 //
 // The shape and its bounds are enforced by the zod object in contracts.ts,
-// which mirrors skills/herdr-delegation/references/mandate.schema.json. Only
+// which mirrors skills/herdr-create/references/mandate.schema.json. Only
 // two judgments are left here: the whole document's size, and whether this
 // build can actually run the entry protocol.
 // ---------------------------------------------------------------------------

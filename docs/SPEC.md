@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 3.9.0 and the bundled `herdr-delegation` skill 3.9.0.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 3.9.0 and the bundled `herdr-create` skill 3.9.0.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -12,7 +12,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
 - **ID-002**: The package and plugin version MUST be `3.9.0`.
-- **ID-003**: The public skill MUST be named `herdr-delegation` and versioned `3.9.0` under frontmatter metadata.
+- **ID-003**: The public skill MUST be named `herdr-create` and versioned `3.9.0` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -488,8 +488,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - [ ] [`README.md`](../README.md): package, installation, responsibility routing, MCP surface, lifecycle, and safety.
 - [ ] [`docs/ARCHITECTURE.md`](ARCHITECTURE.md): process boundary, authority, assignment state, recovery, and trust boundaries.
 - [ ] `docs/SPEC.md`: unique normative IDs, current actions, acceptance scenarios, non-goals, and this checklist.
-- [ ] [`skills/herdr-delegation/SKILL.md`](../skills/herdr-delegation/SKILL.md): ORCH procedure and public contract.
+- [ ] [`skills/herdr-create/SKILL.md`](../skills/herdr-create/SKILL.md): ORCH procedure and public contract.
 - [ ] [`skills/herdr-orch/SKILL.md`](../skills/herdr-orch/SKILL.md) and [`skills/herdr-worker/SKILL.md`](../skills/herdr-worker/SKILL.md): the role skills a born session is pointed at; [`protocols/contract.md`](../protocols/contract.md) with its pin [`protocols/CONTRACT.json`](../protocols/CONTRACT.json): the common contract served as `herdr://contract`.
-- [ ] [`skills/herdr-delegation/templates/handoff.md`](../skills/herdr-delegation/templates/handoff.md): responsibility and assignment handoff.
+- [ ] [`skills/herdr-create/templates/handoff.md`](../skills/herdr-create/templates/handoff.md): responsibility and assignment handoff.
 - [ ] [`config.schema.json`](../config.schema.json), [`run.schema.json`](../run.schema.json), and [`reset.schema.json`](../reset.schema.json): strict public data contracts.
 - [ ] [`LICENSE`](../LICENSE): canonical Apache License 2.0 text and copyright notice.

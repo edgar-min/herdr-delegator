@@ -5,7 +5,7 @@ description: Observe, understand, and modify the herdr-delegator config of the c
 
 # herdr-config (v0)
 
-This skill covers only the current project's config. Installation belongs to the README, track operation to herdr-delegation, and design rationale to ARCHITECTURE.
+This skill covers only the current project's config. Installation belongs to the README, track operation to herdr-create, and design rationale to ARCHITECTURE.
 
 ## Where — layer observation (the first act is a query, not a document read)
 

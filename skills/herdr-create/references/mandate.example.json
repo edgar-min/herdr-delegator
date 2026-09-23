@@ -100,11 +100,11 @@
     }
   ],
   "substrate": [
-    "skills/herdr-delegation/SKILL.md is the current creator contract for distilling, checking, presenting, and opening a mandate.",
-    "skills/herdr-delegation/references/mandate.schema.json defines mandate version 2, its protocol gates, and its judged-unit constraints.",
-    "skills/herdr-delegation/references/mandate.example.json is this track's own mandate rewritten under the recognized creator rules.",
+    "skills/herdr-create/SKILL.md is the current creator contract for distilling, checking, presenting, and opening a mandate.",
+    "skills/herdr-create/references/mandate.schema.json defines mandate version 2, its protocol gates, and its judged-unit constraints.",
+    "skills/herdr-create/references/mandate.example.json is this track's own mandate rewritten under the recognized creator rules.",
     "skills/herdr-orch/references/first-turn.md contains the ORCH first-turn procedure and continuation guard.",
-    "skills/herdr-delegation/scripts/mandate-check.ts implements the deterministic and Jev semantic gates for mandate drafts.",
+    "skills/herdr-create/scripts/mandate-check.ts implements the deterministic and Jev semantic gates for mandate drafts.",
     "mcp/resources.ts implements pinned MCP resources for upstream protocol documents.",
     "protocols/UPSTREAM.json pins the five imported planning protocols and their source-file hashes at upstream commit b87b2e98435aa2515402e207e0537f3c943d77f8.",
     "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/handoff-next-track.md sections 2 and 4 record the measured opening-flow facts and the work transferred to sb-dogfood-2/r1.",
@@ -135,9 +135,9 @@
     }
   ],
   "done_when": [
-    "The sb/dogfood2 branch contains a commit with the user-recognized versions of skills/herdr-delegation/references/mandate.schema.json, skills/herdr-delegation/references/mandate.example.json, and skills/herdr-delegation/SKILL.md.",
+    "The sb/dogfood2 branch contains a commit with the user-recognized versions of skills/herdr-create/references/mandate.schema.json, skills/herdr-create/references/mandate.example.json, and skills/herdr-create/SKILL.md.",
     "/Users/jsmin/.local/share/herdr-delegator-sb-dogfood2/runs/sb-dogfood-2/r1/plan.md records the user's recognized decision as a D-numbered entry.",
-    "Running bun skills/herdr-delegation/scripts/mandate-check.ts skills/herdr-delegation/references/mandate.example.json --cwd /Users/jsmin/Projects/herdr-delegator-sb-dogfood2 prints PASSED and exits 0.",
+    "Running bun skills/herdr-create/scripts/mandate-check.ts skills/herdr-create/references/mandate.example.json --cwd /Users/jsmin/Projects/herdr-delegator-sb-dogfood2 prints PASSED and exits 0.",
     "/Users/jsmin/.local/share/herdr-delegator-sb-dogfood2/runs/sb-dogfood-2/r1/handoff-next-track.md exists."
   ],
   "forbidden": [

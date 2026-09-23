@@ -28,7 +28,7 @@
     "plugin.json",
     "mcp.json",
     "bin/herdr-delegator-mcp",
-    "skills/herdr-delegation/**",
+    "skills/herdr-create/**",
     "*.schema.json",
     "*.example.json",
     "README.md",

@@ -1,4 +1,4 @@
-// bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]
+// bun skills/herdr-create/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]
 //
 // The deterministic half of the mandate check: everything about a mandate that
 // can be decided without a judge. It validates the document against
@@ -33,7 +33,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => typeof va
 
 function usage(message: string): never {
   console.error(`mandate-check: ${message}`);
-  console.error("usage: bun skills/herdr-delegation/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]");
+  console.error("usage: bun skills/herdr-create/scripts/mandate-check.ts <mandate.json> [--upstream <UPSTREAM.json>] [--cwd <project dir>] [--no-semantic | --semantic-only]");
   process.exit(2);
 }
 
