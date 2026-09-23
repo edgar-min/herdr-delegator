@@ -21,8 +21,37 @@ import { sha256 } from "./contracts";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const UPSTREAM_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "UPSTREAM.json");
+/** The shared contract document and its pin, resolved from the same package root. */
+export const CONTRACT_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "CONTRACT.json");
 /** The scheme and shape the birth prompt hard-codes; `mcp://herdr://protocol/<name>` is its OMP read form. */
 export const PROTOCOL_RESOURCE_PREFIX = "herdr://protocol";
+export const CONTRACT_RESOURCE_URI = "herdr://contract";
+
+/**
+ * The one shared contract every session reads: the authority index, the
+ * reservations the user keeps in every track, and the assignment and settlement
+ * grammar. It is served exactly like a pinned protocol document — bytes from
+ * `protocols/contract.md`, digest from `protocols/CONTRACT.json` — because a
+ * drifted contract is an unannounced rule change and refusing it is the only
+ * safe reading.
+ */
+export function contractResource(manifestPath: string = CONTRACT_MANIFEST_PATH): ProtocolResource {
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+  const digest = manifest["contract.md"];
+  if (typeof digest !== "string") {
+    throw new Error(`${manifestPath} does not pin "contract.md", so ${CONTRACT_RESOURCE_URI} cannot be served.`);
+  }
+  return {
+    uri: CONTRACT_RESOURCE_URI,
+    name: "contract",
+    title: "herdr contract",
+    description: `The shared Herdr contract — authority index, reservations kept to the user, and assignment and settlement grammar — served verbatim from protocols/contract.md. Pinned sha256 ${digest}; the server refuses to serve bytes that do not match it.`,
+    mimeType: "text/markdown",
+    filePath: path.join(path.dirname(manifestPath), "contract.md"),
+    sha256: digest,
+    manifestPath,
+  };
+}
 
 export type ProtocolPin = {
   source: string;
@@ -39,6 +68,8 @@ export type ProtocolResource = {
   mimeType: string;
   filePath: string;
   sha256: string;
+  /** The manifest that pins this document, named in every refusal. */
+  manifestPath: string;
 };
 
 /** Every resource this build serves, derived from the manifest — the manifest IS the registry. */
@@ -58,6 +89,7 @@ export function protocolResources(manifestPath: string = UPSTREAM_MANIFEST_PATH)
         mimeType: "text/markdown",
         filePath: path.join(PACKAGE_ROOT, "protocols", protocol, "upstream", file),
         sha256: digest,
+        manifestPath,
       });
     }
   }
@@ -69,26 +101,29 @@ export async function readPinnedProtocolFile(resource: ProtocolResource): Promis
   let bytes: Buffer;
   try { bytes = await readFile(resource.filePath); }
   catch {
-    throw new Error(`${resource.uri} is pinned in protocols/UPSTREAM.json but ${resource.filePath} cannot be read; reinstall or re-sync the package.`);
+    throw new Error(`${resource.uri} is pinned in ${resource.manifestPath} but ${resource.filePath} cannot be read; reinstall or re-sync the package.`);
   }
   const digest = sha256(bytes);
   if (digest !== resource.sha256) {
-    throw new Error(`${resource.uri} has drifted from its pin: ${resource.filePath} hashes ${digest}, the manifest pins ${resource.sha256}. Re-sync with protocols/scripts/upstream-sync.ts; the server never serves an unpinned protocol document.`);
+    throw new Error(`${resource.uri} has drifted from its pin: ${resource.filePath} hashes ${digest}, ${resource.manifestPath} pins ${resource.sha256}. Re-pin the document deliberately; the server never serves an unpinned document.`);
   }
   return bytes.toString("utf8");
 }
 
 /**
- * Registers every pinned protocol document as a read-only MCP resource. An
- * unreadable manifest leaves the server tool-complete and resource-empty rather
- * than failing to start, and the warning names the manifest.
+ * Registers every pinned document as a read-only MCP resource. An unreadable
+ * manifest leaves the server tool-complete and that manifest's resources absent
+ * rather than failing to start, and the warning names the manifest.
  */
 export function registerProtocolResources(server: McpServer): ProtocolResource[] {
-  let resources: ProtocolResource[];
-  try { resources = protocolResources(); }
+  const resources: ProtocolResource[] = [];
+  try { resources.push(...protocolResources()); }
   catch (error: unknown) {
     console.error(`[herdr-delegator] no protocol resources: ${UPSTREAM_MANIFEST_PATH} is unreadable (${error instanceof Error ? error.message : String(error)})`);
-    return [];
+  }
+  try { resources.push(contractResource()); }
+  catch (error: unknown) {
+    console.error(`[herdr-delegator] no ${CONTRACT_RESOURCE_URI} resource: ${CONTRACT_MANIFEST_PATH} is unusable (${error instanceof Error ? error.message : String(error)})`);
   }
   for (const resource of resources) {
     server.registerResource(

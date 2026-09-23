@@ -3,13 +3,11 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm } from "
 import path from "node:path";
 import type { ConfigThinkingLevel, FocusRestoration, ResetLineage, RunManifest, RunRecord, SessionVerification, TargetOrchestratorRecord, TrackOperation, TrackParams, TrackResult } from "./contracts";
 import { ContractError, FOCUS_TIMEOUT_MS, REGISTRY_OWNER, RUN_GENERATION, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, assertExactKeys, compactMessage, isObject, nowIso, sha256 } from "./contracts";
-import { PROTOCOL_TEMPLATE_PATH, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, inboundChannelEntries, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, storageRootFromConfig, validateOrchestratorRun, writeAtomic, type InboundChannelObservation } from "./config";
-import { acceptProtocolDocument } from "./templates";
-import { GUIDANCE_DOCUMENT_NAME } from "./guidance";
+import { PACKAGE_ROOT, RUN_CHANNELS, canonicalCoordinate, canonicalCwd, canonicalOrchestratorInstruction, copyAtomic, inboundChannelEntries, isFile, loadDelegatorConfig, normalizeTimeout, readRunIndex, readRunManifest, resolveOrchestratorProfile, resolveRunCoordinate, roleSkillDigests, storageRootFromConfig, validateOrchestratorRun, writeAtomic, type InboundChannelObservation } from "./config";
 import type { BootstrapSessionVerification, OwnedFocus } from "./runtime";
 import { acquireLock, assertNoDuplicateSession, assertPersistedMatchesBootstrap, assertRunWorkspaceLive, canonicalSessionPath, captureFocus, collectMatchingObjects, commandError, convergeBootstrapSessionIdentity, convergeOfficialSessionIdentity, deepValues, ensureRunWorkspace, firstNumber, firstString, getLiveAgent, isMissingHerdrObject, labelPane, normalizeState, observeOrchestrator, readRegistry, readSessionVerification, registryPaths, releaseLock, reportedSessionPath, requireHerdrEnvironment, restoreFocus, runHerdr, uniqueBy, verifiedHerdrSidebarAuxiliaryPane, withRegistryLock, writeRegistryAtomic } from "./runtime";
 
-const PROTOCOL_DOCUMENT_NAMES = ["protocol.md", "protocol-orch.md", "protocol-worker.md"] as const;
+
 
 /** Prompt-surface ceiling on inbound pointers; the rest belong to `inspect`. */
 export const MAX_INBOUND_PROMPT_POINTERS = 8;
@@ -23,7 +21,7 @@ export const MAX_INBOUND_PROMPT_POINTERS = 8;
  * not see — the rt-test/r1 ORCH halted on exactly that.
  */
 const PROTOCOL_RESOURCE_READ_PREFIX = "mcp://herdr://protocol";
-const UPSTREAM_MANIFEST_PATH = path.resolve(path.dirname(PROTOCOL_TEMPLATE_PATH), "../../../protocols/UPSTREAM.json");
+const UPSTREAM_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "UPSTREAM.json");
 
 /** The mandate's entry protocol, refused at spawn when this build does not pin it. */
 export async function entryProtocolResource(mandatePath: string, mandateBytes: Buffer): Promise<string> {
@@ -51,29 +49,24 @@ export async function entryProtocolResource(mandatePath: string, mandateBytes: B
 }
 
 /**
- * The ORCH's first prompt. It names the documents that carry command — the
- * mandate and the role protocol — and, when a caller materialized one for this
- * spawn, the advisory guidance document, marked advisory in the prompt itself so
- * the born session cannot mistake criteria for authority.
+ * The ORCH's first prompt. It names the two things a newborn cannot derive: the
+ * mandate that bounds this run, and the role skill that carries every rule it
+ * works by. The run directory holds no protocol document to point at any more,
+ * so the routing lives in `skill://herdr-orch` and the prompt is the pointer.
  *
  * A newborn ORCH also has no way to learn that another run already addressed a
  * channel document to it: its doorbell rang before it existed and a doorbell
  * carries no content to redeliver (friction ef27dbff9f8d30ac ③). So when the
- * caller observed inbound documents, the prompt names them — the same conditional
- * pointer the guidance document already gets, bounded so a long-lived storage
- * root cannot flood a first turn. Pointers only: no body, and no claim that the
- * list is complete or that anything was delivered.
+ * caller observed inbound documents, the prompt names them, bounded so a
+ * long-lived storage root cannot flood a first turn. Pointers only: no body, and
+ * no claim that the list is complete or that anything was delivered.
  */
 export function orchestratorFirstPrompt(
-  instructionPath: string,
-  orchestratorProtocolPath: string,
-  protocolResourceUri: string,
-  guidancePath?: string,
+  trackId: string,
+  runId: string,
+  mandatePath: string,
   inbound?: InboundChannelObservation,
 ): string {
-  const guidance = guidancePath
-    ? ` Also read ${guidancePath}, which is advisory only: consult it for the skill routes configured at your plan and authoring boundaries and for what each worker profile is for, and never as authority over scope, ownership, or completion conditions.`
-    : "";
   const observed = inbound?.entries ?? [];
   const named = observed.slice(0, MAX_INBOUND_PROMPT_POINTERS);
   const remainder = observed.length > named.length || inbound?.truncated
@@ -88,7 +81,7 @@ export function orchestratorFirstPrompt(
   const inboundClause = named.length
     ? ` ${lead} ${pointers}. That is an observation of documents a future or live ORCH can discover, not a delivered message, not a complete list, and no guarantee that anything will be redelivered: read each document before you act on it and answer in your own reverse channel.${remainder}`
     : "";
-  return `Read ${instructionPath} and ${orchestratorProtocolPath}, then carry out every instruction in them. Then read the entry protocol as an MCP resource: ${protocolResourceUri}.${guidance}${inboundClause} To reach another run's ORCH — handoff revalidation, a terminal boundary, or a decision request — append your entry to this run's a2a/orch-to-<to_track_id>_<to_run_id>.md channel document for that run first, then ring one bounded herdr_message {action:"notify_run"}: the bell carries no content and is refused when the channel document does not exist.`;
+  return `You are the ORCH of run ${trackId}/${runId}. Your mandate is ${mandatePath}. Read skill://herdr-orch and carry out its routing before anything else.${inboundClause}`;
 }
 
 async function initializeRun(params: TrackParams): Promise<TrackResult> {
@@ -100,14 +93,13 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
   const storageRoot = await storageRootFromConfig(loaded.config, true);
   const runPath = path.join(storageRoot, trackId, runId);
   const runKey = sha256(runPath);
-  const protocolTemplateDirectory = path.dirname(PROTOCOL_TEMPLATE_PATH);
-  const protocolDocuments = await Promise.all(PROTOCOL_DOCUMENT_NAMES.map(async (name) => {
-    const templatePath = path.join(protocolTemplateDirectory, name);
-    return { name, templatePath, template: await readFile(templatePath) };
-  }));
-  // Older-but-shipped protocol documents are accepted with a named warning, and
-  // the warning has to reach the caller's result, so it lives at function scope.
-  const templateWarnings: string[] = [];
+  // Refused before anything is staged: a run whose sessions are told to read
+  // skill://herdr-orch and skill://herdr-worker must record the exact bytes
+  // this build installs for them.
+  const skills = await roleSkillDigests();
+  // Retired-key warnings from the configuration layers reach the caller's
+  // result, so they live at function scope.
+  const configWarnings = loaded.warnings;
   let resetCoordinate: { track_id: string; run_id: string; path: string } | undefined;
   let sourcePlanPath: string | undefined;
   let sourcePlanHash: string | undefined;
@@ -215,58 +207,7 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         throw new ContractError("run_init_conflict", "Existing a2a is missing or not a canonical directory.", "storage");
       }
 
-      const missingProtocols: typeof protocolDocuments = [];
-      for (const protocol of protocolDocuments) {
-        const protocolPath = path.join(runPath, protocol.name);
-        try {
-          const protocolStat = await lstat(protocolPath);
-          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(protocolPath)) !== protocolPath) {
-            throw new ContractError(
-              "run_init_conflict",
-              `Existing ${protocol.name} is not a canonical regular file.`,
-              "storage",
-            );
-          }
-          // The pin accepts any digest this project has shipped for this
-          // document, so a template edit never strands a run that was created
-          // before it — including on the revival path, which re-checks these
-          // same bytes. Older-but-shipped is accepted loudly, never silently.
-          const accepted = acceptProtocolDocument(protocol.name, await readFile(protocolPath), protocol.template);
-          if (accepted.warning) templateWarnings.push(accepted.warning);
-        } catch (error: unknown) {
-          if (error instanceof ContractError) throw error;
-          if (!isObject(error) || error.code !== "ENOENT") {
-            throw new ContractError("run_init_conflict", `Existing ${protocol.name} cannot be inspected safely.`, "storage");
-          }
-          missingProtocols.push(protocol);
-        }
-      }
-      if (missingProtocols.length > 0) {
-        const entries = (await readdir(runPath)).sort();
-        const a2aEntries = await readdir(a2aPath);
-        // guidance.md is a rendered advisory artifact, not run state: an open
-        // that already materialized it must still qualify for this recovery.
-        const boundedRecoveryEntries: Record<string, true> = { a2a: true, "run.json": true, "protocol.md": true, "protocol-orch.md": true, "protocol-worker.md": true, [GUIDANCE_DOCUMENT_NAME]: true };
-        const recoverableIncompleteTarget =
-          resetCoordinate === undefined &&
-          existingRow === undefined &&
-          entries.every((entry) => boundedRecoveryEntries[entry]) &&
-          a2aEntries.length === 0;
-        if (!existingRow && !recoverableIncompleteTarget) {
-          throw new ContractError(
-            "run_init_conflict",
-            "Missing role-scoped protocols are not in an index-owned run or the bounded manifest-plus-empty-a2a recovery layout.",
-            "storage",
-          );
-        }
-        for (const protocol of missingProtocols) {
-          const protocolPath = path.join(runPath, protocol.name);
-          await copyAtomic(protocol.templatePath, protocolPath);
-          if ((await realpath(protocolPath)) !== protocolPath || !(await readFile(protocolPath)).equals(protocol.template)) {
-            throw new ContractError("storage_write_failed", `Recovered ${protocol.name} failed byte verification.`, "storage");
-          }
-        }
-      }
+
 
       if (resetCoordinate && sourcePlanPath && sourcePlanHash) {
         const sourcePlan = await readFile(sourcePlanPath);
@@ -326,12 +267,11 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         run_path: runPath,
         created_at: nowIso(),
         ...(resetCoordinate ? { reset_of: resetCoordinate } : {}),
+        channels: RUN_CHANNELS,
+        skills,
       };
       await mkdir(path.join(stagingPath, "a2a"), { mode: 0o700 });
       await writeAtomic(path.join(stagingPath, "run.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-      for (const protocol of protocolDocuments) {
-        await copyAtomic(protocol.templatePath, path.join(stagingPath, protocol.name));
-      }
 
       let sourcePlan: Buffer | undefined;
       let reset: ResetLineage | undefined;
@@ -357,18 +297,15 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
       }
 
       const stagedManifest = await readRunManifest(stagingPath);
-      const stagedProtocolMatches = await Promise.all(protocolDocuments.map(async (protocol) =>
-        (await readFile(path.join(stagingPath!, protocol.name))).equals(protocol.template)
-      ));
       const expectedEntries = resetCoordinate
-        ? ["a2a", "plan.md", "protocol-orch.md", "protocol-worker.md", "protocol.md", "reset.json", "run.json"]
-        : ["a2a", "protocol-orch.md", "protocol-worker.md", "protocol.md", "run.json"];
+        ? ["a2a", "plan.md", "reset.json", "run.json"]
+        : ["a2a", "run.json"];
       if (
         JSON.stringify(stagedManifest) !== JSON.stringify(manifest) ||
         JSON.stringify((await readdir(stagingPath)).sort()) !== JSON.stringify(expectedEntries) ||
         (await realpath(path.join(stagingPath, "a2a"))) !== path.join(stagingPath, "a2a") ||
         (await readdir(path.join(stagingPath, "a2a"))).length !== 0 ||
-        stagedProtocolMatches.some((matches) => !matches) ||
+
         (sourcePlan !== undefined && !(await readFile(path.join(stagingPath, "plan.md"))).equals(sourcePlan)) ||
         (reset !== undefined &&
           JSON.stringify(JSON.parse(await readFile(path.join(stagingPath, "reset.json"), "utf8"))) !==
@@ -439,10 +376,10 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
         run_path: runPath,
         cwd,
         manifest_path: path.join(runPath, "run.json"),
-        protocol_path: path.join(runPath, "protocol.md"),
+        channels: RUN_CHANNELS,
         reset_of: resetCoordinate,
       },
-      observation: { index_path: indexPath, storage_root: storageRoot, ...(templateWarnings.length ? { template_drift_warning: templateWarnings.join(" | ") } : {}) },
+      observation: { index_path: indexPath, storage_root: storageRoot, ...(configWarnings.length ? { config_warning: configWarnings.join(" | ") } : {}) },
     };
   } catch (error: unknown) {
     if (stagingPath !== undefined) {
@@ -1012,36 +949,13 @@ async function startOrchestrator(
   const lineage = await validateOrchestratorRun(coordinate);
   const cwd = coordinate.manifest.cwd;
   const instructionPath = await canonicalOrchestratorInstruction(runPath);
-  const orchestratorProtocolPath = path.join(runPath, "protocol-orch.md");
-  const orchestratorProtocolTemplatePath = path.join(path.dirname(PROTOCOL_TEMPLATE_PATH), "protocol-orch.md");
-  // Revival comes through here too, so this check decides whether a run created
-  // before a template edit can ever get its ORCH back. It therefore accepts any
-  // digest this project has shipped for protocol-orch.md and names an older one,
-  // instead of pinning the run to the installed bytes.
-  let protocolDriftWarning: string | undefined;
-  try {
-    const protocolStat = await lstat(orchestratorProtocolPath);
-    if (
-      !protocolStat.isFile() ||
-      protocolStat.isSymbolicLink() ||
-      (await realpath(orchestratorProtocolPath)) !== orchestratorProtocolPath
-    ) {
-      throw new Error("protocol path is not canonical");
-    }
-  } catch {
-    throw new ContractError("invalid_instruction_path", "protocol-orch.md is missing or not a canonical regular file.", "validate");
-  }
-  protocolDriftWarning = acceptProtocolDocument(
-    "protocol-orch.md",
-    await readFile(orchestratorProtocolPath),
-    await readFile(orchestratorProtocolTemplatePath),
-  ).warning;
   const mandateBytes = await readFile(instructionPath);
   const instructionFingerprint = sha256(mandateBytes);
-  // Refused here rather than prompted: an ORCH pointed at a protocol this build
-  // does not serve would halt on its first action, which is the failure this
-  // resource route exists to remove.
-  const protocolResourceUri = await entryProtocolResource(instructionPath, mandateBytes);
+  // Refused here rather than prompted: an ORCH whose mandate names a protocol
+  // this build does not serve would halt on its first action, which is the
+  // failure this refusal exists to remove. The prompt names no protocol path
+  // any more, so only the refusal remains.
+  await entryProtocolResource(instructionPath, mandateBytes);
   const runKey = sha256(runPath);
   const agentName = `herdr-orch-${runKey.slice(0, 12)}`;
   const { registryPath } = registryPaths(runPath);
@@ -1292,11 +1206,6 @@ async function startOrchestrator(
     });
 
     if (!duplicatePrompt) {
-      // The guidance document is present exactly when a caller materialized it
-      // for this spawn (open and revival do; a legacy start does not), so its
-      // presence — not a flag — decides whether the prompt names three
-      // documents or the original two.
-      const guidancePath = path.join(runPath, GUIDANCE_DOCUMENT_NAME);
       // Advisory read at a birth boundary: a failed observation must cost the
       // newborn its inbound pointers, never its birth, so the prompt simply
       // loses the clause. Only the prompt ceiling is read, not the full inspect
@@ -1308,10 +1217,9 @@ async function startOrchestrator(
         inbound = undefined;
       }
       const prompt = orchestratorFirstPrompt(
+        coordinate.manifest.track_id,
+        coordinate.manifest.run_id,
         instructionPath,
-        orchestratorProtocolPath,
-        protocolResourceUri,
-        (await isFile(guidancePath)) ? guidancePath : undefined,
         inbound,
       );
       // Delivery wait, never settlement: the ORCH's first turn routinely outlives
@@ -1420,7 +1328,6 @@ async function startOrchestrator(
       pane_label: paneLabel,
       ...(paneLabelWarning ? { pane_label_warning: paneLabelWarning } : {}),
       ...(fallbackWarning ? { role_fallback_warning: fallbackWarning } : {}),
-      ...(protocolDriftWarning ? { template_drift_warning: protocolDriftWarning } : {}),
       report_exists: await isFile(path.join(runPath, "orchestrator-report.md")),
       report_path: path.join(runPath, "orchestrator-report.md"),
     },

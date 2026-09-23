@@ -7,7 +7,6 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
 import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import { materializeGuidance, materializeWorkerGuidance } from "../io.github.edgar-min.herdr-delegator/extensions/lib/guidance";
 import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
@@ -386,6 +385,31 @@ function skillRoutePointer(routes: SkillRoute[]): string {
   if (!routes.length) return "";
   const grouped = routes.map((route) => `${route.boundary}: ${route.skills.join(", ")}`).join("; ");
   return ` Advisory skill routes — ${grouped}. ${SKILL_ROUTES_NOTE}`;
+}
+
+/**
+ * The worker's first display surface. It names the full coordinate — A-001
+ * exists in dozens of runs and only <track>/<run>/<id> tells them apart — the
+ * artifact's label when it has one, and the role skill that carries every rule
+ * the lane works by. Identity stays numeric where it is parsed: the completion
+ * block the worker must append carries the bare ID, never the coordinate and
+ * never the label.
+ */
+export function assignmentDispatchPointer(fields: {
+  assignmentId: string;
+  coordinate: string;
+  label?: string;
+  responsibilityKey: string;
+  artifactPath: string;
+  instructionsSha256: string;
+  profile?: string;
+  reportPath: string;
+  routes: SkillRoute[];
+}): string {
+  const routing = fields.profile
+    ? `Read skill://herdr-worker and carry out its routing; your profile is ${fields.profile}.`
+    : "Read skill://herdr-worker and carry out its routing.";
+  return `Assignment ${fields.assignmentId} (${fields.coordinate}${fields.label ? `, label ${fields.label}` : ""}); responsibility ${fields.responsibilityKey}; instructions ${fields.artifactPath} sha256=${fields.instructionsSha256}. ${routing} Append [Assignment Completion: ${fields.assignmentId}] to ${fields.reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per skill://herdr-worker.${skillRoutePointer(fields.routes)}`;
 }
 
 async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Promise<TokenUsageObservation | undefined> {
@@ -1985,10 +2009,7 @@ export class CompositeTools {
       `creator verification: ${stampedCreator.verified === false ? "unverified (omp_fact_bridge_mismatch)" : "attested"}`,
       "metering basis: high-water context size (max of input+cacheRead+cacheWrite+output+reasoning across a session's assistant turns), not cumulative per-turn spend — seeds sized for the older cumulative meter read larger than what this basis will judge",
     ]).catch(() => undefined);
-    // Advisory delivery surface, never a gate: the document is rendered (or
-    // degrades to a document naming its own failure) before the spawn, and only
-    // a failed write is reported — open proceeds either way.
-    const guidance = await materializeGuidance(store.runPath);
+
 
     const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
@@ -2000,7 +2021,7 @@ export class CompositeTools {
     const creatorWarning = stampedCreator.verified === false
       ? "Opening creator is unverified because pane attestation failed with omp_fact_bridge_mismatch; existing-run operations remain fail-closed."
       : undefined;
-    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
+    const warnings = [observation.role_fallback_warning, observation.pane_label_warning, observation.config_warning, permission?.warning, creatorWarning, clampScaffold.warning].filter((value): value is string => typeof value === "string");
     const retirementText = stampedCreator.verified === false
       ? "the unverified opening pane is retired for this track and cannot issue guarded calls"
       : "this session is retired for this track and every guarded call it makes now fails with creator_session_retired";
@@ -2089,9 +2110,6 @@ export class CompositeTools {
       const retirement = await retireOrchestratorSession({ operation: "retire_orch_session", track_id: run.track_id, run_id: run.run_id });
       retired = retirement.observation;
     }
-    // A revived ORCH — resumed or reborn — must see the configuration that is
-    // current now, not the rendering its first birth got. Best-effort as at open.
-    const guidance = await materializeGuidance(store.runPath);
 
     const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id });
     const observedSession = stringField(started.orchestrator, ["session_id"]);
@@ -2123,7 +2141,7 @@ export class CompositeTools {
       ]).catch(() => undefined);
     }
     const observation = isObject(started.observation) ? started.observation : {};
-    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.template_drift_warning, guidance.warning]) {
+    for (const candidate of [observation.role_fallback_warning, observation.pane_label_warning, observation.config_warning]) {
       if (typeof candidate === "string") warnings.push(candidate);
     }
     return {
@@ -3038,7 +3056,6 @@ export class CompositeTools {
     const snapshot = await store.read();
     const record = snapshot.assignments[assignmentId];
     if (!record) throw new McpContractError("assignment_artifact_missing", "Assignment vanished from the registry before dispatch.", "select", "Inspect the minimal registry before prompting.");
-    const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
     const artifactPath = path.join(store.runPath, "a2a", "assignments", `${assignmentId}.md`);
     const reportPath = path.join(store.runPath, "a2a", `${workerId}-report.md`);
     const promptedAt = nowIso();
@@ -3061,18 +3078,18 @@ export class CompositeTools {
     const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
     const laneProfile = artifact?.assignment.profile;
     const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
-    // The lane's own advisory document, materialized at dispatch so it carries
-    // the configuration current now. Absence stays a no-op: an unknown profile, a
-    // profile the configuration gives neither a directive nor a route, and a
-    // failed render or write all name no path, so the pointer omits the clause.
-    const laneGuidance = laneProfile ? await materializeWorkerGuidance(store.runPath, laneProfile) : {};
-    if (laneGuidance.warning) warnings.push(laneGuidance.warning);
-    // The pointer is the worker's first display surface, so it names the full
-    // coordinate — A-001 exists in dozens of runs and only <track>/<run>/<id>
-    // tells them apart — and the artifact's label when it has one. Identity
-    // stays numeric where it is parsed: the completion block the worker must
-    // append carries the bare ID, never the coordinate and never the label.
-    const pointer = `Assignment ${assignmentId} (${run.track_id}/${run.run_id}/${assignmentId}${artifact?.assignment.label ? `, label ${artifact.assignment.label}` : ""}); responsibility ${record.responsibility_key}; instructions ${artifactPath} sha256=${record.instructions_sha256}; worker protocol ${workerProtocolPath}. Append [Assignment Completion: ${assignmentId}] to ${reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per protocol-worker.md.${skillRoutePointer(workerRoutes)}${laneGuidance.path ? ` Lane guidance (advisory, not a contract): ${laneGuidance.path}.` : ""}`;
+
+    const pointer = assignmentDispatchPointer({
+      assignmentId,
+      coordinate: `${run.track_id}/${run.run_id}/${assignmentId}`,
+      label: artifact?.assignment.label,
+      responsibilityKey: record.responsibility_key,
+      artifactPath,
+      instructionsSha256: record.instructions_sha256,
+      profile: laneProfile,
+      reportPath,
+      routes: workerRoutes,
+    });
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
       if (prompted.warning) warnings.push(prompted.warning);
@@ -3199,15 +3216,6 @@ export class CompositeTools {
         return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership } };
       }
       if (input.action === "add") {
-        const workerProtocolPath = path.join(store.runPath, "protocol-worker.md");
-        try {
-          const protocolStat = await lstat(workerProtocolPath);
-          if (!protocolStat.isFile() || protocolStat.isSymbolicLink() || (await realpath(workerProtocolPath)) !== workerProtocolPath) {
-            throw new Error("protocol path is not canonical");
-          }
-        } catch {
-          throw new McpContractError("invalid_run_layout", "protocol-worker.md is missing or not a canonical regular file.", "validate", "Re-initialize and reconcile the exact run before dispatching an assignment.");
-        }
         const runtime = await loadFacts(this.adapter);
         await assertOrchCommand(store, runtime.facts);
         // Succession claim gate (SUC-001..SUC-006), before the budget judgment:

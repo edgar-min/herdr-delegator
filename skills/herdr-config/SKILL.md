@@ -1,6 +1,6 @@
 ---
 name: herdr-config
-description: Observe, understand, and modify the herdr-delegator config of the current project. Query which config layers this cwd resolves and which file each effective value comes from, explain which document each field lands in and when, and change it safely through validation and preview. Use when the user asks to "check delegator config", "add a skill route", "edit profile directives", "check orchestrator directives", "why does the ORCH behave this way", or "why does it behave this way".
+description: Observe, understand, and modify the herdr-delegator config of the current project. Query which config layers this cwd resolves and which file each effective value comes from, explain which spawn each field reaches, and change it safely through validation. Use when the user asks to "check delegator config", "change the ORCH role", "change a worker profile's model or thinking level", "where does the delegator store runs", or "which layer set this value".
 ---
 
 # herdr-config (v0)
@@ -10,67 +10,46 @@ This skill covers only the current project's config. Installation belongs to the
 ## Where — layer observation (the first act is a query, not a document read)
 
 1. Read the layers this cwd actually resolves: `herdr-delegator.json` under `$PI_CODING_AGENT_DIR` when set, otherwise user `~/.omp/agent/herdr-delegator.json` ← project `<repo>/.omp/herdr-delegator.json` ← an optional run layer `<run>/herdr-delegator.json`.
-2. Compose the effective config and attribute sources per merge coordinate: `orchestrator` by field, `worker_profiles` by field within each profile name, `skill_routing` and `storage` as whole objects.
-3. Merge semantics differ per coordinate: `orchestrator` merges field-wise; `worker_profiles` maps by profile name and merges field-wise within the same name, so fields a later layer does not declare survive and differently named profiles survive; `skill_routing` and `storage` are replaced as whole objects when a later layer declares them.
-4. Therefore a project layer declaring `skill_routing` replaces the user layer's entire routing for that cwd. Never assume missing user rules are preserved automatically.
-5. Report an absent layer as absent. When a layer fails reading, JSON parsing, or schema validation, report the error verbatim and stop composition, preview, and writes.
+2. Compose the effective config and attribute sources per merge coordinate: `orchestrator` by field, `worker_profiles` by field within each profile name, `storage` as a whole object.
+3. Merge semantics differ per coordinate: `orchestrator` merges field-wise; `worker_profiles` maps by profile name and merges field-wise within the same name, so fields a later layer does not declare survive and differently named profiles survive; `storage` is replaced as a whole object when a later layer declares it.
+4. A worker profile name a layer defines for the first time must declare its own `role`; it never inherits another profile's identity, so a misspelled name fails loudly instead of silently running on someone else's model.
+5. Report an absent layer as absent. When a layer fails reading, JSON parsing, or schema validation, report the error verbatim and stop composition and writes.
 
 ## What — fields and where they land
 
-Config is the source of the advisory documents; documents are projections of config. The edit target is always config. Which field changes what:
+Config decides how sessions are launched and where runs are stored. It renders no document: a run directory holds `mandate.json`, `run.json` and `a2a/` only, and the rules an ORCH or worker works by live in the role skills `herdr-orch` and `herdr-worker` and in the `herdr://contract` resource.
 
-| config coordinate | lands in | render timing |
+| config coordinate | lands in | timing |
 | --- | --- | --- |
-| `skill_routing.skills.<name>` (`intent`, `trigger`) | the routed skill line's description text | next render of that document |
-| `skill_routing.rules` | orch rules → the run's `guidance.md` / profile rules → `guidance-<profile>.md` | orch document at open·revive / profile document at dispatch |
-| `orchestrator.directive` | the `Orchestrator directive` section at the top of `guidance.md` (read by the ORCH only) | at open·revive |
-| `worker_profiles.<p>.intent` | the profile selection table in `guidance.md` (read by the ORCH only) | at open·revive |
-| `worker_profiles.<p>.directive` | the directive section of `guidance-<p>.md` (read by that profile's workers only) | at dispatch |
-| `orchestrator.role`, `worker_profiles.<p>.role` | role resolution at spawn | next spawn |
+| `orchestrator.role`, `orchestrator.thinking` | the ORCH session's role alias and thinking level | next ORCH spawn (open·revive) |
+| `worker_profiles.<p>.role`, `worker_profiles.<p>.thinking` | a lane session's role alias and thinking level | next worker spawn for that profile |
 | `storage.root` | run storage location `<root>/<track>/<run>` | new tracks onward |
 
-All of it is advisory: scope, authority, ownership, and completion conditions never change; an uninstalled skill is a reader-side no-op; a missing document is simply absent.
+`role` is an OMP role alias such as `@default`; the born session expands it against its own settings, so a caller's runtime model override never decides a child's model. `thinking` may be `inherit`, in which case the spawn passes no level and the role's own `:level` suffix governs.
 
-## How — the three scripts (observe, attribute, edit)
+A layer may still carry keys this build no longer reads. They are ignored, not rejected: the loader returns one warning naming each retired coordinate and its layer file. Delete the key from the layer when you see the warning.
 
-Every procedure below runs from the repository root with `bun`. The scripts import the extension
-library directly, so they judge with the same parser and renderer a run uses; never re-implement a
-predicate by hand.
+## How — validate before every write
 
-| command | answers |
-| --- | --- |
-| `bun skills/herdr-config/scripts/drift.ts <run-path>` | Are this run's three protocol documents the installed text? Prints `document / run sha256 / installed sha256 / verdict`, where the verdict is `current`, `historical (…)`, or `unknown (…)` from the run loader's own acceptance rule. |
-| `bun skills/herdr-config/scripts/routes.ts <cwd> [run-path]` | What is in effect and which layer set it? Prints the orchestrator directive, every worker profile's `intent`/`directive`, every effective route with its authored shape, and every per-skill `intent`/`trigger`, each attributed to the layer that declared it. |
-| `bun skills/herdr-config/scripts/directive.ts <cwd> --set "<text>" [--layer project\|user] [--apply]` | Would this orchestrator directive be accepted, and what would `guidance.md` look like? Validates through the real loader in a throwaway root and prints the rendered preview; without `--apply` nothing is written, and a value the parser rejects is refused with its `invalid_config` message. |
-
-Common procedure (mandatory before any write):
+There is no preview document to render and no script to run: the loader itself is the judgment.
 
 1. The default edit target is project `<repo>/.omp/herdr-delegator.json`. Observe the user and run layers, but do not write them unless the user explicitly names that layer.
-2. Attribute first: run `routes.ts` and read which layer currently sets the coordinate you are about to change. A value you did not author usually comes from the user layer, and editing the project layer will not remove it.
-3. Validation and preview: for the orchestrator directive, `directive.ts` without `--apply` is the whole procedure. For any other coordinate, import `loadDelegatorConfig` from `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` and call `loadDelegatorConfig(undefined, cwd)` to confirm the layer parses — an unknown key fails immediately under `assertExactKeys`, and live runs in the same cwd read this file, so never write a broken one — then import `renderGuidanceDocument` and `renderWorkerGuidanceDocument` from `…/lib/guidance.ts` and render `guidance.md` plus each profile document.
-4. If clean, write the layer and re-load. `directive.ts --apply` does the write, the re-load, and the re-render in one step. Already-open runs pick the change up at their next open·revive (`guidance.md`) and at the next dispatch (`guidance-<profile>.md`).
+2. Attribute first. Import `loadDelegatorConfig` from `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` and call `loadDelegatorConfig(undefined, cwd)` from the repository root with `bun`. It returns the effective `config`, the `sources` that produced it (scope, canonical path, sha256), and `warnings`. A value you did not author usually comes from the user layer, and editing the project layer will not remove it.
+3. Validate the candidate layer by writing it and re-loading: an unknown key fails immediately under `assertExactKeys`, and live runs in the same cwd read this file, so never leave a broken one behind. A rejected value prints the loader's own `invalid_config` message — report it verbatim rather than paraphrasing.
+4. Re-load after the write and report the new effective value with its source. An already-open run picks the change up at its next spawn, not retroactively.
 
-Scenario A — adding a skill route:
+Scenario A — changing the ORCH's role or thinking level:
 
-1. Litmus first: what characteristic risk of that agent at that moment does this skill compensate? If you cannot answer in one sentence, do not add it (empty slots are design).
-2. Check whether the project layer already declares `skill_routing`. Declaring it anew replaces the user layer's routing entirely, so write the complete intended effective rule set inside the object.
-3. Author `intent` (why reach for it at this moment) and `trigger` (when) under `skill_routing.skills.<name>`. Do not probe installation state.
-4. Wire the rule into `skill_routing.rules`. Two shapes are accepted: the current `{ agent, moment, skills }` — orch moments `plan|authoring|settlement|reset`, worker moments `intake|report` — and the legacy `{ boundary, surface, skills, trigger?, profiles? }`, with boundaries `plan|authoring|dispatch|completion|settlement|reset` and surface `orch|worker`. Authored `intake`/`report` lower to `dispatch`/`completion` scoped to that profile at parse, so both shapes end up in the same effective vocabulary; `routes.ts` prints which shape each rule was authored in. Prefer the current shape for new rules, and keep a rule-level `trigger` or a `profiles` scope in the legacy shape when you need one.
-5. Validate, preview, then write per the common procedure.
+The orchestrator profile carries `role` and `thinking` and nothing else. Change it, re-load, and tell the user the change reaches the ORCH only at the next open or revive — a live ORCH keeps the identity it was born with.
 
-Scenario B — correcting a profile's intent/directive:
+Scenario B — adding or correcting a worker profile:
 
-Keep the selection don'ts ("do not assign: …") in `intent` and the execution don'ts plus the named signature failure mode in `directive`. Polish the sentences freely, but preserve those two structures, then validate and write per the common procedure.
+Declare `role` on any profile name the earlier layers do not already define. Keep the three shipped names (`default`, `task`, `slow`) unless the user asks for another; a profile name is what an assignment's `profile` field selects, so renaming one silently orphans assignments that name the old one.
 
-Scenario C — setting the orchestrator directive:
+Scenario C — moving the storage root:
 
-The orchestrator profile carries `role`, `thinking`, and `directive`, and nothing else: `intent` and
-`guidance` are worker-profile selection criteria and are rejected here. Keep the directive to one
-bounded line of execution guidance — how this ORCH should spend its own judgment — never scope,
-authority, or a completion condition. Preview with `directive.ts <cwd> --set "<text>"`, read the
-rendered section, then repeat with `--apply`. A rejected value prints the parser's own message and
-writes nothing.
+`storage.root` must be an absolute path. A run layer may not relocate its own storage root, and moving the root for a cwd does not move existing runs: the index and the run directories stay where they were written.
 
 ## Out of scope for v0 (add when needed)
 
-Run-layer override procedure, route removal/audit procedure, storage migration.
+Run-layer override procedure, storage migration, role catalogue discovery.

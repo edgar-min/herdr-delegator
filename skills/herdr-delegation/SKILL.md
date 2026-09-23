@@ -35,19 +35,18 @@ what the protocol needs and what the new track cannot learn on its own:
 | `forbidden` | Track-specific prohibitions and every action the user reserves in this track |
 | `budget` | Tokens, minutes, doorbell policy |
 
-Everything true of every track belongs in the ORCH's protocol document, not in the
-mandate. The one test for every sentence: **would it be true in another track?** If
-yes, leave it out. `references/mandate.example.json` is a complete mandate written
-under this rule.
+Everything true of every track belongs in the common contract (`herdr://contract`) or
+in the role skills (`herdr-orch`, `herdr-worker`), not in the mandate. The one test for
+every sentence: **would it be true in another track?** If yes, leave it out.
+`references/mandate.example.json` is a complete mandate written under this rule.
 
 ## How the ORCH receives it
 
-The born ORCH reads `mandate.json` and its `protocol-orch.md`, then executes
-`entry.protocol` verbatim from the server's protocol resource, whose URI its first prompt
-names, with `entry.utterance` as its input. That execution is permission to collect, read
-and draft. It is not permission to implement, dispatch or close: the ORCH protocol stops
-at that transition until the user records a decision. The interview with the user
-therefore happens **in the new track**, through the protocol — never here.
+The born ORCH's first prompt names its `mandate.json` and the skill `herdr-orch`; that
+skill's `references/first-turn.md` makes it execute `entry.protocol` verbatim from
+`herdr://protocol/<protocol>` with `entry.utterance` as its input and stops it at the
+continuation guard. The interview with the user happens **in the new track**, through
+the protocol — never here.
 
 ## Distill, do not interview
 
@@ -63,8 +62,9 @@ about to hand away; an interview held here leaves its context here.
    user gave, or exactly `"unstated"`. Never supply a reason yourself.
 3. **Reconcile every reservation.** Every approval, lifecycle, remote-change and
    acceptance authority the user reserved in the conversation appears in `forbidden`
-   unless `protocol-orch.md` already names it as reserved to the user in every track.
-   Deleting a reservation is not migrating it.
+   unless the MCP resource `herdr://contract` §Reserved to the user already names it.
+   Read that section from the server the track will be opened on. Deleting a reservation
+   is not migrating it.
 4. **One unit per item, coordinate inline.** Each judged string is one English
    sentence that stands on its own: no pronoun pointing outside it, no "above", one
    place or one claim, and every reference carries its path, section, commit, URL or
@@ -89,19 +89,22 @@ Run the check on the draft, from the project the track will run in:
     bun skills/herdr-delegation/scripts/mandate-check.ts <draft.json> --cwd <project dir>
 
 Its deterministic half validates the schema, refuses an `entry.protocol` that
-`protocols/UPSTREAM.json` does not pin, enforces the structural gate conjuncts
-(`preview` needs a bound open item with at least two candidates, `elicit` needs at
-least one substrate item), flags judged units that break the one-unit rule, and
-refuses a substrate path that does not exist where the track will run. Its judged
-half asks a Jev judge four questions on a state that omits `entry`: which protocol's
-gate holds (a disagreement is shown with both readings and never resolved silently,
-and a judge at or under 0.35 confidence leaves your choice standing), whether a
-settled decision or forbidden item contradicts each `done_when`, whether each
-substrate sentence still describes what its coordinate holds, and whether any judged
-unit is universal rather than track-specific. Without a Jev key the judged half
-prints `ok semantic: skipped (no Jev key)` and the deterministic verdict stands;
-`--no-semantic` skips it explicitly and `--semantic-only` runs it alone. Fix and
-rerun until it exits 0.
+`protocols/UPSTREAM.json` does not pin, verifies `protocols/contract.md` against
+`protocols/CONTRACT.json`, prints that contract's sha256 and the sha256 of the installed
+`skills/herdr-orch/SKILL.md`, enforces the structural gate conjuncts (`preview` needs a
+bound open item with at least two candidates, `elicit` needs at least one substrate
+item), flags judged units that break the one-unit rule, and refuses a substrate path
+that does not exist where the track will run. Its judged half asks a Jev judge four
+questions on a state that omits `entry` and carries the exact `herdr://contract`
+§Reserved to the user text as `universal_reservations`: which protocol's gate holds (a
+disagreement is shown with both readings and never resolved silently, and a judge at or
+under 0.35 confidence leaves your choice standing), whether a settled decision or
+forbidden item contradicts each `done_when`, whether each substrate sentence still
+describes what its coordinate holds, and whether any judged unit is universal rather
+than track-specific.
+Without a Jev key the judged half prints `ok semantic: skipped (no Jev key)` and the
+deterministic verdict stands; `--no-semantic` skips it explicitly, and
+`--semantic-only` runs it alone. Fix and rerun until the check exits 0.
 
 ## Show, then open once
 

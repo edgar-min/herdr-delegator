@@ -15,6 +15,7 @@ import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ChoiceAnswer, ChoiceQuestion, JevResponse } from "../../../mcp/jev/client";
+import { buildJudgedState, readInstalledSkillSha, readUniversalContract } from "./mandate-contract";
 
 const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGE_ROOT = path.resolve(SKILL_DIR, "../..");
@@ -73,6 +74,9 @@ catch (error: unknown) { usage(`${mandatePath} is not readable JSON: ${error ins
 let schema: Record<string, unknown>;
 try { schema = JSON.parse(readFileSync(SCHEMA_PATH, "utf8")) as Record<string, unknown>; }
 catch (error: unknown) { usage(`${SCHEMA_PATH} is not readable JSON: ${error instanceof Error ? error.message : String(error)}`); }
+const universalContract = readUniversalContract(PACKAGE_ROOT);
+lines.push(universalContract.line);
+lines.push(readInstalledSkillSha(PACKAGE_ROOT, path.join("skills", "herdr-orch", "SKILL.md")));
 
 // --- (a) schema -------------------------------------------------------------
 // ajv resolves from the plugin tree in a normal install; the hand-written
@@ -299,7 +303,7 @@ function probabilityText(answer: ChoiceAnswer): string {
 
 const quote = (text: string): string => `"${text.length > 110 ? `${text.slice(0, 107)}…` : text}"`;
 
-/** State and questions: the mandate WITHOUT `entry`, plus the schema's own definitions. */
+/** State and questions: the mandate WITHOUT `entry`, plus definitions and universal reservations. */
 function gateRequest(): { state: unknown; questions: Record<string, Choice>; targets: Record<string, string> } {
   const { gates, precedence } = protocolGates();
   const properties = isRecord(schema.properties) ? schema.properties : {};
@@ -314,9 +318,7 @@ function gateRequest(): { state: unknown; questions: Record<string, Choice>; tar
   // creator's answer (entry.protocol, entry.reason). The first measurement
   // over the example, with the utterance removed too, routed "none" over
   // "sketch" twice: the form to be made lived only in the utterance.
-  const { entry: creatorEntry, ...withoutEntry } = document;
-  const utterance = isRecord(creatorEntry) && typeof creatorEntry.utterance === "string" ? creatorEntry.utterance : "";
-  const state = { definitions, mandate: { ...withoutEntry, invocation: utterance } };
+  const state = buildJudgedState(document, definitions, universalContract.universalReservations);
 
   const questions: Record<string, Choice> = {};
   const targets: Record<string, string> = {};

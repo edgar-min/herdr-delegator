@@ -84,10 +84,6 @@
         },
         "thinking": {
           "$ref": "#/$defs/thinking"
-        },
-        "directive": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "ORCH-facing execution guidance rendered at the top of guidance.md. Advisory only; never changes authority, scope, or completion conditions."
         }
       }
     },
@@ -100,18 +96,6 @@
         },
         "thinking": {
           "$ref": "#/$defs/thinking"
-        },
-        "guidance": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "Legacy ORCH-facing profile-selection criteria for this worker profile; rendered only when intent is absent. Advisory only. Required nowhere; when a layer first defines a profile name it must still declare role (code-enforced)."
-        },
-        "intent": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "ORCH-facing profile-selection criteria for this worker profile. Advisory only; never resolves a role, model, authority, or assignment contract."
-        },
-        "directive": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "Worker-facing execution guidance rendered only to a lane selected with this profile. Advisory only; never changes the assignment contract."
         }
       }
     },
@@ -121,20 +105,6 @@
       "maxItems": 8,
       "items": {
         "$ref": "#/$defs/skillName"
-      }
-    },
-    "skillMetadata": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "intent": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "Optional advisory prose describing what this skill does wherever the skill is named."
-        },
-        "trigger": {
-          "$ref": "#/$defs/guidanceText",
-          "description": "Optional advisory prose describing when this skill applies; rendered only to the ORCH."
-        }
       }
     },
     "agentRule": {
@@ -262,17 +232,6 @@
             ]
           },
           "description": "Advisory routes in agent/moment or legacy boundary/surface form. Routes never gate settlement, lifecycle, or authority."
-        },
-        "skills": {
-          "type": "object",
-          "maxProperties": 64,
-          "propertyNames": {
-            "$ref": "#/$defs/skillName"
-          },
-          "additionalProperties": {
-            "$ref": "#/$defs/skillMetadata"
-          },
-          "description": "Optional per-skill authored intent and trigger metadata; no installed-presence claim."
         }
       }
     }

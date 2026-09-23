@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "herdr-delegator/mandate/2",
   "title": "Mandate",
-  "description": "A mandate is the invocation of one planning protocol in a new track. It carries only what that protocol needs and what the new track cannot learn on its own: the purpose, what the user already settled, where the user's externalized thinking lives, what is still open, the exact invocation, and how the track is known to be done. Everything true of every track belongs in the ORCH skill, not here. Judged units: every string in purpose, settled[].decision, substrate[], open[].item, done_when[], forbidden[] and entry.utterance is one English sentence that a judge classifies on its own — no pronoun pointing outside the item, no 'above', no 'the same', one place or one claim per item, and every reference carries its coordinate inline (a path, a section, a commit, a URL, a run document). settled[].source, settled[].reason, open[].candidates[] and budget are structural data, not judged units. Executing the entry protocol is permission to collect, read and draft; it is never permission to implement, dispatch or close — that transition waits for the user's recorded decision, and the ORCH skill enforces it.",
+  "description": "A mandate is the invocation of one planning protocol in a new track. It carries only what that protocol needs and what the new track cannot learn on its own: the purpose, what the user already settled, where the user's externalized thinking lives, what is still open, the exact invocation, and how the track is known to be done. Everything true of every track belongs in herdr://contract or the role skills, not here. Judged units: every string in purpose, settled[].decision, substrate[], open[].item, done_when[], forbidden[] and entry.utterance is one English sentence that a judge classifies on its own — no pronoun pointing outside the item, no 'above', no 'the same', one place or one claim per item, and every reference carries its coordinate inline (a path, a section, a commit, a URL, a run document). settled[].source, settled[].reason, open[].candidates[] and budget are structural data, not judged units. Executing the entry protocol is permission to collect, read and draft; it is never permission to implement, dispatch or close — that transition waits for the user's recorded decision, and the ORCH skill enforces it.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -40,7 +40,7 @@
         "utterance",
         "reason"
       ],
-      "description": "The one protocol the ORCH runs on its first turn, and the exact input it is invoked with. The creator proposes it; the mandate check validates this document against this schema deterministically, then asks a judge the same routing question on a state that omits this field and reports disagreement as a blocker; the ORCH executes it verbatim from protocols/<protocol>/upstream/SKILL.md. The deterministic check refuses a protocol that protocols/UPSTREAM.json does not pin, so enum membership never stands for availability.",
+      "description": "The one protocol the ORCH runs on its first turn, and the exact input it is invoked with. The creator proposes it; the mandate check validates this document against this schema deterministically, then asks a judge the same routing question on a state that omits this field and reports disagreement as a blocker; the ORCH executes it verbatim from the server's MCP resource herdr://protocol/<protocol>. The deterministic check refuses a protocol that protocols/UPSTREAM.json does not pin, so enum membership never stands for availability.",
       "properties": {
         "protocol": {
           "type": "string",
@@ -160,7 +160,7 @@
         "minLength": 1,
         "maxLength": 400
       },
-      "description": "Track-specific prohibitions and every action the user reserves in this track: stage progression, lifecycle, remote changes, acceptance. A rule true of every track is carried by the ORCH skill and may be omitted only if that skill states it; the creator reconciles every reservation the user made against this list before open."
+      "description": "Track-specific prohibitions and every action the user reserves in this track: stage progression, lifecycle, remote changes, acceptance. A rule true of every track is carried by herdr://contract §Reserved to the user and may be omitted only if that section states it; the creator reconciles every reservation the user made against this list before open."
     },
     "budget": {
       "type": "object",

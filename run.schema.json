@@ -4,7 +4,7 @@
   "title": "Herdr Delegator Run Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "track_id", "run_id", "cwd", "run_path", "created_at"],
+  "required": ["version", "track_id", "run_id", "cwd", "run_path", "created_at", "channels", "skills"],
   "properties": {
     "version": {
       "const": 1
@@ -40,6 +40,36 @@
           "$ref": "#/$defs/absolutePath"
         }
       }
+    },
+    "channels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assignments", "reports", "inter_run"],
+      "description": "The run's own document grammar, as path rules relative to the run directory. Written at open so no reader has to infer it from a prompt.",
+      "properties": {
+        "assignments": {
+          "const": "a2a/assignments/<id>.md"
+        },
+        "reports": {
+          "const": "a2a/<lane>-report.md"
+        },
+        "inter_run": {
+          "const": "a2a/orch-to-<track>_<run>.md"
+        }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "description": "sha256 of each role skill's SKILL.md as installed at this run's birth; the sessions this run spawns are pointed at those skills by name.",
+      "required": ["herdr-orch", "herdr-worker"],
+      "propertyNames": {
+        "$ref": "#/$defs/skillName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/sha256"
+      }
     }
   },
   "$defs": {
@@ -50,6 +80,14 @@
     "absolutePath": {
       "type": "string",
       "pattern": "^/"
+    },
+    "skillName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     }
   }
 }

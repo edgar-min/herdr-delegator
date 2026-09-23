@@ -10,18 +10,15 @@
   "worker_profiles": {
     "default": {
       "role": "@default",
-      "thinking": "inherit",
-      "guidance": "meticulous language work: documents, prose, review passes"
+      "thinking": "inherit"
     },
     "task": {
       "role": "@task",
-      "thinking": "inherit",
-      "guidance": "code implementation under a clear specification"
+      "thinking": "inherit"
     },
     "slow": {
       "role": "@slow",
-      "thinking": "inherit",
-      "guidance": "long deliberate reasoning; also the profile budget auditors run on"
+      "thinking": "inherit"
     }
   },
   "skill_routing": {
