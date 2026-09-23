@@ -367,8 +367,8 @@ async function readSuccessionDocument(documentPath: string): Promise<string | un
  * The gate. It fires only when the canonical document exists as a regular file
  * and carries the canonical section, and it persists nothing: a passed gate is
  * returned as an observation and deliberately not written into the registry,
- * because "the gate passed" recorded as state is the same category SRT-004 and
- * COM-004 forbid — a route, or a check, replayed later as proof.
+ * because "the gate passed" recorded as state is the same category COM-004
+ * forbids — a check replayed later as proof.
  */
 export async function assertSuccessionClaims(runPath: string, cwd: string): Promise<SuccessionObservation | undefined> {
   const documentPath = successionDocumentPath(runPath);

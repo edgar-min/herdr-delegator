@@ -92,7 +92,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session identity verification, resume, focus, anchor recreation, and guarded close |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/close operations consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
-| `mcp/resources.ts` | pinned read-only document resources: the upstream protocol set and `herdr://contract`, each refused rather than served when its bytes leave its pin |
+| `mcp/resources.ts` | pinned read-only document resources: the upstream protocol set, `herdr-delegator://contract`, and `herdr-delegator://worker`, each refused rather than served when its bytes leave its pin |
 | `mcp/budget.ts` | metering, clamp parsing and token-axis classification, the clamp write helper, covenant math, audit document rendering, verdict parsing, the emergency carve-out's admissibility predicate and document-persisted debt |
 | `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates, and the force-close approval reader |
 | `mcp/succession.ts` | canonical succession coordinate, inherited-claim grammar and parser, sha-freshness gate, read-only HEAD observation |
@@ -155,9 +155,9 @@ The model never supplies this path directly.
 
 `init` creates `run.json` and `a2a/` and nothing else; `open` adds `mandate.json`. A sibling reset also carries `plan.md` and `reset.json`. `plan.md`, `evidence.md`, assignment files, and reports otherwise exist only when authored — initialization creates no placeholders. No protocol or guidance document is rendered into a run, and no layout, reconcile, dispatch, or revival check requires one.
 
-`run.json` carries the run's own grammar so nothing has to be inferred from a prompt: `channels` states the assignment, report and inter-run path rules (`a2a/assignments/<id>.md`, `a2a/<lane>-report.md`, `a2a/orch-to-<track>_<run>.md`), and `skills` records the sha256 of each role skill's `SKILL.md` as installed at that run's birth.
+`run.json` carries the run's own grammar so nothing has to be inferred from a prompt: `channels` states the assignment, report and inter-run path rules (`a2a/assignments/<id>.md`, `a2a/<lane>-report.md`, `a2a/orch-to-<track>_<run>.md`), and `skills` records the birth-time sha256 of the four installed `SKILL.md` files: `herdr-orch`, `herdr-worker-default`, `herdr-worker-slow`, and `herdr-worker-task`.
 
-The rules a born session works by live outside the run. `skills/herdr-orch/SKILL.md` is the ORCH's routing table — planning, dispatch, judgment, settlement, recovery — and the ORCH's first prompt points at it as `skill://herdr-orch`, naming only the mandate besides. `skills/herdr-worker/SKILL.md` is the worker's, and the dispatch pointer names it with the lane's profile. What both readers share — the authority index, the reservations kept to the user, and the assignment and settlement grammar — is `protocols/contract.md`, served by the MCP server as the resource `herdr://contract` and pinned by `protocols/CONTRACT.json`; a document that does not match its pin is refused rather than served.
+The rules a born session works by live outside the run. The ORCH's first prompt points at `skill://herdr-orch`, naming only the mandate besides. The worker dispatch pointer names `skill://herdr-worker-<profile>`; that profile skill carries the whole worker contract for its profile and names its own references, and no common worker skill remains to be read. What both roles share — the authority index, the reservations kept to the user, and the assignment and settlement grammar — is `protocols/contract.md`, served as the MCP resource `herdr-delegator://contract` and pinned by `protocols/CONTRACT.json`; a document that does not match its pin is refused rather than served.
 
 `delegation.json` is the minimal responsibility/assignment routing authority. `herdr-workers.json` remains the lifecycle identity/session/workspace authority. Both and their locks are tool-owned, mode-0600 control-plane files.
 
@@ -261,11 +261,9 @@ There is no response action: a worker is answered by an `[ORCH Response]` append
 
 Every action also includes `track_id` and `run_id`. Strict discriminated schemas reject extra or action-inappropriate fields.
 
-### Advisory skill routes
+### Role and profile skill references
 
-Configuration may declare `skill_routing.rules`. No installed-presence detection of any kind exists (no lockfile lookup, no SKILL.md disk walk) — a missing skill is a reader-side no-op and skill bodies resolve natively via `skill://`. `rules` accepts two shapes: legacy `boundary` × `surface` rules (optional rule-level `trigger` and `profiles`) parse unchanged, and the newer `{ agent, moment, skills }` shape lowers at parse time into the same internal vocabulary — orch moments `plan|authoring|settlement|reset` are existing boundary names, and a profile agent's `intake`/`report` lower to worker `dispatch`/`completion` scoped to that profile — so resolvers and every delivery point keep one shape.
-
-Routes are delivered as bounded `skill_routes` fields on tool results and as one advisory clause on the worker dispatch pointer. Nothing renders into the run directory: the configuration's former guidance documents and the per-skill `intent`/`trigger` metadata that fed them are retired, and a layer still carrying `skill_routing.skills`, `orchestrator.directive`, or a worker profile's `guidance`/`intent`/`directive` loads with a warning naming the coordinate instead of failing.
+No configuration selects the skills a session reads. Each role and profile skill names its own references, and the dispatch pointer selects the profile skill directly. No skill-route fields or clauses are delivered in MCP results or worker prompts, and no guidance document is rendered into the run directory. Legacy configuration carrying removed routing or profile guidance keys loads through the retired-key warning path and ignores those keys.
 
 ## State and transitions
 

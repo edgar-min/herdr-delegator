@@ -17,7 +17,7 @@ This skill covers only the current project's config. Installation belongs to the
 
 ## What — fields and where they land
 
-Config decides how sessions are launched and where runs are stored. It renders no document: a run directory holds `mandate.json`, `run.json` and `a2a/` only, and the rules an ORCH or worker works by live in the role skills `herdr-orch` and `herdr-worker` and in the `herdr://contract` resource.
+Config decides how sessions are launched and where runs are stored. It renders no document: a run directory holds `mandate.json`, `run.json` and `a2a/` only, and the rules an ORCH or worker works by live in the role skill `herdr-orch`, the profile skills `herdr-worker-default`, `herdr-worker-slow`, and `herdr-worker-task`, and the resources `herdr-delegator://contract` and `herdr-delegator://worker`.
 
 | config coordinate | lands in | timing |
 | --- | --- | --- |
@@ -35,8 +35,8 @@ There is no preview document to render and no script to run: the loader itself i
 
 1. The default edit target is project `<repo>/.omp/herdr-delegator.json`. Observe the user and run layers, but do not write them unless the user explicitly names that layer.
 2. Attribute first. Import `loadDelegatorConfig` from `io.github.edgar-min.herdr-delegator/extensions/lib/config.ts` and call `loadDelegatorConfig(undefined, cwd)` from the repository root with `bun`. It returns the effective `config`, the `sources` that produced it (scope, canonical path, sha256), and `warnings`. A value you did not author usually comes from the user layer, and editing the project layer will not remove it.
-3. Validate the candidate layer by writing it and re-loading: an unknown key fails immediately under `assertExactKeys`, and live runs in the same cwd read this file, so never leave a broken one behind. A rejected value prints the loader's own `invalid_config` message — report it verbatim rather than paraphrasing.
-4. Re-load after the write and report the new effective value with its source. An already-open run picks the change up at its next spawn, not retroactively.
+3. Before writing any real layer, create an isolated proposed-config root containing the candidate layer in the same relative position, then run the real `loadDelegatorConfig` against that isolated root. An unknown key fails under `assertExactKeys`; report a rejected value with the loader's exact `invalid_config` message. Never validate by first writing the candidate into a live layer.
+4. Only after isolated validation succeeds, write the intended real layer, re-load from the project, and report the new effective value with its source. An already-open run picks the change up at its next spawn, not retroactively.
 
 Scenario A — changing the ORCH's role or thinking level:
 

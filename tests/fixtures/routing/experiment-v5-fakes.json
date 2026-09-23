@@ -1,0 +1,87 @@
+{
+  "question": {
+    "type": "choice",
+    "instructions": {
+      "ask": "Which executor is the most suitable to achieve this assignment's goal: the ORCH itself, a one-shot host subagent, or a persistent responsibility lane?",
+      "note": "An assignment exists, so the ORCH already chose to delegate; answering orch-self means this assignment should not have been written and the ORCH should do the work in its own session instead. Judge the work the goal demands, not the author who wrote the goal. Use delegation_rules and definitions.",
+      "answer_with": "the most suitable executor"
+    },
+    "criteria": {
+      "orch-self": "The result is a decision, a direction, a rejected alternative, an assignment, `plan.md`, an `[ORCH Response]`, an acceptance, a guarded MCP call, or a reply to the user — or — The problem needs a capability the cheaper minds lack, or a small experiment would settle direction more cheaply than an assignment plus its failed attempts and verification",
+      "host-subagent": "The work is one call's worth of measurement or transcription with a table as its result: run a harness and return pass/fail, compress a report into a completion-condition table, re-measure coordinates, cross-check code against a claim, reproduce a worker's claim in a separate temporary root — or — The work is mechanical and bounded but you want it on a lane for parallelism, or to avoid settling who owns the files",
+      "responsibility-lane": "The work produces or changes project artifacts, or reviews them, under a specification mature enough for a profile, inside ownership that is clear, and a later assignment on the same responsibility is plausible"
+    }
+  },
+  "fakes": {
+    "F-orch (expect orch-self)": {
+      "goal": "The user has asked whether the track should keep the adversarial review lane or drop it for the remaining three assignments, and wants an answer in this conversation before anything else is dispatched. Weigh the two options against plan.md decisions D-01 through D-13, the mandate's forbidden list, and the budget state the last tool result reported, choose one, and record the choice as a D-numbered entry in plan.md with the ground. If the choice depends on a fact the run documents do not settle, name that fact and ask the user rather than guessing.",
+      "write_ownership": [
+        "plan.md in the run directory"
+      ],
+      "user_boundaries": [
+        "Do not dispatch anything before the user has seen the answer."
+      ],
+      "dependencies": [
+        "None."
+      ]
+    },
+    "F-sub (expect host-subagent)": {
+      "goal": "Re-measure the claims in a2a/w3-report.md lines 575-595 without editing anything: from a fresh copy of the working tree in a temporary root, run `bun test tests/worker-resource.test.ts`, `bun run check`, and `shasum -a 256 protocols/worker.md`, and return one table with the command, the exit code, the pass/fail counts, and the hash, then delete the temporary root. No judgment, no fixes, no report beyond the table.",
+      "write_ownership": [
+        "Nothing in the project; a temporary root only"
+      ],
+      "user_boundaries": [
+        "Do not edit, stage, or commit."
+      ],
+      "dependencies": [
+        "None."
+      ]
+    },
+    "F-lane (expect responsibility-lane)": {
+      "goal": "Implement the `herdr_track close` guard that refuses to close a track while any lane still holds an unsettled completion block: add the check in mcp/tools.ts beside the existing close preconditions, return the lane ids and line numbers in the refusal, cover it with a test in tests/opening-flow.test.ts using fixture reports, and document the new refusal code in docs/SPEC.md. A later assignment on this responsibility will extend the same guard to worker close.",
+      "write_ownership": [
+        "mcp/tools.ts",
+        "tests/opening-flow.test.ts",
+        "docs/SPEC.md"
+      ],
+      "user_boundaries": [
+        "Do not commit."
+      ],
+      "dependencies": [
+        "None."
+      ]
+    }
+  },
+  "results": {
+    "F-orch (expect orch-self)": {
+      "type": "choice",
+      "choice": "orch-self",
+      "confidence": 0.96,
+      "probabilities": {
+        "host-subagent": 0,
+        "responsibility-lane": 0.03,
+        "orch-self": 0.97
+      }
+    },
+    "F-sub (expect host-subagent)": {
+      "type": "choice",
+      "choice": "host-subagent",
+      "confidence": 1,
+      "probabilities": {
+        "responsibility-lane": 0,
+        "host-subagent": 1,
+        "orch-self": 0
+      }
+    },
+    "F-lane (expect responsibility-lane)": {
+      "type": "choice",
+      "choice": "responsibility-lane",
+      "confidence": 1,
+      "probabilities": {
+        "orch-self": 0,
+        "responsibility-lane": 1,
+        "host-subagent": 0
+      }
+    }
+  }
+}

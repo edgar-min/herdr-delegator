@@ -68,12 +68,13 @@ describe("assignmentDispatchPointer", () => {
     artifactPath: "/runs/t1/r1/a2a/assignments/A-001.md",
     instructionsSha256: "b".repeat(64),
     reportPath: "/runs/t1/r1/a2a/w2-report.md",
-    routes: [],
   };
 
-  test("routes the worker through its skill and names the profile", () => {
+  test("routes a task worker through its profile skill, with no bare worker skill left to read", () => {
     const pointer = assignmentDispatchPointer({ ...base, profile: "task" });
-    expect(pointer).toContain("Read skill://herdr-worker and carry out its routing; your profile is task.");
+    expect(pointer).toContain("skill://herdr-worker-task");
+    expect(pointer).not.toContain("skill://herdr-worker ");
+    expect(pointer).not.toContain("skill://herdr-worker.");
     expect(pointer).toContain("instructions /runs/t1/r1/a2a/assignments/A-001.md sha256=");
     expect(pointer).toContain("Append [Assignment Completion: A-001] to /runs/t1/r1/a2a/w2-report.md and remain idle.");
     expect(pointer).toContain('herdr_message {action:"wake_orch"}');
@@ -81,25 +82,48 @@ describe("assignmentDispatchPointer", () => {
     expect(pointer).not.toContain("guidance");
   });
 
-  test("drops only the profile clause when the artifact profile is unreadable", () => {
-    expect(assignmentDispatchPointer(base)).toContain("Read skill://herdr-worker and carry out its routing. Append");
+  test("resolves an unreadable profile from frontmatter rather than choosing another skill", () => {
+    const pointer = assignmentDispatchPointer(base);
+    expect(pointer).toContain("profile from the assignment frontmatter");
+    expect(pointer).toContain("skill://herdr-worker-<profile>");
+    expect(pointer).not.toContain("skill://herdr-worker ");
+    expect(pointer).not.toContain("skill://herdr-worker.");
   });
 });
 
 describe("roleSkillDigests", () => {
-  test("hashes the exact installed SKILL.md bytes", async () => {
-    const orch = "# herdr-orch\n\nrouting table\n";
-    const worker = "# herdr-worker\n\nrouting table\n";
-    const root = await fixtureSkills({ "herdr-orch": orch, "herdr-worker": worker });
-    expect(await roleSkillDigests(root)).toEqual({
-      "herdr-orch": sha256(Buffer.from(orch)),
-      "herdr-worker": sha256(Buffer.from(worker)),
-    });
+  test("hashes the exact installed SKILL.md bytes of the ORCH and every profile skill", async () => {
+    const bodies = {
+      "herdr-orch": "# herdr-orch\n\nrouting table\n",
+      "herdr-worker-default": "# default profile\n",
+      "herdr-worker-slow": "# slow profile\n",
+      "herdr-worker-task": "# task profile\n",
+    };
+    const root = await fixtureSkills(bodies);
+    const digests = await roleSkillDigests(root);
+    expect(Object.keys(digests).sort()).toEqual(["herdr-orch", "herdr-worker-default", "herdr-worker-slow", "herdr-worker-task"]);
+    expect(digests).toEqual(Object.fromEntries(Object.entries(bodies).map(([name, body]) => [name, sha256(Buffer.from(body))])));
   });
 
-  test("refuses and names the missing path", async () => {
-    const root = await fixtureSkills({ "herdr-orch": "# herdr-orch\n" });
-    const missing = path.join(root, "skills", "herdr-worker", "SKILL.md");
+  test("pins no retired common worker skill", async () => {
+    expect([...ROLE_SKILL_NAMES]).not.toContain("herdr-worker");
+    const root = await fixtureSkills({
+      "herdr-orch": "# herdr-orch\n",
+      "herdr-worker": "# retired\n",
+      "herdr-worker-default": "# default profile\n",
+      "herdr-worker-slow": "# slow profile\n",
+      "herdr-worker-task": "# task profile\n",
+    });
+    expect(Object.keys(await roleSkillDigests(root))).not.toContain("herdr-worker");
+  });
+
+  test("refuses a missing profile skill directory by name", async () => {
+    const root = await fixtureSkills({
+      "herdr-orch": "# herdr-orch\n",
+      "herdr-worker-default": "# default profile\n",
+      "herdr-worker-slow": "# slow profile\n",
+    });
+    const missing = path.join(root, "skills", "herdr-worker-task", "SKILL.md");
     expect(roleSkillDigests(root)).rejects.toThrow(missing);
   });
 });
@@ -145,9 +169,9 @@ describe("loadDelegatorConfig", () => {
     const { config, warnings } = await loadDelegatorConfig(undefined, cwd);
     expect(config.orchestrator).toEqual({ role: "@default", thinking: "inherit" });
     expect(config.worker_profiles.slow).toEqual({ role: "@default", thinking: "inherit" });
-    expect(config.skill_routing).toEqual({ rules: [] });
+    expect(Object.hasOwn(config, "skill_routing")).toBe(false);
     const layerPath = path.join(cwd, ".omp", "herdr-delegator.json");
-    for (const coordinate of ["orchestrator.directive", "worker_profiles.slow.intent", "worker_profiles.slow.guidance", "skill_routing.skills"]) {
+    for (const coordinate of ["orchestrator.directive", "worker_profiles.slow.intent", "worker_profiles.slow.guidance", "skill_routing"]) {
       expect(warnings).toContain(retiredConfigKeyWarning(`${layerPath}.${coordinate}`));
     }
   });

@@ -62,8 +62,8 @@
       "type": "object",
       "minProperties": 1,
       "maxProperties": 64,
-      "description": "sha256 of each role skill's SKILL.md as installed at this run's birth; the sessions this run spawns are pointed at those skills by name.",
-      "required": ["herdr-orch", "herdr-worker"],
+      "description": "Birth-time sha256 pins for the four installed role skills — herdr-orch and the default/slow/task worker profile SKILL.md files. A dispatched worker reads the profile skill named in its pointer; there is no common worker skill to read.",
+      "required": ["herdr-orch", "herdr-worker-default", "herdr-worker-slow", "herdr-worker-task"],
       "propertyNames": {
         "$ref": "#/$defs/skillName"
       },

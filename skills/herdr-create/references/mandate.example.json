@@ -4,8 +4,11 @@
   "language": "ko",
   "entry": {
     "protocol": "sketch",
-    "utterance": "Make concrete variants of the next new-track opening contract, covering the mandate form, creator contract, and ORCH first-turn rules, for the user to recognize, mark, and revise rather than select as an imminent implementation direction; treat settled[0] through settled[17] as binding, use substrate[0] through substrate[9] at their inline coordinates as prior material, keep open[1] through open[3] unresolved, and make open[0], the placement of first-turn rules, the continuation guard, and universal user reservations, the focus of this sketch round.",
-    "reason": "A contract form must be made, its placement commitments remain underdetermined, and the user can recognize and revise a concrete proposal better than specify the final form in advance."
+    "utterance": "Make concrete variants of the next new-track opening contract, covering the mandate form, creator contract, and ORCH first-turn rules, for the user to recognize, mark, and revise rather than select as an imminent implementation direction; treat settled[0] through settled[17] as binding, use substrate[0] through substrate[9] at their inline coordinates as prior material, keep the unbound open items unresolved, and make the bound open item — the placement of first-turn rules, the continuation guard, and universal user reservations — the focus of this sketch round.",
+    "reason": "A contract form must be made, its placement commitments remain underdetermined, and the user can recognize and revise a concrete proposal better than specify the final form in advance.",
+    "binds": [
+      "open[0]"
+    ]
   },
   "settled": [
     {
@@ -64,7 +67,7 @@
       "reason": "사용자가 v6 계약 형태를 인정했다."
     },
     {
-      "decision": "프로토콜 원문은 **MCP resource**(`herdr://protocol/<name>`, references 포함)로 서버가 제공하고 탄생 프롬프트가 `mcp://` URI를 명시한다.",
+      "decision": "이 플러그인의 프로토콜 원문은 `mcp/resources.ts`가 핀으로 검증해 `herdr-delegator://protocol/<name>` 리소스(references 포함)로 제공하고, 탄생 프롬프트는 그 리소스 URI를 `mcp://` 읽기 형식으로 명시한다.",
       "source": "plan.md D-12",
       "reason": "사용자: \"리소스를 고려했다. 부채 생기는 방식 지양.\""
     },
@@ -104,12 +107,12 @@
     "skills/herdr-create/references/mandate.schema.json defines mandate version 2, its protocol gates, and its judged-unit constraints.",
     "skills/herdr-create/references/mandate.example.json is this track's own mandate rewritten under the recognized creator rules.",
     "skills/herdr-orch/references/first-turn.md contains the ORCH first-turn procedure and continuation guard.",
-    "skills/herdr-create/scripts/mandate-check.ts implements the deterministic and Jev semantic gates for mandate drafts.",
+    "mcp/mandate-gate.ts implements the deterministic and Jev semantic gates that herdr_track check and herdr_track open run over a mandate.",
     "mcp/resources.ts implements pinned MCP resources for upstream protocol documents.",
     "protocols/UPSTREAM.json pins the five imported planning protocols and their source-file hashes at upstream commit b87b2e98435aa2515402e207e0537f3c943d77f8.",
     "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/handoff-next-track.md sections 2 and 4 record the measured opening-flow facts and the work transferred to sb-dogfood-2/r1.",
     "/Users/jsmin/.local/share/herdr-delegator/runs/inquire-align/r1/a2a/w1-report.md findings F-01 through F-10 are the adversarial review of mandate form version 2.",
-    "protocols/contract.md section 'Reserved to the user' contains the universal user reservations served as herdr://contract."
+    "protocols/contract.md section 'Reserved to the user' contains the universal user reservations served as herdr-delegator://contract."
   ],
   "open": [
     {
@@ -117,7 +120,7 @@
       "candidates": [
         "Keep them in a server-rendered run document",
         "Move them into the herdr-orch role skill",
-        "Put shared rules in herdr://contract and role-specific rules in the herdr-orch skill"
+        "Put shared rules in herdr-delegator://contract and role-specific rules in the herdr-orch skill"
       ]
     },
     {
@@ -137,7 +140,7 @@
   "done_when": [
     "The sb/dogfood2 branch contains a commit with the user-recognized versions of skills/herdr-create/references/mandate.schema.json, skills/herdr-create/references/mandate.example.json, and skills/herdr-create/SKILL.md.",
     "/Users/jsmin/.local/share/herdr-delegator-sb-dogfood2/runs/sb-dogfood-2/r1/plan.md records the user's recognized decision as a D-numbered entry.",
-    "Running bun skills/herdr-create/scripts/mandate-check.ts skills/herdr-create/references/mandate.example.json --cwd /Users/jsmin/Projects/herdr-delegator-sb-dogfood2 prints PASSED and exits 0.",
+    "Calling herdr_track check on skills/herdr-create/references/mandate.example.json from /Users/jsmin/Projects/herdr-delegator-sb-dogfood2 returns the verdict PASSED.",
     "/Users/jsmin/.local/share/herdr-delegator-sb-dogfood2/runs/sb-dogfood-2/r1/handoff-next-track.md exists."
   ],
   "forbidden": [

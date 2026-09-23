@@ -6,8 +6,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, resolveSkillRoutes, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
-import type { SkillRoute, SkillRouteBoundary, SkillRouteSurface } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
+import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
 import { ContractError as LegacyContractError, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
@@ -18,6 +17,8 @@ import { ASSIGNMENT_REFERENCES_SECTION, BOUNDED_TOKEN_RE, DEFAULT_TIMEOUT_MS, MA
 import { admitEmergencyAdd, appendLedger, budgetAuditPath, budgetClampPath, budgetLedgerPath, carveOutClosed, clampFingerprint, clampReconcileValue, clampSchemaGuidance, clampTokensPinned, clampWriteLedgerLine, classifyClampTokens, clearOwedClampTokens, createEmergencyAudit, emergencyAuditPath, healClampTokens, meterRun, meteringLedgerLine, minutesStepCap, normalizeEmergencyClaim, normalizeJustification, orchPaneLabel, parseVerdict, policyFloor, projectApplied, readAuditDocument, readClamp, refreshApplied, releaseCondition, renderAuditInput, renderEmergencyAuditInput, requestedAxes, requiredClamp, scaffoldClamp, scanEmergencyAudits, scanEmergencyDebt, seedBudget, stepCap, usableAxes, writeClampMaxTokens, type AppliedAxes, type BudgetApprovalView, type ClampReading, type ClampTokenClass, type ClampWriteOutcome } from "./budget";
 import { assertNoAmbiguousWork, assertRevivalDocuments, readCloseApproval, readRebirthApproval, rebirthApprovalPath } from "./revival";
 import { assertSuccessionClaims } from "./succession";
+import { judgeRouting, type RoutingLane, type RoutingResult } from "./jev/routing";
+import { checkMandate } from "./mandate-gate";
 
 
 // ---------------------------------------------------------------------------
@@ -350,44 +351,6 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Advisory route lookup for one delivery point. The advisory channel must
- * never block control flow, so a failed lookup degrades to an empty route
- * set; the underlying configuration error still fails closed on every
- * mutating action that loads configuration as authority.
- *
- * `profile` is the delivery target's worker profile, passed only where the
- * delivery point has one. Without it, profile-scoped rules never match, so an
- * orchestrator-surface point keeps receiving exactly the unscoped rules.
- */
-async function advisorySkillRoutes(
-  runPath: string,
-  cwd: string,
-  boundaries: readonly SkillRouteBoundary[],
-  surface: SkillRouteSurface,
-  profile?: string,
-): Promise<SkillRoute[]> {
-  try {
-    return await resolveSkillRoutes(runPath, cwd, boundaries, surface, profile);
-  } catch {
-    return [];
-  }
-}
-
-
-export const SKILL_ROUTES_NOTE = "Before proceeding, read each routed skill that is installed (resolve the name via skill://<name> or the runtime's skill catalog) and apply it at its boundary. A missing skill is a no-op. Routes are advisory and never change scope, ownership, settlement, or completion grammar.";
-
-// Lockstep advisory fields for every result that carries routes.
-function skillRouteFields(routes: SkillRoute[]): { skill_routes?: SkillRoute[]; skill_routes_note?: string } {
-  return routes.length ? { skill_routes: routes, skill_routes_note: SKILL_ROUTES_NOTE } : {};
-}
-
-function skillRoutePointer(routes: SkillRoute[]): string {
-  if (!routes.length) return "";
-  const grouped = routes.map((route) => `${route.boundary}: ${route.skills.join(", ")}`).join("; ");
-  return ` Advisory skill routes — ${grouped}. ${SKILL_ROUTES_NOTE}`;
-}
-
-/**
  * The worker's first display surface. It names the full coordinate — A-001
  * exists in dozens of runs and only <track>/<run>/<id> tells them apart — the
  * artifact's label when it has one, and the role skill that carries every rule
@@ -404,12 +367,11 @@ export function assignmentDispatchPointer(fields: {
   instructionsSha256: string;
   profile?: string;
   reportPath: string;
-  routes: SkillRoute[];
 }): string {
   const routing = fields.profile
-    ? `Read skill://herdr-worker and carry out its routing; your profile is ${fields.profile}.`
-    : "Read skill://herdr-worker and carry out its routing.";
-  return `Assignment ${fields.assignmentId} (${fields.coordinate}${fields.label ? `, label ${fields.label}` : ""}); responsibility ${fields.responsibilityKey}; instructions ${fields.artifactPath} sha256=${fields.instructionsSha256}. ${routing} Append [Assignment Completion: ${fields.assignmentId}] to ${fields.reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per skill://herdr-worker.${skillRoutePointer(fields.routes)}`;
+    ? `Read skill://herdr-worker-${fields.profile} and carry out its routing; your profile is ${fields.profile}.`
+    : "Read the profile from the assignment frontmatter, then read skill://herdr-worker-<profile> and carry out its routing.";
+  return `Assignment ${fields.assignmentId} (${fields.coordinate}${fields.label ? `, label ${fields.label}` : ""}); responsibility ${fields.responsibilityKey}; instructions ${fields.artifactPath} sha256=${fields.instructionsSha256}. ${routing} Append [Assignment Completion: ${fields.assignmentId}] to ${fields.reportPath} and remain idle. After appending a completion block or an [ORCH Decision Request], call herdr_message {action:"wake_orch"} once per the worker skill's completion rules.`;
 }
 
 async function observeTokenUsage(lane: WorkerLaneRecord, observedAt: string): Promise<TokenUsageObservation | undefined> {
@@ -1654,6 +1616,48 @@ function machineFacts(registry: DelegationRegistry): string[] {
   return facts.slice(0, 64);
 }
 
+/** Read-only routing inputs; unavailable metadata must not change preflight eligibility. */
+async function advisoryAssignmentRouting(
+  store: DelegationStore,
+  registry: DelegationRegistry,
+  assignmentId: string,
+  responsibility: string,
+  laneReuse: boolean,
+  artifact?: AssignmentArtifact,
+): Promise<{ routing: RoutingResult; warnings?: string[] }> {
+  try {
+    const registeredArtifact = async (id: string): Promise<AssignmentArtifact> => {
+      const record = registry.assignments[id];
+      return (await store.assignmentFile(id, record.responsibility_key, record.instructions_sha256)).assignment;
+    };
+    const assignment = artifact ?? await registeredArtifact(assignmentId);
+    const lifecycle = await readRegistry(path.join(store.runPath, "a2a", "herdr-workers.json")).catch(() => undefined);
+    const profiles = new Map(Object.values(lifecycle?.workers ?? {}).map((worker) => [worker.worker_id, worker.selected_profile]));
+    const lanes: RoutingLane[] = await Promise.all(Object.values(registry.lanes).map(async (lane) => {
+      const completed = lane.last_completed_assignment_id ? await registeredArtifact(lane.last_completed_assignment_id) : undefined;
+      return {
+        worker_id: lane.worker_id,
+        responsibility_key: lane.responsibility_key,
+        profile: profiles.get(lane.worker_id) ?? completed?.profile ?? null,
+        state: lane.state,
+        last_completed_assignment_id: lane.last_completed_assignment_id ?? null,
+        last_completed_label: completed?.label ?? null,
+      };
+    }));
+    const routing = await judgeRouting({ cwd: store.cwd, assignment, lanes, resolved_lane: { responsibility_key: responsibility, lane_reuse: laneReuse } });
+    const warnings: string[] = [];
+    if (!("skipped" in routing)) {
+      for (const field of ["profile", "reuse"] as const) {
+        if (routing.agreement[field] === "disagrees") warnings.push(`Advisory routing ${field} disagrees: judge chose ${routing[field].choice} (confidence ${routing[field].confidence}); the ORCH's frontmatter and resolved lane stand.`);
+      }
+      if (routing.route.choice !== "undecided" && routing.route.choice !== "responsibility-lane") warnings.push(`Advisory routing route disagrees with lane delegation: judge chose ${routing.route.choice} (confidence ${routing.route.confidence}); the ORCH decides.`);
+    }
+    return { routing, ...(warnings.length ? { warnings } : {}) };
+  } catch {
+    return { routing: { skipped: "routing assignment or lane metadata unavailable" } };
+  }
+}
+
 export class CompositeTools {
   constructor(private readonly adapter: HerdrAdapter) {}
 
@@ -1661,16 +1665,20 @@ export class CompositeTools {
     const run = runRef(input);
     try {
       if (input.action === "open") return await this.openTrack(input, run);
+      if (input.action === "check") {
+        // Read-only and identity-free: a creator checks a draft before any run
+        // exists, so this action resolves no store, writes nothing, and reports
+        // a FAILED verdict as data rather than as an error.
+        const checked = await checkMandate(input.mandate, { cwd: input.cwd });
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "none", retryable: false, data: checked };
+      }
       if (input.action === "init") {
         // Attestation-gated, but identity-free: init records no ORCH identity
         // (friction 8a9dc4d2 — handoff init must never stamp the source
         // session as the target run's wake target).
         await loadFacts(this.adapter);
         const result = await initializeRun({ operation: "init_run", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd, reset_of: input.reset_of });
-        const initialized = await DelegationStore.resolve(input.track_id, input.run_id);
-        const boundaries: SkillRouteBoundary[] = input.reset_of ? ["plan", "authoring", "reset"] : ["plan", "authoring"];
-        const routes = await advisorySkillRoutes(initialized.runPath, initialized.cwd, boundaries, "orch");
-        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, ...skillRouteFields(routes), data: result };
+        return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: result };
       }
       const store = await DelegationStore.resolve(input.track_id, input.run_id);
       if (input.action === "inspect") {
@@ -1956,6 +1964,20 @@ export class CompositeTools {
     // rejected without spending an attestation round trip.
     const document = canonicalMandate(input.mandate);
     await assertEntryProtocolAvailable(input.mandate.entry.protocol);
+    // The same check `herdr_track check` runs, on the same document, before
+    // anything is laid out: an open is where a mandate becomes immutable, so a
+    // defect the creator could have read is refused here rather than inherited
+    // by the born ORCH. The judged half skips itself without a Jev key.
+    const checked = await checkMandate(input.mandate, { cwd: input.cwd });
+    if (checked.verdict === "FAILED") {
+      const failing = checked.lines.filter((line) => !line.ok);
+      throw new McpContractError(
+        "mandate_check_failed",
+        `The mandate fails its own check: ${failing.map((line) => `${line.rule}: ${line.detail}`).join(" | ")}`,
+        "validate",
+        "Correct the draft and re-run herdr_track check until the verdict is PASSED; nothing was laid out, and the same coordinate accepts the corrected mandate.",
+      );
+    }
     const mandateHash = sha256(document);
     const freshCoordinate = !(await runAlreadyInitialized(input.track_id, input.run_id, input.cwd));
     const creatorAttempt = await loadOpenCreator(this.adapter, freshCoordinate);
@@ -3070,14 +3092,11 @@ export class CompositeTools {
     // to be delivered and cannot be recalled, and the worker holds the hashes.
     const dispatchDrift = await observeReferenceDrift(store, registry, registry.assignments[assignmentId]);
     if (dispatchDrift) warnings.push(dispatchDrift);
-    // The lane's profile and its display-only label both live in the canonical
-    // assignment artifact rather than mirrored in the registry, so one read
-    // serves both. An unreadable artifact leaves the profile unknown, which
-    // delivers only unscoped rules — an advisory lookup never widens delivery
-    // on a failed read, and never blocks the dispatch it decorates.
+    // The profile and display-only label live in the canonical artifact. If it
+    // cannot be read here, the worker resolves its profile from that artifact;
+    // an advisory read must not block a dispatch already recorded as prompting.
     const artifact = await store.preflight(assignmentId, record.responsibility_key).catch(() => undefined);
     const laneProfile = artifact?.assignment.profile;
-    const workerRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["dispatch", "completion"], "worker", laneProfile);
 
     const pointer = assignmentDispatchPointer({
       assignmentId,
@@ -3088,7 +3107,6 @@ export class CompositeTools {
       instructionsSha256: record.instructions_sha256,
       profile: laneProfile,
       reportPath,
-      routes: workerRoutes,
     });
     try {
       const prompted = await this.adapter.prompt(agentName, pointer, until, timeoutMs);
@@ -3190,13 +3208,13 @@ export class CompositeTools {
       if (input.action === "preflight") {
         const registry = await store.read();
         const existing = registry.assignments[input.assignment_id];
-        const routes = await advisorySkillRoutes(store.runPath, store.cwd, ["authoring"], "orch");
         // The lane coordinate the assignment will run on, at authoring time
         // (friction 20b26d0a60e14ab6): an assignment that must name its own
         // report surface should read it here instead of guessing it.
         if (existing) {
           const bound = { worker_id: existing.worker_id, report_path: path.join(store.runPath, "a2a", `${existing.worker_id}-report.md`), lane_reuse: true };
-          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound } };
+          const routing = await advisoryAssignmentRouting(store, registry, input.assignment_id, existing.responsibility_key, true);
+          return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound, ...routing } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
         // Both authoring-time refusals, before anything is registered: the
@@ -3206,6 +3224,7 @@ export class CompositeTools {
         const references = artifact.assignment.references ? await observeReferences(store.runPath, artifact.assignment.references) : [];
         assertReferencesPinned(input.assignment_id, references);
         const predicted = await store.predictLane(registry, input.responsibility_key);
+        const routing = await advisoryAssignmentRouting(store, registry, input.assignment_id, input.responsibility_key, predicted.lane_reuse, artifact.assignment);
         // Authoring-time overlap, read from the artifact just validated. It is
         // an observation appended to a non-mutating result: preflight still
         // decides nothing (ASN-014a).
@@ -3213,7 +3232,7 @@ export class CompositeTools {
         // Authoring-time display (M2 P2): the coordinate is what disambiguates
         // an ID that dozens of runs also hold, and the label is echoed back so
         // the author sees exactly what the artifact declared. Neither is stored.
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(routes), data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, data: { already_registered: false, path: artifact.path, coordinate: `${run.track_id}/${run.run_id}/${input.assignment_id}`, instructions_sha256: artifact.instructionsHash, profile: artifact.assignment.profile, ...(artifact.assignment.label ? { label: artifact.assignment.label } : {}), goal_bytes: Buffer.byteLength(artifact.assignment.goal), completion_conditions: artifact.assignment.completion_conditions.length, write_ownership: artifact.assignment.write_ownership.length, dependencies: artifact.assignment.dependencies.length, user_boundaries: artifact.assignment.user_boundaries.length, ...predicted, ...(references.length ? { references: references.map((observation) => ({ path: observation.path, sha256: observation.sha256, verified: true })) } : {}), inter_run_ownership: interRunOwnership, ...routing } };
       }
       if (input.action === "add") {
         const runtime = await loadFacts(this.adapter);
@@ -3309,8 +3328,7 @@ export class CompositeTools {
         registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, until, timeout(input), warnings)) ?? registry;
         const settledAssignment = registry.assignments[input.assignment_id];
         const settlement = settlementObservation(settledAssignment, warnings.length ? warnings.join(" | ") : undefined);
-        const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, ...addData };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, ...addData };
       }
 
       // `wait` is a guarded run-command op (it dispatches promoted heads), so
@@ -3329,17 +3347,15 @@ export class CompositeTools {
         if (!dispatched) return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, worker: registry.lanes[assignment.worker_id], assignment: { assignment_id: assignment.assignment_id, state: "queued" } };
         const fresh = dispatched.assignments[input.assignment_id];
         const dispatchSettlement = settlementObservation(fresh, queuedWarnings.length ? queuedWarnings.join(" | ") : undefined);
-        const dispatchRoutes = fresh.state === "completed" || fresh.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: dispatched.revision, worker: dispatched.lanes[assignment.worker_id], ...skillRouteFields(dispatchRoutes), assignment: { assignment_id: input.assignment_id, state: fresh.state, ...(dispatchSettlement ? { settlement: dispatchSettlement } : {}) } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "confirmed", retryable: false, registry_revision: dispatched.revision, worker: dispatched.lanes[assignment.worker_id], assignment: { assignment_id: input.assignment_id, state: fresh.state, ...(dispatchSettlement ? { settlement: dispatchSettlement } : {}) } };
       }
       if (assignment.state === "completed" || assignment.state === "failed") {
-        const settlementRoutes = await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch");
         // A terminal assignment returned early still owes its pins an
         // observation: this branch used to return before any drift check, so the
         // one call an ORCH makes to read a settled assignment was also the one
         // that never mentioned that its referenced documents had moved (I7).
         const terminalDrift = await observeReferenceDrift(store, registry, assignment);
-        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, ...skillRouteFields(settlementRoutes), assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment, terminalDrift) } };
+        return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: assignment.assignment_id, state: assignment.state, settlement: settlementObservation(assignment, terminalDrift) } };
       }
       const lane = registry.lanes[assignment.worker_id];
       if (!lane) throw new McpContractError("worker_identity_conflict", "Assignment lane is absent.", "select", "Reconcile the responsibility registry.");
@@ -3374,7 +3390,6 @@ export class CompositeTools {
       registry = (budgetJudgment.parked ? undefined : await this.dispatchPromotedHead(store, run, lane.worker_id, input.wait?.until ?? ["idle", "done", "blocked"], timeout(input), tailWarnings)) ?? registry;
       const settledAssignment = registry.assignments[input.assignment_id];
       const settlement = settlementObservation(settledAssignment, tailWarnings.length ? tailWarnings.join(" | ") : undefined);
-      const settlementRoutes = settledAssignment.state === "completed" || settledAssignment.state === "failed" ? await advisorySkillRoutes(store.runPath, store.cwd, ["settlement"], "orch") : [];
       // The cursor this observation ends at. A later explicit recovery probe
       // after a missing or inconsistent doorbell can hand it back to learn
       // whether the worker moved. It is not permission to repeat a timed-out
@@ -3386,7 +3401,7 @@ export class CompositeTools {
         ...(moved === undefined ? {} : { moved_since_cursor: moved }),
         ...(waitTimedOut ? { next_step: `The wait window elapsed without ${(input.wait?.until ?? ["idle", "done", "blocked"]).join("/")}. End the turn and remain idle; the next doorbell will wake this session. Do not repeat wait, sleep, or inspect merely to occupy time. Use wait.cursor=${cursor} only if a later missing or inconsistent doorbell requires an explicit recovery probe.` } : {}),
       };
-      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], ...skillRouteFields(settlementRoutes), assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: cursorData };
+      return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, ...(waitTimedOut ? { timed_out: true } : {}), registry_revision: registry.revision, worker: registry.lanes[lane.worker_id], assignment: { assignment_id: input.assignment_id, state: settledAssignment.state, ...(settlement ? { settlement } : {}) }, data: cursorData };
     } catch (error) { return resultError("herdr_assignment", input.action, run, error); }
   }
 

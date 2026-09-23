@@ -95,6 +95,9 @@ export const MAX_MANDATE_SOURCE = 200;
 export const MAX_MANDATE_CANDIDATE = 200;
 export const MAX_MANDATE_CANDIDATES = 8;
 export const MAX_MANDATE_ITEMS = 32;
+export const MAX_MANDATE_BINDS = 8;
+/** `entry.binds` coordinates: an index into the mandate's own `open[]` array (plan decision D-01). */
+export const MANDATE_BIND_RE = /^open\[[0-9]+\]$/;
 export const MAX_MANDATE_BYTES = 65_536;
 // Hard transport ceiling for the bounded one-line fields below. It exists only
 // so an absurd payload cannot reach the named-limit validator; the published
@@ -451,6 +454,7 @@ export type MandateEntry = {
   protocol: MandateProtocol;
   utterance: string;
   reason: string;
+  binds?: string[];
 };
 
 export type MandateDecision = {
@@ -642,12 +646,6 @@ export const ompRuntimeFactsSchema = z.object({
 }).strict();
 export type OmpRuntimeFacts = z.infer<typeof ompRuntimeFactsSchema>;
 
-export type SkillRouteAdvisory = {
-  boundary: "plan" | "authoring" | "dispatch" | "completion" | "settlement" | "reset";
-  surface: "orch" | "worker";
-  skills: string[];
-};
-
 export type McpResult<T = unknown> = {
   ok: boolean;
   tool: ToolName;
@@ -659,8 +657,6 @@ export type McpResult<T = unknown> = {
   registry_revision?: number;
   worker?: Partial<WorkerLaneRecord>;
   assignment?: { assignment_id: string; state: AssignmentState; settlement?: AssignmentSettlementObservation };
-  skill_routes?: SkillRouteAdvisory[];
-  skill_routes_note?: string;
   data?: T;
   error?: { code: string; phase: ErrorPhase; message: string; recovery: string; ambiguous_effect: boolean };
   friction_hint?: string;
@@ -703,9 +699,16 @@ const mandateBudget = z.object({
 }).strict().describe("Budget seed and extension policy. The two axes are independent ceilings and the narrower one parks the run, so what you are really declaring is an implicit rate: tokens divided by minutes. Measured rates on this project's own closed runs span roughly 1,000 to 15,000 generative tokens per minute, and a seed rate several times off its run's real rate is what parks a run on the axis nobody was watching.");
 const mandateEntry = z.object({
   protocol: z.enum(MANDATE_PROTOCOLS).describe("The one protocol the ORCH runs on its first turn, chosen by the gate descriptions in references/mandate.schema.json. inquire: facts the task needs are missing and some are reachable through the substrate. elicit: the intent is articulated but its decision coordinates are implicit in the substrate. sketch: a form has to be made that the user would recognize on sight. preview: a direction commitment is imminent and at least two named candidates cannot be judged from their descriptions. ideate: the space of options itself is what is missing. Enum membership is not availability — a protocol that protocols/UPSTREAM.json does not pin is refused with mandate_protocol_unavailable."),
-  utterance: z.string().min(1).max(MAX_MANDATE_UTTERANCE).describe(`The invocation text the protocol receives, self-contained, naming the bound open[] and substrate[] items by their inline coordinates. The ORCH passes it to the protocol unchanged. Limit ${MAX_MANDATE_UTTERANCE} characters.`),
+  utterance: z.string().min(1).max(MAX_MANDATE_UTTERANCE).describe(`The invocation text the protocol receives, self-contained: what the user asks of this first turn, naming the bound substrate[] items by their inline coordinates and referring to a bound open item by its role ("the bound open item"), never by an open[N] coordinate — entry.binds is where that binding lives, and a coordinate in this text is reported as a one-unit defect. The ORCH passes it to the protocol unchanged. Limit ${MAX_MANDATE_UTTERANCE} characters.`),
   reason: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`One sentence naming the deficit that chose this protocol, in the gate's own terms. Limit ${MAX_MANDATE_SENTENCE} characters.`),
-}).strict().describe("The one protocol the ORCH runs first and the exact input it is invoked with.");
+  binds: z.array(z.string().regex(MANDATE_BIND_RE)).min(1).max(MAX_MANDATE_BINDS).optional().describe(`The open items this utterance is about, each an "open[N]" coordinate into this mandate's own open[] array. Required for preview and elicit, whose gates are decided on the bound item; optional otherwise, and omitted only when the first turn is about no open item in particular. At most ${MAX_MANDATE_BINDS} entries, each index must exist in open[], and for preview every bound item must carry two or more candidates.`),
+}).strict().superRefine((value, ctx) => {
+  // The two gates that are decided ON the bound item: without binds there is
+  // nothing for the deterministic gate or the judge to read them against.
+  if ((value.protocol === "preview" || value.protocol === "elicit") && value.binds === undefined) {
+    ctx.addIssue({ code: "custom", path: ["binds"], message: `entry.binds is required when entry.protocol is ${value.protocol}: its gate is decided on the bound open item.` });
+  }
+}).describe("The one protocol the ORCH runs first, the exact input it is invoked with, and the open items that input is about.");
 const mandateDecision = z.object({
   decision: z.string().min(1).max(MAX_MANDATE_SENTENCE).describe(`The decision as the user made it, one sentence. Limit ${MAX_MANDATE_SENTENCE} characters.`),
   source: z.string().min(1).max(MAX_MANDATE_SOURCE).describe(`Where the decision was made: a run document with its section (plan.md D-03), or "user, creator conversation <date>". Limit ${MAX_MANDATE_SOURCE} characters.`),
@@ -756,7 +759,7 @@ const requestedMinutes = z.number().int().positive().max(MAX_BUDGET_MINUTES).opt
 
 export const herdrTrackInputShape = {
   ...run,
-  action: z.enum(["open", "init", "inspect", "start_orchestrator", "budget_extend", "revive", "close"]),
+  action: z.enum(["open", "check", "init", "inspect", "start_orchestrator", "budget_extend", "revive", "close"]),
   cwd: z.string().min(1).optional(),
   mandate: mandate.optional(),
   reset_of: z.object(run).strict().optional(),
@@ -836,6 +839,7 @@ export const herdrFrictionInputShape = {
 
 export const herdrTrackSchema = z.discriminatedUnion("action", [
   z.object({ ...run, action: z.literal("open"), cwd: z.string().min(1), mandate }).strict(),
+  z.object({ ...run, action: z.literal("check"), cwd: z.string().min(1), mandate }).strict(),
   z.object({ ...run, action: z.literal("init"), cwd: z.string().min(1), reset_of: z.object(run).strict().optional() }).strict(),
   z.object({ ...run, action: z.literal("inspect") }).strict(),
   z.object({ ...run, action: z.literal("start_orchestrator") }).strict(),

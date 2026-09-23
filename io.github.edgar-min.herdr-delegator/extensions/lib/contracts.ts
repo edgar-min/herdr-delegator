@@ -89,85 +89,13 @@ export type ModelProfile = {
   thinking: ConfigThinkingLevel;
 };
 
-export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "completion", "settlement", "reset"] as const;
-export const MAX_SKILL_ROUTE_RULES = 16;
-export const MAX_SKILLS_PER_ROUTE = 8;
-export const MAX_PROFILES_PER_ROUTE = 8;
-export const MAX_SKILL_METADATA_ENTRIES = 64;
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-/**
- * Bound for configured advisory prose (`skill_routing.rules[].trigger`).
- * Single-line by contract so the text can be rendered into prompts without
- * escaping.
- */
-export const MAX_GUIDANCE_LENGTH = 500;
-export const GUIDANCE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
-
-export type SkillRouteBoundary = (typeof SKILL_ROUTE_BOUNDARIES)[number];
-
-export type SkillRouteSurface = "orch" | "worker";
-
-export type SkillRoute = {
-  boundary: SkillRouteBoundary;
-  surface: SkillRouteSurface;
-  skills: string[];
-  /**
-   * Optional prose naming when this route applies. Advisory selection criteria
-   * for the surface that reads the route; never a gate.
-   */
-  trigger?: string;
-  /**
-   * Optional worker-profile scope. A rule carrying it is delivered only when the
-   * delivery target's profile is named here; a rule without it reaches every
-   * profile. A named profile no `worker_profiles` entry defines simply never
-   * matches — rules and profiles may live in different layers, and routes are
-   * advisory. A surface with no profile in hand (every orchestrator-surface
-   * delivery point) matches only unscoped rules, so a profile-scoped route can
-   * never leak to a target whose profile is unknown.
-   */
-  profiles?: string[];
-};
-
-/** Judgment points an ORCH acts at; each is an existing boundary name. */
-export const ORCH_MOMENTS = ["plan", "authoring", "settlement", "reset"] as const;
-
-/**
- * Judgment points a worker acts at. They are the worker-surface half of the
- * `agent` × `moment` rule shape and lower into existing boundaries:
- * `intake` → `dispatch`, `report` → `completion`.
- */
-export const WORKER_MOMENTS = ["intake", "report"] as const;
-
-export type OrchMoment = (typeof ORCH_MOMENTS)[number];
-
-export type WorkerMoment = (typeof WORKER_MOMENTS)[number];
-
-/**
- * The authored `agent` × `moment` rule shape. It carries no rule-level trigger:
- * timing prose lives per skill in `skill_routing.skills`, and the moment itself
- * carries the timing a worker document needs. Rules of this shape are lowered
- * into `SkillRoute` at parse, so every resolver and delivery point keeps one
- * internal vocabulary.
- */
-export type SkillAgentRule =
-  | { agent: "orch"; moment: OrchMoment; skills: string[] }
-  | { agent: string; moment: WorkerMoment; skills: string[] };
-
-/**
- * Resolved routing configuration. Unlike `worker_profiles`, this object is
- * replaced whole by a later configuration layer.
- */
-export type SkillRoutingConfig = {
-  rules: SkillRoute[];
-};
 
 export type DelegatorConfig = {
   version: 1;
   orchestrator: ModelProfile;
   worker_profiles: Record<string, ModelProfile>;
   storage?: { root: string };
-  skill_routing?: SkillRoutingConfig;
 };
 
 export type ConfigSource = {

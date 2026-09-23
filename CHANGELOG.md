@@ -13,6 +13,60 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [4.0.0] - 2026-09-23
+
+Rollback: this release lands on `main` as one merge commit tagged `v4.0.0`; the previous
+state is tag `v3.9.0` (also `rollback/pre-4.0.0`). `git revert -m 1 v4.0.0` on `main`, or
+`omp plugin install` of the `v3.9.0` tag, restores 3.9.0 without touching the branch
+history kept on `sb/dogfood3`.
+
+### Added
+
+- Mandate form version 2: the invocation of one planning protocol (`entry.protocol`,
+  `entry.utterance`, `entry.binds` naming the bound `open[N]` items, `entry.reason`),
+  with `settled`, `substrate`, `open`, `done_when`, `forbidden` and `budget`. The
+  upstream planning protocols (inquire, elicit, sketch, preview, ideate) are bundled
+  under `protocols/` and served as `herdr-delegator://protocol/<name>` resources.
+- `herdr_track check`: the creator's mandate check as a server action, deterministic and
+  judged halves alike, returning `data.lines[]` and `data.verdict`; `open` runs the same
+  check and refuses a `FAILED` mandate. The routing judge gains a `not-track-worthy`
+  criterion for work that needs no track.
+- The common worker contract as a pinned resource `herdr-delegator://worker`
+  (`protocols/worker.md`, pinned under `"worker.md"` in `protocols/CONTRACT.json`); the
+  shared contract `herdr-delegator://contract` is unchanged in mechanism.
+- Profile skills `herdr-worker-default`, `herdr-worker-slow`, `herdr-worker-task`: each a
+  complete operating skill for its lane, read by the dispatch pointer
+  `skill://herdr-worker-<profile>`. `run.json` pins `herdr-orch` and the three profile
+  skills at birth.
+- `herdr_assignment preflight` returns an advisory `data.routing` — route, lane reuse and
+  profile judged by Jev against `skills/herdr-orch/references/delegation.md` and the
+  artifact's goal, write ownership, boundaries and dependencies — never a refusal ground.
+- The ORCH skill states the orchestrator's identity and two obligations (context window as
+  the command resource; delegation by default, never as an excuse), a `When` column that
+  says when each reference is read, and a single delegation reference that decides who
+  does a piece of work.
+
+### Changed
+
+- The born ORCH reads `skill://herdr-orch`, the contract resource and `first-turn.md`,
+  executes `entry.protocol` verbatim on `entry.utterance`, and stops at the user's
+  recorded decision; the server writes only `mandate.json` and `run.json` into a run.
+- Resource URI scheme is `herdr-delegator://` (was `herdr://`); documents name the URI and
+  OMP's `read` tool reads it as `mcp://<uri>`.
+- The creator skill is `herdr-create` (was `herdr-delegation`); it checks drafts inline
+  through `herdr_track check` and never writes a draft file into the user's project.
+- Skill prose is one physical line per paragraph.
+
+### Removed
+
+- External skill routing: the `skill_routing` configuration key, its rules, resolver and
+  delivery on init/preflight/dispatch/settlement (SRT-001 through SRT-007). A layer that
+  still carries the key gets the retired-key warning. Each role and profile skill names
+  its own references.
+- The common `herdr-worker` skill (folded into `herdr-delegator://worker`), the rendered
+  `protocol.md`/`protocol-orch.md`/`protocol-worker.md`/`guidance*.md` run documents, and
+  `skills/herdr-create/scripts` (moved into the server and `tests/`).
+
 ## [3.9.0] - 2026-09-08
 
 ### Changed

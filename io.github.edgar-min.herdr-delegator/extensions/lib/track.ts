@@ -20,7 +20,7 @@ export const MAX_INBOUND_PROMPT_POINTERS = 8;
  * the prompt made the first turn depend on resolving a path the session could
  * not see — the rt-test/r1 ORCH halted on exactly that.
  */
-const PROTOCOL_RESOURCE_READ_PREFIX = "mcp://herdr://protocol";
+const PROTOCOL_RESOURCE_READ_PREFIX = "mcp://herdr-delegator://protocol";
 const UPSTREAM_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "UPSTREAM.json");
 
 /** The mandate's entry protocol, refused at spawn when this build does not pin it. */
@@ -94,8 +94,8 @@ async function initializeRun(params: TrackParams): Promise<TrackResult> {
   const runPath = path.join(storageRoot, trackId, runId);
   const runKey = sha256(runPath);
   // Refused before anything is staged: a run whose sessions are told to read
-  // skill://herdr-orch and skill://herdr-worker must record the exact bytes
-  // this build installs for them.
+  // skill://herdr-orch and skill://herdr-worker-<profile> must record the exact
+  // bytes this build installs for them.
   const skills = await roleSkillDigests();
   // Retired-key warnings from the configuration layers reach the caller's
   // result, so they live at function scope.

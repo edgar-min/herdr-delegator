@@ -23,34 +23,62 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 export const UPSTREAM_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "UPSTREAM.json");
 /** The shared contract document and its pin, resolved from the same package root. */
 export const CONTRACT_MANIFEST_PATH = path.join(PACKAGE_ROOT, "protocols", "CONTRACT.json");
-/** The scheme and shape the birth prompt hard-codes; `mcp://herdr://protocol/<name>` is its OMP read form. */
-export const PROTOCOL_RESOURCE_PREFIX = "herdr://protocol";
-export const CONTRACT_RESOURCE_URI = "herdr://contract";
+/** The scheme and shape the birth prompt hard-codes; `mcp://herdr-delegator://protocol/<name>` is its OMP read form. */
+export const PROTOCOL_RESOURCE_PREFIX = "herdr-delegator://protocol";
+export const CONTRACT_RESOURCE_URI = "herdr-delegator://contract";
+export const WORKER_RESOURCE_URI = "herdr-delegator://worker";
 
 /**
- * The one shared contract every session reads: the authority index, the
- * reservations the user keeps in every track, and the assignment and settlement
- * grammar. It is served exactly like a pinned protocol document — bytes from
- * `protocols/contract.md`, digest from `protocols/CONTRACT.json` — because a
- * drifted contract is an unannounced rule change and refusing it is the only
- * safe reading.
+ * A document this package owns and pins in `protocols/CONTRACT.json`: the
+ * manifest key it is pinned under, the URI it is served at, and the prose the
+ * resource carries. Both documents are served exactly like a pinned protocol
+ * document — bytes from the file, digest from the manifest — because a drifted
+ * contract is an unannounced rule change and refusing it is the only safe
+ * reading.
  */
-export function contractResource(manifestPath: string = CONTRACT_MANIFEST_PATH): ProtocolResource {
+export type PinnedDocument = { key: string; uri: string; name: string; title: string; summary: string };
+
+export const CONTRACT_DOCUMENT: PinnedDocument = {
+  key: "contract.md",
+  uri: CONTRACT_RESOURCE_URI,
+  name: "contract",
+  title: "herdr contract",
+  summary: "The shared Herdr contract — authority index, reservations kept to the user, and assignment and settlement grammar — served verbatim from protocols/contract.md.",
+};
+
+export const WORKER_DOCUMENT: PinnedDocument = {
+  key: "worker.md",
+  uri: WORKER_RESOURCE_URI,
+  name: "worker",
+  title: "herdr worker contract",
+  summary: "The common worker contract every responsibility lane reads beside its own profile skill — served verbatim from protocols/worker.md.",
+};
+
+/** One pinned package document as a resource; a manifest that does not pin it is an error naming the manifest. */
+export function pinnedDocumentResource(document: PinnedDocument, manifestPath: string = CONTRACT_MANIFEST_PATH): ProtocolResource {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-  const digest = manifest["contract.md"];
+  const digest = manifest[document.key];
   if (typeof digest !== "string") {
-    throw new Error(`${manifestPath} does not pin "contract.md", so ${CONTRACT_RESOURCE_URI} cannot be served.`);
+    throw new Error(`${manifestPath} does not pin "${document.key}", so ${document.uri} cannot be served.`);
   }
   return {
-    uri: CONTRACT_RESOURCE_URI,
-    name: "contract",
-    title: "herdr contract",
-    description: `The shared Herdr contract — authority index, reservations kept to the user, and assignment and settlement grammar — served verbatim from protocols/contract.md. Pinned sha256 ${digest}; the server refuses to serve bytes that do not match it.`,
+    uri: document.uri,
+    name: document.name,
+    title: document.title,
+    description: `${document.summary} Pinned sha256 ${digest}; the server refuses to serve bytes that do not match it.`,
     mimeType: "text/markdown",
-    filePath: path.join(path.dirname(manifestPath), "contract.md"),
+    filePath: path.join(path.dirname(manifestPath), document.key),
     sha256: digest,
     manifestPath,
   };
+}
+
+export function contractResource(manifestPath: string = CONTRACT_MANIFEST_PATH): ProtocolResource {
+  return pinnedDocumentResource(CONTRACT_DOCUMENT, manifestPath);
+}
+
+export function workerResource(manifestPath: string = CONTRACT_MANIFEST_PATH): ProtocolResource {
+  return pinnedDocumentResource(WORKER_DOCUMENT, manifestPath);
 }
 
 export type ProtocolPin = {
@@ -121,9 +149,13 @@ export function registerProtocolResources(server: McpServer): ProtocolResource[]
   catch (error: unknown) {
     console.error(`[herdr-delegator] no protocol resources: ${UPSTREAM_MANIFEST_PATH} is unreadable (${error instanceof Error ? error.message : String(error)})`);
   }
-  try { resources.push(contractResource()); }
-  catch (error: unknown) {
-    console.error(`[herdr-delegator] no ${CONTRACT_RESOURCE_URI} resource: ${CONTRACT_MANIFEST_PATH} is unusable (${error instanceof Error ? error.message : String(error)})`);
+  // Each pinned document is registered on its own, so a build whose manifest
+  // does not yet pin one of them still serves the other.
+  for (const document of [CONTRACT_DOCUMENT, WORKER_DOCUMENT]) {
+    try { resources.push(pinnedDocumentResource(document)); }
+    catch (error: unknown) {
+      console.error(`[herdr-delegator] no ${document.uri} resource: ${CONTRACT_MANIFEST_PATH} is unusable (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
   for (const resource of resources) {
     server.registerResource(

@@ -38,7 +38,9 @@ describe("run.schema.json", () => {
     expect(validate(withoutChannels)).toBe(false);
     const { skills: _skills, ...withoutSkills } = manifest;
     expect(validate(withoutSkills)).toBe(false);
-    expect(validate({ ...manifest, skills: { "herdr-orch": "not-a-digest", "herdr-worker": "x" } })).toBe(false);
+    const { "herdr-worker-task": _retiredTask, ...withoutProfilePin } = manifest.skills as Record<string, string>;
+    expect(validate({ ...manifest, skills: withoutProfilePin })).toBe(false);
+    expect(validate({ ...manifest, skills: { ...(manifest.skills as object), "herdr-worker-task": "not-a-digest" } })).toBe(false);
     expect(validate({ ...manifest, channels: { ...(manifest.channels as object), assignments: "a2a/<id>.md" } })).toBe(false);
   });
 });
@@ -56,6 +58,6 @@ describe("config.schema.json", () => {
     expect(validate({ ...base, worker_profiles: { task: { role: "@default", intent: "x" } } })).toBe(false);
     expect(validate({ ...base, worker_profiles: { task: { role: "@default", directive: "x" } } })).toBe(false);
     expect(validate({ ...base, worker_profiles: { task: { role: "@default", guidance: "x" } } })).toBe(false);
-    expect(validate({ ...base, skill_routing: { rules: [], skills: { sip: { intent: "x" } } } })).toBe(false);
+    expect(validate({ ...base, skill_routing: { rules: [] } })).toBe(false);
   });
 });

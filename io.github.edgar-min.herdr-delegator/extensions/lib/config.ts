@@ -5,8 +5,8 @@ import { copyFile, lstat, mkdir, readFile, realpath, rename, stat, unlink, write
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunChannels, RunManifest, RunSkillDigests, SkillRoute, SkillRouteBoundary, SkillRouteSurface, SkillRoutingConfig, TargetOrchestratorRecord, ThinkingLevel, ToolParams, WorkerMoment } from "./contracts";
-import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, GUIDANCE_CONTROL_RE, MAX_GUIDANCE_LENGTH, MAX_PROFILES_PER_ROUTE, MAX_SKILLS_PER_ROUTE, MAX_SKILL_ROUTE_RULES, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, ORCH_MOMENTS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, SKILL_ROUTE_BOUNDARIES, THINKING_LEVELS, WORKER_MOMENTS, WORKER_RE, assertExactKeys, compactMessage, isObject, sha256 } from "./contracts";
+import type { ConfigSource, ConfigThinkingLevel, DelegatorConfig, ModelProfile, OrchestratorRecord, ResetLineage, ResolvedLaunchProfile, ResolvedRun, RunChannels, RunManifest, RunSkillDigests, TargetOrchestratorRecord, ThinkingLevel, ToolParams } from "./contracts";
+import { CONFIG_THINKING_LEVELS, COORDINATE_RE, ContractError, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, PROFILE_RE, RESET_EVIDENCE_POLICY, RESET_WORKER_POLICY, ROLE_RE, SHA256_RE, SKILL_NAME_RE, THINKING_LEVELS, WORKER_RE, assertExactKeys, compactMessage, isObject, sha256 } from "./contracts";
 
 type TargetOrchestratorRecordWithBootstrapFacts = TargetOrchestratorRecord & {
   bootstrap_attestation?: string;
@@ -37,28 +37,6 @@ function isConfigThinkingLevel(value: unknown): value is ConfigThinkingLevel {
 }
 
 /**
- * Bounded single-line advisory prose. Judgment criteria are authored, never
- * defaulted, so an unusable value fails the layer instead of degrading into
- * text that would be rendered at a decision boundary.
- */
-function parseGuidanceText(value: unknown, coordinate: string): string {
-  if (
-    typeof value !== "string" ||
-    !value.trim() ||
-    value.length > MAX_GUIDANCE_LENGTH ||
-    GUIDANCE_CONTROL_RE.test(value)
-  ) {
-    throw new ContractError(
-      "invalid_config",
-      `${coordinate}: expected 1-${MAX_GUIDANCE_LENGTH} characters of single-line prose.`,
-      "config",
-      { recovery: "Shorten the text, remove line breaks and control characters, or omit the field; guidance is never truncated for you." },
-    );
-  }
-  return value.trim();
-}
-
-/**
  * The closed key set of each profile kind, plus the keys a layer may still
  * carry from the removed guidance documents. A retired key is ignored with a
  * warning naming it: a configuration written for the previous build must not
@@ -75,7 +53,7 @@ type ProfileKind = keyof typeof PROFILE_KEYS;
 
 /** The one sentence every retired-key warning is built from. */
 export function retiredConfigKeyWarning(coordinate: string): string {
-  return `${coordinate} is no longer read: the rendered guidance documents were removed, so the key is ignored. Delete it from the configuration layer.`;
+  return `${coordinate} is no longer read: role and profile skills now name their own references, so the key is ignored. Delete it from the configuration layer.`;
 }
 
 function parseProfilePatch(
@@ -110,107 +88,10 @@ function parseProfilePatch(
   };
 }
 
-/** The two worker moments, lowered onto the boundaries every resolver speaks. */
-const WORKER_MOMENT_BOUNDARY: Record<WorkerMoment, SkillRouteBoundary> = { intake: "dispatch", report: "completion" };
-
-function parseSkillNames(value: unknown, coordinate: string): string[] {
-  if (
-    !Array.isArray(value) ||
-    value.length < 1 ||
-    value.length > MAX_SKILLS_PER_ROUTE ||
-    value.some((skill) => typeof skill !== "string" || !SKILL_NAME_RE.test(skill))
-  ) {
-    throw new ContractError("invalid_config", `${coordinate}.skills: expected 1-${MAX_SKILLS_PER_ROUTE} bounded skill names.`, "config");
-  }
-  return [...(value as string[])];
-}
-
-
-/**
- * The authored `agent` × `moment` rule, lowered into the internal
- * boundary × surface vocabulary. The direction is deliberate: every resolver and
- * delivery point keeps one shape, so no call site changes when a configuration
- * adopts this rule shape. An `orch` agent's moments are already boundary names;
- * a profile agent names exactly one profile, which is where the scope goes.
- */
-function parseAgentRule(rule: Record<string, unknown>, coordinate: string): SkillRoute {
-  assertExactKeys(rule, ["agent", "moment", "skills"], coordinate);
-  const skills = parseSkillNames(rule.skills, coordinate);
-  if (rule.agent === "orch") {
-    const moment = ORCH_MOMENTS.find((candidate) => candidate === rule.moment);
-    if (!moment) {
-      throw new ContractError("invalid_config", `${coordinate}.moment: expected one of ${ORCH_MOMENTS.join(", ")} for agent orch.`, "config");
-    }
-    return { boundary: moment, surface: "orch", skills };
-  }
-  if (typeof rule.agent !== "string" || !PROFILE_RE.test(rule.agent)) {
-    throw new ContractError("invalid_config", `${coordinate}.agent: expected orch or a worker profile name.`, "config");
-  }
-  const moment = WORKER_MOMENTS.find((candidate) => candidate === rule.moment);
-  if (!moment) {
-    throw new ContractError("invalid_config", `${coordinate}.moment: expected one of ${WORKER_MOMENTS.join(", ")} for a worker profile agent.`, "config");
-  }
-  return { boundary: WORKER_MOMENT_BOUNDARY[moment], surface: "worker", skills, profiles: [rule.agent] };
-}
-
-/** The boundary × surface rule shape, parsed exactly as it always was. */
-function parseBoundaryRule(rule: Record<string, unknown>, coordinate: string): SkillRoute {
-  assertExactKeys(rule, ["boundary", "surface", "skills", "trigger", "profiles"], coordinate);
-  if (!SKILL_ROUTE_BOUNDARIES.some((boundary) => boundary === rule.boundary)) {
-    throw new ContractError("invalid_config", `${coordinate}.boundary: expected one of ${SKILL_ROUTE_BOUNDARIES.join(", ")}.`, "config");
-  }
-  if (rule.surface !== "orch" && rule.surface !== "worker") {
-    throw new ContractError("invalid_config", `${coordinate}.surface: expected orch or worker.`, "config");
-  }
-  const skills = parseSkillNames(rule.skills, coordinate);
-  if (
-    rule.profiles !== undefined &&
-    (
-      !Array.isArray(rule.profiles) ||
-      rule.profiles.length < 1 ||
-      rule.profiles.length > MAX_PROFILES_PER_ROUTE ||
-      rule.profiles.some((profile) => typeof profile !== "string" || !PROFILE_RE.test(profile))
-    )
-  ) {
-    throw new ContractError("invalid_config", `${coordinate}.profiles: expected 1-${MAX_PROFILES_PER_ROUTE} worker profile names.`, "config");
-  }
-  return {
-    boundary: rule.boundary,
-    surface: rule.surface,
-    skills,
-    ...(rule.trigger === undefined ? {} : { trigger: parseGuidanceText(rule.trigger, `${coordinate}.trigger`) }),
-    ...(rule.profiles === undefined ? {} : { profiles: [...(rule.profiles as string[])] }),
-  } as SkillRoute;
-}
-
-function parseSkillRouting(value: unknown, coordinate: string, warnings: string[]): SkillRoutingConfig {
-  if (!isObject(value)) {
-    throw new ContractError("invalid_config", `${coordinate}: expected an object.`, "config");
-  }
-  assertExactKeys(value, ["rules", "skills"], coordinate);
-  if (!Array.isArray(value.rules) || value.rules.length > MAX_SKILL_ROUTE_RULES) {
-    throw new ContractError("invalid_config", `${coordinate}.rules: expected at most ${MAX_SKILL_ROUTE_RULES} rules.`, "config");
-  }
-  const rules = value.rules.map((rule, index) => {
-    const ruleCoordinate = `${coordinate}.rules[${index}]`;
-    if (!isObject(rule)) {
-      throw new ContractError("invalid_config", `${ruleCoordinate}: expected an object.`, "config");
-    }
-    return rule.agent !== undefined || rule.moment !== undefined
-      ? parseAgentRule(rule, ruleCoordinate)
-      : parseBoundaryRule(rule, ruleCoordinate);
-  });
-  // The per-skill `intent`/`trigger` prose existed only to be rendered into the
-  // removed guidance documents; the routes themselves still reach a dispatch.
-  if (value.skills !== undefined) warnings.push(retiredConfigKeyWarning(`${coordinate}.skills`));
-  return { rules };
-}
-
 type ConfigPatch = {
   orchestrator?: Partial<ModelProfile>;
   worker_profiles?: Record<string, Partial<ModelProfile>>;
   storage?: { root: string };
-  skill_routing?: SkillRoutingConfig;
 };
 
 function parseConfigPatch(value: unknown, coordinate: string, warnings: string[]): ConfigPatch {
@@ -248,7 +129,7 @@ function parseConfigPatch(value: unknown, coordinate: string, warnings: string[]
     patch.storage = { root: path.normalize(value.storage.root) };
   }
   if (value.skill_routing !== undefined) {
-    patch.skill_routing = parseSkillRouting(value.skill_routing, `${coordinate}.skill_routing`, warnings);
+    warnings.push(retiredConfigKeyWarning(`${coordinate}.skill_routing`));
   }
   return patch;
 }
@@ -318,7 +199,6 @@ function mergeConfigPatch(config: DelegatorConfig, patch: ConfigPatch, layerPath
     config.worker_profiles[name] = { ...base, ...profile };
   }
   if (patch.storage) config.storage = patch.storage;
-  if (patch.skill_routing) config.skill_routing = patch.skill_routing;
 }
 
 /**
@@ -379,31 +259,6 @@ export async function loadDelegatorConfig(runPath: string | undefined, cwd: stri
     }
   }
   return { config, sources, warnings };
-}
-
-/**
- * Deterministic advisory skill-route selection for one delivery point. Routes
- * come only from strict configuration layers; the result is bounded advisory
- * text material, never authority over scope, settlement, or lifecycle.
- *
- * `profile` is the delivery target's worker profile where the delivery point has
- * one — worker-surface dispatch. A rule scoped with `profiles` matches only a
- * named profile, so a caller without one (every orchestrator-surface point)
- * receives unscoped rules exactly as before.
- */
-export async function resolveSkillRoutes(
-  runPath: string | undefined,
-  cwd: string,
-  boundaries: readonly SkillRouteBoundary[],
-  surface: SkillRouteSurface,
-  profile?: string,
-): Promise<SkillRoute[]> {
-  const { config } = await loadDelegatorConfig(runPath, cwd);
-  const rules = config.skill_routing?.rules ?? [];
-  return rules.filter((rule) =>
-    rule.surface === surface &&
-    boundaries.includes(rule.boundary) &&
-    (!rule.profiles || (profile !== undefined && rule.profiles.includes(profile))));
 }
 
 export async function resolveLaunchProfile(
@@ -633,8 +488,8 @@ export const RUN_CHANNELS: RunChannels = {
   inter_run: "a2a/orch-to-<track>_<run>.md",
 };
 
-/** The role skills every born session is pointed at through `skill://`. */
-export const ROLE_SKILL_NAMES = ["herdr-orch", "herdr-worker"] as const;
+/** The role skills every born session is pointed at through `skill://`: the ORCH's, and one per worker profile. */
+export const ROLE_SKILL_NAMES = ["herdr-orch", "herdr-worker-default", "herdr-worker-slow", "herdr-worker-task"] as const;
 
 /**
  * sha256 of each installed role skill, resolved from the package root exactly

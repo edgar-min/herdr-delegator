@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildJudgedState, readUniversalContract } from "../mandate-contract.js";
+import { buildJudgedState, readUniversalContract } from "../mcp/mandate-gate";
 
 const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "contract.md");
 const fixture = readFileSync(fixturePath);
@@ -68,5 +68,21 @@ describe("universal contract verification", () => {
     expect(state.universal_reservations).toBe("## Reserved to the user\n\n- Final acceptance.");
     expect(state).not.toHaveProperty("entry");
     expect(state.mandate).toEqual({ purpose: "Track purpose.", invocation: "Make a form." });
+  });
+
+  test("carries the bound open coordinates and still drops the creator's own answers", () => {
+    const state = buildJudgedState(
+      {
+        purpose: "Track purpose.",
+        open: [{ item: "Where do the rules live?" }],
+        entry: { protocol: "preview", utterance: "Probe the bound open item.", reason: "A direction commitment is imminent.", binds: ["open[0]"] },
+      },
+      {},
+      "",
+    );
+    const serialized = JSON.stringify(state);
+    expect(serialized).not.toContain("preview");
+    expect(serialized).not.toContain("A direction commitment is imminent.");
+    expect(JSON.parse(serialized).mandate.binds).toEqual(["open[0]"]);
   });
 });

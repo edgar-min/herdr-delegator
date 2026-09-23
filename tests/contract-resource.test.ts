@@ -1,4 +1,4 @@
-// herdr://contract is served exactly like a pinned protocol document: bytes
+// herdr-delegator://contract is served exactly like a pinned protocol document: bytes
 // from protocols/contract.md, digest from protocols/CONTRACT.json, and a
 // refusal rather than an unannounced rule change when the two disagree.
 import { describe, expect, test } from "bun:test";

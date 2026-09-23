@@ -6,7 +6,7 @@ This run is the durable coordination surface between its born OMP orchestrator
 (**ORCH**) and persistent Herdr responsibility workers. The user does not relay
 messages, wake workers, or perform recovery.
 
-The role skills `herdr-orch` and `herdr-worker` are each role's contract.
+The ORCH's contract is the role skill `herdr-orch`. A worker's contract is the resource `herdr-delegator://worker` together with its profile skill `herdr-worker-default`, `herdr-worker-slow`, or `herdr-worker-task`.
 
 | Surface | Authority |
 |---|---|
