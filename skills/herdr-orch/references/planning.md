@@ -1,0 +1,12 @@
+# Plan and route responsibilities
+
+A responsibility key names durable direction, ownership, and context. Reuse an exact responsibility lane by default. Busyness alone never justifies another lane. Separate the same responsibility only when direction, ownership, or dependency genuinely requires isolation, and record that witness in the plan and assignment.
+
+
+By default, after writing the draft `plan.md` with the user and before freezing it, dispatch a slow-profile lane charged as its adversary: it attacks omissions, unstated assumptions, and vulnerabilities and returns evidence-cited findings through its lane report. Answer each round with an `[ORCH Response]`, fold accepted findings into the plan, and re-engage the lane for the next round until one yields no blocking findings or you record acceptance with grounds. Record the review lane and every finding's disposition in `plan.md`; route items requiring user authority through the judgment ladder. A trivially fixed plan may skip this review when `plan.md` records that judgment.
+
+Before dispatch, ensure the assignment states the complete goal, observable completion conditions, exact write ownership, dependencies, and user boundaries in language the worker can execute without chat history. Run the tool's preflight and accept its canonical hash; after dispatch, never rewrite the assignment — a successful add makes the file read-only, and a correction is a NEW assignment.
+
+Four authoring rules the tool does not state where you write: `label` is 1 to 48 characters of letters, digits, `-` or `_`, beginning and ending alphanumeric, display only. `# Write ownership` bullets are one file path each, never a glob or a directory with a pattern — the tool audits only machine-readable paths, and a pattern leaves the lane unaudited. `# Goal` is at most 4096 characters; a longer specification goes into a run document pinned by hash under `# References`. A completion condition is phrased as an observable property of the work ("no function resolves routes", "the four owned files are the lane's only changes"), never as a repository-wide grep returning zero or a clean `git status`: the shared tree already carries other lanes' changes and the ORCH's own, and a legitimate remainder — a retired-key warning, a negative assertion in a test, a file another lane owns — turns such a condition into a false blocked boundary.
+
+The assignment file and settlement block grammar is in `herdr-delegator://contract` §Assignment and settlement grammar. Profile selection belongs only in `delegation.md`.

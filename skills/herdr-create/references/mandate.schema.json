@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "herdr-delegator/mandate/2",
+  "title": "Mandate",
+  "description": "A mandate is the invocation of one planning protocol in a new track. It carries only what that protocol needs and what the new track cannot learn on its own: the purpose, what the user already settled, where the user's externalized thinking lives, what is still open, the exact invocation, and how the track is known to be done. Everything true of every track belongs in herdr-delegator://contract or the role skills, not here. Judged units: every string in purpose, settled[].decision, substrate[], open[].item, done_when[], forbidden[] and entry.utterance is one English sentence that a judge classifies on its own — no pronoun pointing outside the item, no 'above', no 'the same', one place or one claim per item, and every reference carries its coordinate inline (a path, a section, a commit, a URL, a run document). settled[].source, settled[].reason, open[].candidates[] and budget are structural data, not judged units. Executing the entry protocol is permission to collect, read and draft; it is never permission to implement, dispatch or close — that transition waits for the user's recorded decision, and the ORCH skill enforces it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "mandate_version",
+    "purpose",
+    "language",
+    "entry",
+    "settled",
+    "substrate",
+    "open",
+    "done_when",
+    "forbidden",
+    "budget"
+  ],
+  "properties": {
+    "mandate_version": {
+      "const": 2
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 400,
+      "description": "Why this track exists and what it must achieve, one sentence in the user's own terms."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+      "description": "BCP-47 tag of the language the creator conversation was held in (ko, en, ja-JP). The ORCH presents the entry protocol and every later turn in this language, whatever language the mandate and the protocol documents are written in. A fact the new track cannot learn on its own."
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "utterance",
+        "reason"
+      ],
+      "description": "The one protocol the ORCH runs on its first turn, and the exact input it is invoked with. The creator proposes it; the mandate check validates this document against this schema deterministically, then asks a judge the same routing question on a state that omits this field and reports disagreement as a blocker; the ORCH executes it verbatim from the server's MCP resource herdr-delegator://protocol/<protocol>. The deterministic check refuses a protocol that protocols/UPSTREAM.json does not pin, so enum membership never stands for availability.",
+      "properties": {
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "inquire",
+            "elicit",
+            "sketch",
+            "preview",
+            "ideate"
+          ],
+          "description": "inquire (aitesis): facts the task needs are missing and the AI can reach some of them through substrate on its own; it lands what it reached and hands the rest back as the user's unknown. elicit (euporia): the intent is articulated but its decision coordinates are implicit in the substrate named here, and the user's utterance itself does not commit to one axis. sketch (hypotyposis): a form has to be made, the user cannot describe it in advance but would recognize it on sight, and what is already settled about it is bound as prior material. preview (proplasma): a direction commitment is imminent, at least two candidates are named in the bound open item, and their futures cannot be judged from their descriptions; probes are discard-committed placeholders, never evidence. ideate (heuresis): the candidate field for the bound open item is empty or converged early, and only the invocation and explicitly chained prior output are read. Routing precedence when several seem to apply: evidence required → inquire; coordinates implicit in substrate → elicit; two or more candidates needing to be seen → preview; field thin → ideate; a form to recognize → sketch. If no gate holds, the mandate is not ready; record why in open[] and do not open."
+        },
+        "utterance": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 800,
+          "description": "The invocation text the protocol receives, self-contained: what the user asks of this first turn, naming which substrate[] items are bound to it by their inline coordinates and referring to a bound open item by its role ('the bound open item'), never by an open[N] coordinate. entry.binds is where that binding lives, and a coordinate in this text is reported as a one-unit defect. This is the text the user approves before open; the ORCH passes it to the protocol unchanged."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400,
+          "description": "One sentence naming the deficit that chose this protocol, in the gate's own terms."
+        },
+        "binds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^open\\[[0-9]+\\]$"
+          },
+          "description": "The open items this utterance is about, each an 'open[N]' coordinate into this mandate's own open[] array. Required for preview and elicit, whose gates are decided on the bound item; optional otherwise. The deterministic check refuses an index open[] does not carry, and for preview it refuses a bound item carrying fewer than two candidates."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "protocol": {
+                "enum": [
+                  "preview",
+                  "elicit"
+                ]
+              }
+            },
+            "required": [
+              "protocol"
+            ]
+          },
+          "then": {
+            "required": [
+              "binds"
+            ]
+          }
+        }
+      ]
+    },
+    "settled": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Decisions the user already made. An explicit user decision binds whether or not the user gave a reason; a creator-added interpretation is not a decision and belongs in open[].",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision",
+          "source",
+          "reason"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "The decision as the user made it, one sentence."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Where the decision was made: a run document with its section (plan.md D-03), or 'user, creator conversation <date>'."
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "The reason the user stated, or exactly 'unstated'. Never a reason the creator supplied."
+          }
+        }
+      }
+    },
+    "substrate": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 400
+      },
+      "description": "Where the user's externalized thinking lives, one place per item, with its coordinate inline and what it holds. These are the channels inquire pushes and the substrate elicit reads. One item must point at the run document that records the currently operative decisions, so the born ORCH never reconstructs them from history."
+    },
+    "open": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "What the conversation did not settle, kept open on purpose: the new track resolves these with the user through the entry protocol. The creator never closes an open item by guessing; a deficit this rollout cannot route is recorded here too.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item"
+        ],
+        "properties": {
+          "item": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "The open question as the user would say it, self-contained."
+          },
+          "candidates": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "description": "Alternatives already named in the conversation, subordinate data of the item, English rendering with the original wording kept in the item when it matters. Candidate count is one input to routing, never a routing decision."
+          }
+        }
+      }
+    },
+    "done_when": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 400
+      },
+      "description": "Observable conditions that make the track done, one per item, each verifiable by a delegate from a durable record. A user act is expressed as its record ('plan.md records the user's decision that version X of the form is recognized'), never as the act itself; the authority to perform the act stays in forbidden. Never a restatement of purpose."
+    },
+    "forbidden": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 400
+      },
+      "description": "Track-specific prohibitions and every action the user reserves in this track: stage progression, lifecycle, remote changes, acceptance. A rule true of every track is carried by herdr-delegator://contract §Reserved to the user and may be omitted only if that section states it; the creator reconciles every reservation the user made against this list before open."
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "minutes",
+        "doorbell_policy"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "doorbell_policy": {
+          "type": "string",
+          "enum": [
+            "notify",
+            "full"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "herdr-delegator",
-  "version": "3.9.0",
+  "version": "4.0.0",
   "description": "Deterministic, model-verified delegation from OMP orchestrators to persistent Herdr workers.",
   "type": "module",
   "private": false,
@@ -27,8 +27,9 @@
     "mcp/**/*.ts",
     "plugin.json",
     "mcp.json",
+    "protocols/**",
+    "skills/**",
     "bin/herdr-delegator-mcp",
-    "skills/herdr-delegation/**",
     "*.schema.json",
     "*.example.json",
     "README.md",
@@ -37,7 +38,7 @@
     "docs/**"
   ],
   "scripts": {
-    "check": "bun scripts/check-templates.ts && bun scripts/check-changelog.ts && tsc -p tsconfig.json"
+    "check": "bun scripts/check-changelog.ts && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
@@ -46,6 +47,8 @@
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "18.0.5",
     "@types/bun": "1.3.14",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "typescript": "^5.9.3"
   },
   "omp": {

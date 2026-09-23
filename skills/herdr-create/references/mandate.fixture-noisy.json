@@ -1,0 +1,60 @@
+{
+  "mandate_version": 2,
+  "purpose": "Give this project a CSV export of a run's budget ledger so the user can chart spend outside the tool.",
+  "language": "en",
+  "entry": {
+    "protocol": "inquire",
+    "utterance": "Find out which ledger lines a spend chart needs by reading budget-ledger.md's recorded line kinds in docs/SPEC.md section 5.2, and hand back as the user's unknown which of the two column sets named in open[0] the export should carry.",
+    "reason": "The facts the export needs are recorded in this project's own documents and the AI can reach them, while the column choice is the user's to make."
+  },
+  "settled": [
+    {
+      "decision": "The export writes one CSV file per run beside that run's budget-ledger.md.",
+      "source": "user, creator conversation 2026-09-22",
+      "reason": "A file beside the ledger needs no new storage coordinate."
+    },
+    {
+      "decision": "The exporter reads the ledger only and never writes to it.",
+      "source": "user, creator conversation 2026-09-22",
+      "reason": "The ledger is append-only evidence and a reader cannot corrupt it."
+    },
+    {
+      "decision": "The first version of the exporter covers seed and metering lines and leaves audit verdict lines out.",
+      "source": "user, creator conversation 2026-09-22",
+      "reason": "unstated"
+    }
+  ],
+  "substrate": [
+    "docs/SPEC.md section 5.2 records the herdr_track actions whose ledger lines this export has to carry.",
+    "CHANGELOG.md lists the released versions whose ledger format the export must still read.",
+    "README.md describes the budget cadence a spend chart is meant to make visible."
+  ],
+  "open": [
+    {
+      "item": "Should the CSV carry one row per ledger line or one row per metered observation?",
+      "candidates": [
+        "one row per ledger line",
+        "one row per metered observation"
+      ]
+    },
+    {
+      "item": "Which timestamp does the user want as the chart's x axis for a run that was parked and later released?"
+    }
+  ],
+  "done_when": [
+    "A CSV file sits beside budget-ledger.md for a closed run and carries its seed and metering lines.",
+    "plan.md records the user's decision on the CSV row granularity named in open[0].",
+    "A chart drawn from the exported CSV reproduces the token totals budget-ledger.md reports for that run."
+  ],
+  "forbidden": [
+    "Do not change budget-ledger.md's append-only line format while adding this export.",
+    "Do not change the CSV column order after the user has accepted the first exported sample.",
+    "Commits happen only when the user delegates them.",
+    "Do not modify other runs' documents."
+  ],
+  "budget": {
+    "tokens": 300000,
+    "minutes": 90,
+    "doorbell_policy": "notify"
+  }
+}

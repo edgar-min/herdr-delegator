@@ -1,0 +1,275 @@
+{
+  "definitions": {
+    "assignment": "A document the ORCH writes for a worker. Its goal is an instruction addressed to the reader who will do the work; the ORCH is the author, not the executor. The question is who should execute it.",
+    "orch-self": "The ORCH executes the work in its own session and writes no assignment at all; chosen only when the work needs the ORCH's own judgment or capability, or a small experiment settles direction more cheaply than delegating.",
+    "host-subagent": "A one-shot helper spawned for a single call that returns a table or measurement and remembers nothing afterwards; no lane, no lane report, no write ownership.",
+    "responsibility-lane": "A persistent worker session that holds a responsibility across assignments, owns declared files in the shared working tree, and reports in its own lane report; the ordinary way delegated work is done."
+  },
+  "variants": [
+    "v3  whole+goal (baseline)",
+    "v4a +definitions",
+    "v4b +definitions +ownership/boundaries/deps",
+    "v4c +definitions +fields, criteria inlined",
+    "v4d definitions only, no rules doc, criteria inlined",
+    "v4e +definitions +fields, criteria = verbatim table rows"
+  ],
+  "results": {
+    "v3  whole+goal (baseline)": {
+      "A-001": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.3,
+        "probabilities": {
+          "responsibility-lane": 0.41,
+          "host-subagent": 0.06,
+          "orch-self": 0.53
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.78,
+        "probabilities": {
+          "host-subagent": 0.09,
+          "orch-self": 0.86,
+          "responsibility-lane": 0.05
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.8,
+        "probabilities": {
+          "responsibility-lane": 0.13,
+          "host-subagent": 0.01,
+          "orch-self": 0.86
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.8,
+        "probabilities": {
+          "orch-self": 0.87,
+          "host-subagent": 0.01,
+          "responsibility-lane": 0.12
+        }
+      }
+    },
+    "v4a +definitions": {
+      "A-001": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.44,
+        "probabilities": {
+          "orch-self": 0.29,
+          "host-subagent": 0.08,
+          "responsibility-lane": 0.63
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.92,
+        "probabilities": {
+          "orch-self": 0.95,
+          "responsibility-lane": 0.04,
+          "host-subagent": 0.01
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.51,
+        "probabilities": {
+          "host-subagent": 0,
+          "responsibility-lane": 0.32,
+          "orch-self": 0.68
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.51,
+        "probabilities": {
+          "responsibility-lane": 0.32,
+          "orch-self": 0.67,
+          "host-subagent": 0.01
+        }
+      }
+    },
+    "v4b +definitions +ownership/boundaries/deps": {
+      "A-001": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.53,
+        "probabilities": {
+          "host-subagent": 0.08,
+          "responsibility-lane": 0.6799999999999999,
+          "orch-self": 0.24
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.86,
+        "probabilities": {
+          "responsibility-lane": 0.08,
+          "host-subagent": 0.01,
+          "orch-self": 0.91
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.33,
+        "probabilities": {
+          "responsibility-lane": 0.44,
+          "orch-self": 0.55,
+          "host-subagent": 0.01
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.47,
+        "probabilities": {
+          "orch-self": 0.64,
+          "host-subagent": 0.01,
+          "responsibility-lane": 0.35
+        }
+      }
+    },
+    "v4c +definitions +fields, criteria inlined": {
+      "A-001": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.99,
+        "probabilities": {
+          "responsibility-lane": 1,
+          "host-subagent": 0,
+          "orch-self": 0
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.45,
+        "probabilities": {
+          "orch-self": 0.63,
+          "responsibility-lane": 0.36,
+          "host-subagent": 0.01
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.99,
+        "probabilities": {
+          "orch-self": 0,
+          "responsibility-lane": 1,
+          "host-subagent": 0
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.98,
+        "probabilities": {
+          "orch-self": 0.01,
+          "host-subagent": 0,
+          "responsibility-lane": 0.99
+        }
+      }
+    },
+    "v4d definitions only, no rules doc, criteria inlined": {
+      "A-001": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 1,
+        "probabilities": {
+          "orch-self": 0,
+          "responsibility-lane": 1,
+          "host-subagent": 0
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.4,
+        "probabilities": {
+          "orch-self": 0.4,
+          "host-subagent": 0,
+          "responsibility-lane": 0.6
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 1,
+        "probabilities": {
+          "host-subagent": 0,
+          "orch-self": 0,
+          "responsibility-lane": 1
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.99,
+        "probabilities": {
+          "orch-self": 0.01,
+          "responsibility-lane": 0.99,
+          "host-subagent": 0
+        }
+      }
+    },
+    "v4e +definitions +fields, criteria = verbatim table rows": {
+      "A-001": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.95,
+        "probabilities": {
+          "orch-self": 0,
+          "responsibility-lane": 0.97,
+          "host-subagent": 0.03
+        }
+      },
+      "A-002": {
+        "type": "choice",
+        "choice": "orch-self",
+        "confidence": 0.57,
+        "probabilities": {
+          "responsibility-lane": 0.28,
+          "orch-self": 0.71,
+          "host-subagent": 0.01
+        }
+      },
+      "A-003": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.99,
+        "probabilities": {
+          "host-subagent": 0,
+          "responsibility-lane": 1,
+          "orch-self": 0
+        }
+      },
+      "A-004": {
+        "type": "choice",
+        "choice": "responsibility-lane",
+        "confidence": 0.97,
+        "probabilities": {
+          "responsibility-lane": 0.98,
+          "host-subagent": 0,
+          "orch-self": 0.02
+        }
+      }
+    }
+  },
+  "v4e_criteria": {
+    "orch-self": "The result is a decision, a direction, a rejected alternative, an assignment, `plan.md`, an `[ORCH Response]`, an acceptance, a guarded MCP call, or a reply to the user — or — The problem needs a capability the cheaper minds lack, or a small experiment would settle direction more cheaply than an assignment plus its failed attempts and verification",
+    "host-subagent": "The work is one call's worth of measurement or transcription with a table as its result: run a harness and return pass/fail, compress a report into a completion-condition table, re-measure coordinates, cross-check code against a claim, reproduce a worker's claim in a separate temporary root — or — The work is mechanical and bounded but you want it on a lane for parallelism, or to avoid settling who owns the files",
+    "responsibility-lane": "The work produces or changes project artifacts, or reviews them, under a specification mature enough for a profile, inside ownership that is clear, and a later assignment on the same responsibility is plausible"
+  }
+}

@@ -92,7 +92,7 @@ It emits JSON-RPC on stdout and diagnostics on stderr.
 | `io.github.edgar-min.herdr-delegator/extensions/lib/runtime.ts` | retained lifecycle authority for workspace/session identity verification, resume, focus, anchor recreation, and guarded close |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/worker.ts` | internal worker ensure/inspect/close operations consumed by MCP |
 | `io.github.edgar-min.herdr-delegator/extensions/lib/track.ts` | internal run initialization, target-ORCH lifecycle, and session retirement consumed by MCP |
-| `io.github.edgar-min.herdr-delegator/extensions/lib/templates.ts` | shipped protocol-template digests, so a template change never strands an existing run |
+| `mcp/resources.ts` | pinned read-only document resources: the upstream protocol set, `herdr-delegator://contract`, and `herdr-delegator://worker`, each refused rather than served when its bytes leave its pin |
 | `mcp/budget.ts` | metering, clamp parsing and token-axis classification, the clamp write helper, covenant math, audit document rendering, verdict parsing, the emergency carve-out's admissibility predicate and document-persisted debt |
 | `mcp/revival.ts` | rebirth approval, documents-sufficiency, and ambiguity gates, and the force-close approval reader |
 | `mcp/succession.ts` | canonical succession coordinate, inherited-claim grammar and parser, sha-freshness gate, read-only HEAD observation |
@@ -139,11 +139,8 @@ The model never supplies this path directly.
 
 ```text
 <run>/
+  mandate.json
   run.json
-  protocol.md
-  protocol-orch.md
-  protocol-worker.md
-  guidance.md
   plan.md
   evidence.md
   a2a/
@@ -156,7 +153,11 @@ The model never supplies this path directly.
     w<N>-report.md
 ```
 
-`plan.md`, `evidence.md`, assignment files, and reports exist only when authored. Initialization does not create placeholders. `guidance.md` is rendered by `open` and by both `revive` modes, never by `init`, and every layout and reconcile check tolerates its absence so runs created before it still load.
+`init` creates `run.json` and `a2a/` and nothing else; `open` adds `mandate.json`. A sibling reset also carries `plan.md` and `reset.json`. `plan.md`, `evidence.md`, assignment files, and reports otherwise exist only when authored — initialization creates no placeholders. No protocol or guidance document is rendered into a run, and no layout, reconcile, dispatch, or revival check requires one.
+
+`run.json` carries the run's own grammar so nothing has to be inferred from a prompt: `channels` states the assignment, report and inter-run path rules (`a2a/assignments/<id>.md`, `a2a/<lane>-report.md`, `a2a/orch-to-<track>_<run>.md`), and `skills` records the birth-time sha256 of the four installed `SKILL.md` files: `herdr-orch`, `herdr-worker-default`, `herdr-worker-slow`, and `herdr-worker-task`.
+
+The rules a born session works by live outside the run. The ORCH's first prompt points at `skill://herdr-orch`, naming only the mandate besides. The worker dispatch pointer names `skill://herdr-worker-<profile>`; that profile skill carries the whole worker contract for its profile and names its own references, and no common worker skill remains to be read. What both roles share — the authority index, the reservations kept to the user, and the assignment and settlement grammar — is `protocols/contract.md`, served as the MCP resource `herdr-delegator://contract` and pinned by `protocols/CONTRACT.json`; a document that does not match its pin is refused rather than served.
 
 `delegation.json` is the minimal responsibility/assignment routing authority. `herdr-workers.json` remains the lifecycle identity/session/workspace authority. Both and their locks are tool-owned, mode-0600 control-plane files.
 
@@ -260,11 +261,9 @@ There is no response action: a worker is answered by an `[ORCH Response]` append
 
 Every action also includes `track_id` and `run_id`. Strict discriminated schemas reject extra or action-inappropriate fields.
 
-### Advisory skill routes
+### Role and profile skill references
 
-Configuration may declare `skill_routing` in two cooperating parts. `skills` is a per-skill authored metadata map (`intent`, `trigger`); no installed-presence detection of any kind exists (no lockfile lookup, no SKILL.md disk walk) — a missing skill is a reader-side no-op and skill bodies resolve natively via `skill://`. `rules` accepts two shapes: legacy `boundary` × `surface` rules (optional rule-level `trigger` and `profiles`) parse unchanged, and the newer `{ agent, moment, skills }` shape lowers at parse time into the same internal vocabulary — orch moments `plan|authoring|settlement|reset` are existing boundary names, and a profile agent's `intake`/`report` lower to worker `dispatch`/`completion` scoped to that profile — so resolvers and every delivery site see one shape. The MCP layer surfaces matching rules as `skill_routes` in `init`, `preflight`, and terminal assignment results, and appends worker-surface routes to the dispatch prompt pointer, filtered by the lane's assignment profile. Route lookup never blocks control flow and routes carry no authority.
-
-Two run documents render from resolved configuration as pure projections — the renderer authors no sentences; every content block maps to a config coordinate, plus a closed set of fixed structural strings. `guidance.md` carries the ORCH's worker-profile selection table (each profile's `intent`; the legacy `guidance` field serves as `intent` fallback) and the orch-moment routes with each skill's `intent` and `trigger`; it renders at `open` and both revival modes. `guidance-<profile>.md` carries that profile's `directive` and its intake/report routes; it is materialized at dispatch and named in the dispatch pointer as advisory. An orchestrator `directive` renders as the first section of `guidance.md`, while a worker-profile `directive` renders only to the selected lane; both remain advisory and are omitted when absent. Absence is a no-op everywhere: a profile with neither directive nor routes renders no document and the pointer names none; a render failure degrades to a named-failure document (ORCH) or a pointer-omitting warning (lane) and never blocks a birth or dispatch.
+No configuration selects the skills a session reads. Each role and profile skill names its own references, and the dispatch pointer selects the profile skill directly. No skill-route fields or clauses are delivered in MCP results or worker prompts, and no guidance document is rendered into the run directory. Legacy configuration carrying removed routing or profile guidance keys loads through the retired-key warning path and ignores those keys.
 
 ## State and transitions
 

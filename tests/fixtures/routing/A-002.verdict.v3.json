@@ -1,0 +1,36 @@
+{
+  "model": "jev-1.13.0",
+  "question_version": "2026-09-23.3",
+  "route": {
+    "choice": "orch-self",
+    "confidence": 0.82,
+    "probabilities": {
+      "orch-self": 0.88,
+      "responsibility-lane": 0.04,
+      "host-subagent": 0.08
+    }
+  },
+  "reuse": {
+    "choice": "lane:merge-audit",
+    "confidence": 0.84,
+    "probabilities": {
+      "new-lane": 0.04,
+      "lane:merge-audit": 0.88,
+      "lane:skill-doc-lines": 0.08,
+      "lane:assignment-routing": 0
+    }
+  },
+  "profile": {
+    "choice": "slow",
+    "confidence": 0.97,
+    "probabilities": {
+      "slow": 0.98,
+      "default": 0.02,
+      "task": 0
+    }
+  },
+  "agreement": {
+    "profile": "agrees",
+    "reuse": "agrees"
+  }
+}

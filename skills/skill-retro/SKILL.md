@@ -29,7 +29,7 @@ The ORCH ends a run holding more context than anyone: every assignment, settleme
 
 ## Mining (the purpose)
 
-Refinement reads `herdr_friction {action:"list"}`: recurring `skill-review` fingerprints argue for pruning or adding routes in `skill_routing.rules` or rewriting a route's `trigger`; recurring non-skill shortfalls point at assignment templates, profiles, or tool contracts. Because only failures are filed, every group is actionable — there is no approval noise to filter out.
+Refinement reads `herdr_friction {action:"list"}`: recurring `skill-review` fingerprints argue for rewriting the routing table or the `When` column of the role or profile skill that should have sent the reader to the right reference; recurring non-skill shortfalls point at assignment templates, profiles, or tool contracts. Because only failures are filed, every group is actionable — there is no approval noise to filter out.
 
 ## Verification
 

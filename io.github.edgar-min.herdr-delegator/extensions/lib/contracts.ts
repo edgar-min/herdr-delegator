@@ -87,119 +87,15 @@ export type ConfigThinkingLevel = (typeof CONFIG_THINKING_LEVELS)[number];
 export type ModelProfile = {
   role: string;
   thinking: ConfigThinkingLevel;
-  /**
-   * Optional profile-selection criteria prose, authored per profile in a
-   * configuration layer. It is delivered to judgment boundaries as advisory
-   * material and never resolves a model, a role, or authority.
-   */
-  guidance?: string;
-  /**
-   * Optional ORCH-facing selection criteria, including what NOT to assign to
-   * this profile. It renders only to the selector (`guidance.md`) and never
-   * resolves a model, a role, or authority. When absent, `guidance` — the
-   * field it supersedes — is rendered in its place.
-   */
-  intent?: string;
-  /**
-   * Optional execution guidance. On the orchestrator profile it renders at the
-   * top of `guidance.md`; on a worker profile it renders only to the selected
-   * lane. It remains advisory.
-   */
-  directive?: string;
 };
 
-export const SKILL_ROUTE_BOUNDARIES = ["plan", "authoring", "dispatch", "completion", "settlement", "reset"] as const;
-export const MAX_SKILL_ROUTE_RULES = 16;
-export const MAX_SKILLS_PER_ROUTE = 8;
-export const MAX_PROFILES_PER_ROUTE = 8;
-export const MAX_SKILL_METADATA_ENTRIES = 64;
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-/**
- * Bound for configured advisory prose (`worker_profiles.<name>.{guidance,
- * intent,directive}`, `skill_routing.rules[].trigger`,
- * `skill_routing.skills.<name>.{intent,trigger}`). Single-line by contract so
- * the text can be rendered into tables and prompts without escaping.
- */
-export const MAX_GUIDANCE_LENGTH = 500;
-export const GUIDANCE_CONTROL_RE = /[\u0000-\u001f\u007f]/;
-
-export type SkillRouteBoundary = (typeof SKILL_ROUTE_BOUNDARIES)[number];
-
-export type SkillRouteSurface = "orch" | "worker";
-
-export type SkillRoute = {
-  boundary: SkillRouteBoundary;
-  surface: SkillRouteSurface;
-  skills: string[];
-  /**
-   * Optional prose naming when this route applies. Advisory selection criteria
-   * for the surface that reads the route; never a gate.
-   */
-  trigger?: string;
-  /**
-   * Optional worker-profile scope. A rule carrying it is delivered only when the
-   * delivery target's profile is named here; a rule without it reaches every
-   * profile. A named profile no `worker_profiles` entry defines simply never
-   * matches — rules and profiles may live in different layers, and routes are
-   * advisory. A surface with no profile in hand (every orchestrator-surface
-   * delivery point) matches only unscoped rules, so a profile-scoped route can
-   * never leak to a target whose profile is unknown.
-   */
-  profiles?: string[];
-};
-
-/** Judgment points an ORCH acts at; each is an existing boundary name. */
-export const ORCH_MOMENTS = ["plan", "authoring", "settlement", "reset"] as const;
-
-/**
- * Judgment points a worker acts at. They are the worker-surface half of the
- * `agent` × `moment` rule shape and lower into existing boundaries:
- * `intake` → `dispatch`, `report` → `completion`.
- */
-export const WORKER_MOMENTS = ["intake", "report"] as const;
-
-export type OrchMoment = (typeof ORCH_MOMENTS)[number];
-
-export type WorkerMoment = (typeof WORKER_MOMENTS)[number];
-
-/**
- * The authored `agent` × `moment` rule shape. It carries no rule-level trigger:
- * timing prose lives per skill in `skill_routing.skills`, and the moment itself
- * carries the timing a worker document needs. Rules of this shape are lowered
- * into `SkillRoute` at parse, so every resolver and delivery point keeps one
- * internal vocabulary.
- */
-export type SkillAgentRule =
-  | { agent: "orch"; moment: OrchMoment; skills: string[] }
-  | { agent: string; moment: WorkerMoment; skills: string[] };
-
-/**
- * Per-skill authored metadata. `intent` is what the skill does, rendered
- * wherever the skill is named; `trigger` is when it applies, rendered only to
- * the ORCH. Neither is presence detection: an uninstalled skill stays a
- * reader-side no-op and its body resolves natively through `skill://`.
- */
-export type SkillMetadata = {
-  intent?: string;
-  trigger?: string;
-};
-
-/**
- * Resolved routing configuration. Unlike `worker_profiles`, this object is
- * replaced whole by a later configuration layer.
- */
-export type SkillRoutingConfig = {
-  rules: SkillRoute[];
-  skills?: Record<string, SkillMetadata>;
-};
 
 export type DelegatorConfig = {
   version: 1;
   orchestrator: ModelProfile;
   worker_profiles: Record<string, ModelProfile>;
   storage?: { root: string };
-  skill_routing?: SkillRoutingConfig;
 };
 
 export type ConfigSource = {
@@ -225,6 +121,20 @@ export type ResolvedLaunchProfile = {
   effective_thinking: ConfigThinkingLevel;
 };
 
+/**
+ * Where a run's documents live, as path rules relative to the run directory.
+ * The run states its own channel grammar so no reader has to infer it from a
+ * prompt or a protocol document.
+ */
+export type RunChannels = {
+  assignments: string;
+  reports: string;
+  inter_run: string;
+};
+
+/** sha256 of each role skill's SKILL.md as installed at this run's birth. */
+export type RunSkillDigests = Record<string, string>;
+
 export type RunManifest = {
   version: 1;
   track_id: string;
@@ -233,6 +143,8 @@ export type RunManifest = {
   run_path: string;
   created_at: string;
   reset_of?: { track_id: string; run_id: string; path: string };
+  channels?: RunChannels;
+  skills?: RunSkillDigests;
 };
 
 export type ResolvedRun = {

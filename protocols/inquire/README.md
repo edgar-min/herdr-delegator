@@ -1,7 +1,7 @@
 # inquire — Phase 0 scan over a structured mandate
 
 The scan reads a structured mandate (the JSON shape in
-`skills/herdr-delegation/references/mandate-authoring.md`), asks one judgment per
+`skills/herdr-create/references/mandate-authoring.md`), asks one judgment per
 passage, and reports which passages an ORCH could not act on from the mandate alone.
 Each passage is placed on four ordered levels: `self_contained`, `lookup_named`,
 `facts_unnamed`, `decision_missing`. Passages at or above `keepFrom` (default 1)
@@ -18,13 +18,12 @@ copy of the Jev client for exactly that reason — this directory imports nothin
 
 ```
 bun protocols/inquire/scripts/scan.ts <mandate.json> [keepFrom=1]
-bun protocols/inquire/scripts/mandate-to-open.ts <mandate.json>
 ```
 
 `scan.ts` prints the per-passage table and writes `<mandate>.scan-result.json` beside
 the input. It needs a Jev API key in `TYPESAFE_API_KEY` or `JEV_API_KEY`, in the
-environment or in `<agent dir>/herdr-delegator/.env`. `mandate-to-open.ts` prints the
-flattened `mandate` object for `herdr_track open`.
+environment or in `<agent dir>/herdr-delegator/.env`. `herdr_track open` takes the
+mandate object itself, so nothing flattens it any more.
 
 ```
 bun test protocols/inquire
