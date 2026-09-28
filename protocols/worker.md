@@ -21,7 +21,7 @@ The assignment's fixed shape and reference-pin rules are in the resource URI `he
 
 ## Report
 
-Append durable evidence, results, decision requests, and completion only to your own lane report. Do not replace or rewrite its prior history. Record material changes, commands or scenarios actually observed, exact results, unresolved gaps, and anything that remains unverified.
+Append durable evidence, results, decision requests, and completion only to your own lane report. Do not replace or rewrite its prior history. The first write to the lane report is also an append (create it if missing, in append mode), never a whole-file write, because an `[ORCH Response]` may already be there. Record material changes, commands or scenarios actually observed, exact results, unresolved gaps, and anything that remains unverified.
 
 The canonical assignment is immutable after dispatch. Tool-owned manifests, indexes, registries, worker records, and locks are never edited, moved, copied, unlocked, or used as substitute report surfaces.
 

@@ -2,7 +2,7 @@
 
 ## Status and language
 
-This document is the normative architecture and Markdown review artifact for `herdr-delegator` 4.0.1 and the bundled `herdr-create` skill 4.0.1.
+This document is the normative architecture and Markdown review artifact for `herdr-delegator` 4.0.2 and the bundled `herdr-create` skill 4.0.2.
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**, and **MAY** are interpreted as described by RFC 2119.
 
@@ -11,8 +11,8 @@ Statements under **Implemented facts** describe the current source contract. Sta
 ## 1. Identity, scope, and versions
 
 - **ID-001**: The public package and OMP plugin name MUST be `herdr-delegator`.
-- **ID-002**: The package and plugin version MUST be `4.0.1`.
-- **ID-003**: The public skill MUST be named `herdr-create` and versioned `4.0.1` under frontmatter metadata.
+- **ID-002**: The package and plugin version MUST be `4.0.2`.
+- **ID-003**: The public skill MUST be named `herdr-create` and versioned `4.0.2` under frontmatter metadata.
 - **ID-004**: The public MCP tools MUST be exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`.
 - **ID-005**: OMP MUST be the only officially supported agent runtime.
 - **ID-006**: The repository identity MUST be `https://github.com/edgar-min/herdr-delegator`.
@@ -151,7 +151,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### 5.2 `herdr_track`
 
-- **RUN-001**: `open` MUST be the single atomic entry for a new track and MUST, in one call, lay out the run, fix the bounded mandate as `mandate.json`, stamp the creator, spawn the ORCH pre-aligned to the configured orchestrator role, and record the ORCH birth. `cwd` MUST be an existing absolute canonical project path.
+- **RUN-001**: `open` MUST be the single atomic entry for a new track and MUST, in one call, lay out the run, fix the bounded mandate as `mandate.json`, stamp the creator, spawn the ORCH pre-aligned to the configured orchestrator role, and record the ORCH birth. The birth MUST be recorded once the spawned session identity is verified and before the first-prompt delivery wait; a failure after it MUST return `effect: ambiguous` carrying the birth, and the identical retry MUST return `already_open`. `cwd` MUST be an existing absolute canonical project path.
 - **RUN-001a**: `open` MUST stamp the creator record before the spawn, so a failed spawn leaves a run no other caller can command and only the same creator coordinate can complete; it MUST be re-entrant under an identical mandate and MUST refuse a different mandate with `mandate_conflict`.
 - **RUN-001b**: An attested creator session MUST be retired for that run, and its later guarded calls MUST fail `creator_session_retired`. A degraded opening pane MUST likewise be retired from guarded calls but has no session ID to record as retired. The result MUST carry a redirection pointer naming the ORCH pane.
 - **RUN-001c**: Mandate limits MUST be published up front and named with the observed size on rejection: intent 4096 characters, each list entry 500 characters, at most 32 entries per list, whole rendered document 16384 bytes.
@@ -211,7 +211,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 - **MSG-001**: `wake_orch` MUST require `assignment_id` and a `boundary` from `completed`, `failed`, `blocked`, `decision-request`; `wake_orch_audit` MUST require only the run coordinate, because an audit is not an assignment and its document, never the bell, carries the verdict; `wake_peer` and `wake_worker` MUST require `to_worker_id`; `wake_worker` MAY accept `assignment_id`, which MUST name the target lane's active or queued assignment and MUST otherwise resolve to `target_unresolved` with no bell sent; `boundary` MUST be rejected by every action other than `wake_orch`; `notify_run` MUST require exactly `to_track_id` and `to_run_id` and MUST accept no payload. The server-composed `wake_worker` subject MUST state the assignment axis, one reason token, and — whenever the lane's queue is non-empty and the head is not already the named axis — that queue head, so a reordered queue is observable from the bell without changing what a reason token means.
 - **MSG-002**: The server MUST compose every delivered text and resolve every target from birth records and the worker registry; callers MUST NOT supply prompt text, panes, agent names, or argv.
 - **MSG-003**: Delivery MUST be transported as Herdr agent-prompt pane input — the pane input is what triggers the receiving session — and MUST NOT use any other signaling channel.
-- **MSG-004**: A message call MUST hard-error only on invalid input; delivery outcome MUST surface as a successful observation with `delivery` drawn from `delivered`, `deferred`, `rejected_blocked`, `target_unresolved`, `failed`. A target not proved focused MUST send immediately. A focused target MUST return `deferred` immediately, wait 60 seconds in the server process, re-probe once, send then if unfocused or the probe fails, otherwise wait a final 90 seconds and send exactly once.
+- **MSG-004**: A message call MUST hard-error only on invalid input; delivery outcome MUST surface as a successful observation with `delivery` drawn from `delivered`, `after_completion` (a delivered `wake_worker` whose subject assignment's last completion block is `completed` or `failed`), `deferred`, `rejected_blocked`, `target_unresolved`, `failed`. A target not proved focused MUST send immediately. A focused target MUST return `deferred` immediately, wait 60 seconds in the server process, re-probe once, send then if unfocused or the probe fails, otherwise wait a final 90 seconds and send exactly once.
 - **MSG-005**: Every immediate send attempt and outcome MUST be appended best-effort to the sending run's `a2a/messages.jsonl`. A deferred send MUST append one scheduled row immediately with a delivery ID and the 60s/90s/150s tick plan, then one final delivered/failed row with the same identity after the background send. Log failure MUST NOT block the message; server shutdown MAY lose the soft deferred send because the named document already carries the authoritative content, with a missing final row exposing that loss.
 - **MSG-006**: Sender identity is advisory routing context: an unverifiable bridge MUST degrade the sender to `unverified` with a warning instead of refusing delivery, except `wake_peer`, whose channel name requires a verified sender lane.
 - **MSG-007**: A doorbell MUST carry no content of its own. `notify_run` MUST require the sender-owned inter-run channel document `a2a/orch-to-<to_track_id>_<to_run_id>.md` to exist and be non-empty, MUST ring with that document's path, SHA-256, and byte count, and MUST hard-error `channel_document_missing` or `channel_document_empty` otherwise.
@@ -358,9 +358,9 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ## 11. Installation and packaging
 
-- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 4.0.1, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
+- **PKG-001**: Root `plugin.json` MUST conform to Agent Plugins 1.0.0, identify `herdr-delegator` version 4.0.2, and contain client-specific OMP data only under `extensions.io.github.edgar-min.herdr-delegator`.
 - **PKG-002**: Root `mcp.json` MUST conform to Agent Plugins 1.0.0 and advertise one `herdr-delegator` stdio server that survives a stripped spawn environment: command `sh` with args `["-c", "exec \"${PLUGIN_ROOT:-.}/bin/herdr-delegator-mcp\""]` and an env carrying a guaranteed baseline `PATH` (`/usr/bin:/bin`); `.mcp.json` MUST NOT exist. (friction 9072a9da598edd89)
-- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 4.0.1, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
+- **PKG-003**: Agent Plugins portable authority MUST remain `plugin.json`, `skills/`, and `mcp.json`. `package.json` MUST remain npm/current-OMP compatibility metadata with version 4.0.2, direct runtime dependencies, and only the namespaced `omp.extensions` entry.
 - **PKG-004**: The publish allowlist MUST include `plugin.json`, `mcp.json`, executable `bin/herdr-delegator-mcp`, `io.github.edgar-min.herdr-delegator/**/*.ts`, `mcp/**/*.ts`, the bundled skill, schemas/examples, README, CHANGELOG, LICENSE, and docs.
 - **PKG-005**: README prerequisites MUST require OMP, Herdr, Bun, and `herdr integration install omp`, and MUST document GitHub installation plus local development linking. The POSIX launcher MUST first prepend `${HOME}/.local/bin`, `${HOME}/.bun/bin`, and `/usr/local/bin` to `PATH` (so its own Bun lookup and the server's Herdr binary discovery survive a stripped spawn environment), resolve Bun only from `PATH`, `${BUN_INSTALL}/bin/bun`, or `${HOME}/.bun/bin/bun`, emit no stdout, and exit 127 with one stderr error when Bun is unavailable.
 - **PKG-006**: `/reload-plugins` MUST be documented as the skill/MCP reload boundary; changed OMP extension cutover MUST be verified in a new OMP session.
@@ -423,7 +423,7 @@ Statements under **Implemented facts** describe the current source contract. Sta
 
 ### Implemented facts to verify against source
 
-- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 4.0.1.
+- [ ] Agent Plugins `plugin.json`, Agent Skills frontmatter, package metadata, and skill metadata identify version 4.0.2.
 - [ ] `mcp/server.ts` registers exactly `herdr_track`, `herdr_assignment`, `herdr_worker`, `herdr_message`, and `herdr_friction`; the namespaced OMP extension is bridge-only and registers no command.
 - [ ] Every action and field matches the discriminated schemas in `mcp/contracts.ts`.
 - [ ] Assignment Markdown grammar, hash verification, report settlement, and the seven-state union match `mcp/registry.ts`.

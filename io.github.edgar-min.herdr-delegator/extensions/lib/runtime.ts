@@ -301,7 +301,9 @@ export function publicWorker(record: RegistryRecord): Record<string, unknown> {
 }
 
 async function findHerdrBinary(): Promise<string> {
-  const bunWhich = Bun.which("herdr");
+  // Bun.which reads the launch-time PATH unless given one; pass the live value
+  // so lookup agrees with the env every runHerdr spawn inherits.
+  const bunWhich = Bun.which("herdr", { PATH: process.env.PATH ?? "" });
   if (bunWhich) return bunWhich;
   const entries = String(process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   for (const entry of entries) {

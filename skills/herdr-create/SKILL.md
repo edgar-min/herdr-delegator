@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
-  version: "4.0.1"
+  version: "4.0.2"
 ---
 
 # Herdr track creation
@@ -60,6 +60,8 @@ It returns `data.lines[]` of `{ok, rule, detail}` and `data.verdict`. Its determ
 Show the user the complete JSON exactly as it will be sent and ask for "open". Say what that word authorizes: the birth of the ORCH and its execution of `entry.protocol` on `entry.utterance` — not implementation, not dispatch, not any action listed in `forbidden`. Do not open on a partial reading of approval.
 
 Then make exactly one `herdr_track` call with `action: "open"`, the project working directory, and the same mandate object inline — the draft lives in this conversation and in that call, never as a file in the user's project. The server re-runs the check, writes `<run>/mandate.json`, fingerprints it, and births the ORCH. Do not lay out run files, start an orchestrator separately, edit tool-owned state, or compensate for a failed open; follow the returned recovery exactly.
+
+If the user says they want to open the track themselves rather than have this session do it, hand them the manual path instead of calling `open`: write the same mandate JSON to a file **outside** the project (for example under `/tmp`), and tell them to run, from a shell pane inside Herdr (`HERDR_ENV=1` and `HERDR_PANE_ID` are set there; an OMP session is not needed), `bin/herdr-delegator-mcp open --mandate <file> --cwd <project-dir> --track <track_id> --run r1` from the installed plugin root, optionally `check` with the same `--mandate` and `--cwd` first. The command performs the identical check and open, and births the ORCH the same way; the only difference is that from an agentless pane the creator is stamped `verified: false`. After handing over the command, this session is done with the track exactly as after a served open.
 
 ## Redirect, then die well
 

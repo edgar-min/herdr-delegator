@@ -1101,34 +1101,45 @@ function classifyOwnershipToken(raw: string): OwnershipDeclarationClass | undefi
 }
 
 /**
- * Accepted bullet forms, and nothing else: a bare token; one backticked token;
- * or an optional `Yours:` label plus comma-separated backticked tokens. A
- * backticked form may carry one trailing ` — note` or ` (note)`. Anything else —
- * a sentence that happens to contain a path, an absolute path, `..`, a glob
- * other than a terminal `/**` — is one `unclassified`, which is a reportable
- * fact rather than a silent miss.
+ * The raw tokens of one bullet in an accepted form, or nothing. Accepted forms,
+ * and nothing else: a bare token; one backticked token; or an optional `Yours:`
+ * label plus comma-separated backticked tokens. A backticked form may carry one
+ * trailing ` — note` or ` (note)`.
  */
-export function classifyOwnershipDeclarations(declaration: string): OwnershipDeclarationClass[] {
-  const unclassified: OwnershipDeclarationClass[] = [{ kind: "unclassified" }];
-  if (Buffer.byteLength(declaration) > MAX_OWNERSHIP_DECLARATION_BYTES) return unclassified;
+function ownershipTokens(declaration: string): string[] | undefined {
+  if (Buffer.byteLength(declaration) > MAX_OWNERSHIP_DECLARATION_BYTES) return undefined;
   const bullet = declaration.trim();
-  if (!bullet) return unclassified;
-  if (!bullet.includes("`")) {
-    const bare = classifyOwnershipToken(bullet);
-    return bare ? [bare] : unclassified;
-  }
+  if (!bullet) return undefined;
+  if (!bullet.includes("`")) return [bullet];
   const paren = OWNERSHIP_PAREN_TRAILER_RE.exec(bullet);
   const dash = paren ? undefined : OWNERSHIP_DASH_TRAILER_RE.exec(bullet);
   const trailer = paren ?? dash;
   const labelled = (trailer && trailer[2].trim() ? trailer[1] : bullet).trim();
   const label = OWNERSHIP_LABEL_RE.exec(labelled);
   const listed = (label ? label[1] : labelled).trim();
-  const classes: OwnershipDeclarationClass[] = [];
-  const seen = new Set<string>();
+  const tokens: string[] = [];
   for (const part of listed.split(",")) {
     const quoted = OWNERSHIP_BACKTICK_TOKEN_RE.exec(part.trim());
-    if (!quoted) return unclassified;
-    const classified = classifyOwnershipToken(quoted[1]);
+    if (!quoted) return undefined;
+    tokens.push(quoted[1]);
+  }
+  return tokens;
+}
+
+/**
+ * Classifies a bullet in one of the forms `ownershipTokens` accepts. Anything
+ * else — a sentence that happens to contain a path, an absolute path, `..`, a
+ * glob other than a terminal `/**` — is one `unclassified`, which is a
+ * reportable fact rather than a silent miss.
+ */
+export function classifyOwnershipDeclarations(declaration: string): OwnershipDeclarationClass[] {
+  const unclassified: OwnershipDeclarationClass[] = [{ kind: "unclassified" }];
+  const tokens = ownershipTokens(declaration);
+  if (!tokens) return unclassified;
+  const classes: OwnershipDeclarationClass[] = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    const classified = classifyOwnershipToken(token);
     if (!classified) return unclassified;
     const key = `${classified.kind}:${classified.kind === "unclassified" ? "" : classified.value}`;
     if (seen.has(key)) continue;
@@ -1136,4 +1147,16 @@ export function classifyOwnershipDeclarations(declaration: string): OwnershipDec
     classes.push(classified);
   }
   return classes.length ? classes : unclassified;
+}
+
+/**
+ * True when every token of a bullet is one relative file path. A directory
+ * (`dir/`), a prefix (`dir/**`), a glob, or prose leaves part of the lane
+ * outside the audit, so preflight and add refuse it (`ownership_unauditable`);
+ * the settlement-side comparison still reads prefixes through
+ * `classifyOwnershipDeclarations`.
+ */
+export function isAuditableOwnershipDeclaration(declaration: string): boolean {
+  const tokens = ownershipTokens(declaration);
+  return tokens !== undefined && tokens.every((token) => !token.endsWith("/") && classifyOwnershipToken(token)?.kind === "path");
 }

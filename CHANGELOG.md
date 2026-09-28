@@ -13,6 +13,26 @@ the single orchestrator session that commands a run. Herdr **spaces**, **tabs**,
 **panes** are the live supervision surface. See the
 [README](README.md) and [specification](docs/SPEC.md) for the full model.
 
+## [4.0.2] - 2026-09-28
+
+Patch for the defects and handoff items carried from the 4.0.1 dogfooding track, plus the one command-line entry point the user asked for. No other documented behavior changes.
+
+### Fixed
+
+- `herdr_track open` records the ORCH birth as soon as the spawned pane's bootstrap session is verified and before the first-prompt delivery wait, so Herdr's fixed 5 000 ms `agent prompt --wait` stall window (`agent_prompt_stalled`) no longer leaves a live, verified ORCH pane with no `orch_births` record and a run nothing can command. A failure after the birth returns `effect: ambiguous` carrying `data.orch_birth` and `data.orch_pane_id` with a recovery that says the identical re-run reconciles without replaying the prompt; that re-run returns `already_open` (frictions 0174bf1aced02221, 9dac44312a22be42).
+- The `orch_birth_missing` recovery texts no longer name a creator-session re-run as the sole repair and say that a server older than 4.0.2 could leave the record missing after a first-prompt stall.
+- `herdr_track open` on a fresh coordinate from a Herdr pane that has no agent (`herdr agent get` → `agent_not_found`) stamps an unverified creator `{ pane_id, verified: false }` exactly as an OMP fact-bridge mismatch does, instead of refusing before anything is laid out; every other error stays fail-closed.
+- `herdr_assignment preflight` and `add` refuse a `# Write ownership` bullet that is not a single file path (glob, directory, or prose) with `ownership_unauditable`, quoting the bullet, instead of warning and leaving the lane unaudited; the rule is stated in the action description.
+- A `# References` pin of the run's own `plan.md` is verified at `add` but never reported as `reference_drift` afterwards, because the plan is a living decision log (frictions d65cca55, 72ac984f).
+- `herdr_message wake_worker` on an assignment whose lane report already ends with a valid `completed` or `failed` block reports `data.delivery: "after_completion"` with a warning so the ORCH registers a new assignment instead of a directive nobody will act on; the bell is still delivered (friction 130947ee).
+- `herdr-delegator://worker` states that the first write to a lane report is an append, never a whole-file write, and the server records each lane report's byte length at every observation (`report_bytes` on the lane record) and warns `report_clobbered` once when it shrinks (friction e0816499). Compatibility: a server older than 4.0.2 reading a `delegation.json` that carries `report_bytes` fails `delegation_registry_invalid`; its recovery already says to respawn the plugin.
+- `findHerdrBinary` in the OMP extension resolves `herdr` against the process's current `PATH`, not the `PATH` Bun captured at start.
+
+### Added
+
+- A command-line track open: `bin/herdr-delegator-mcp open --mandate <file> --cwd <dir> --track <id> [--run r1]` runs the same mandate check and the same open the MCP `herdr_track open` runs, from a shell pane inside Herdr (`HERDR_ENV=1`, `HERDR_PANE_ID`) with no OMP session, producing the same run layout and ORCH birth with the creator stamped unverified; `bin/herdr-delegator-mcp check --mandate <file> --cwd <dir>` prints the check lines and exits 0 on PASSED. The launcher with no arguments still starts the MCP server. Documented in the README.
+- `herdr-create` hands the user the manual command-line open path when they want to open the track themselves, and `herdr-orch` states the track's measure — completion within its budget, judgments delegated where they can be and only their reasonableness judged, execution handed to a lane — as its third obligation beside the context boundary and delegation-by-default (handoff item R-7).
+
 ## [4.0.1] - 2026-09-23
 
 Patch for the defects recorded while dogfooding 4.0.0. No documented behavior changes beyond the fixes below.

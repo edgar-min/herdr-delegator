@@ -6,10 +6,10 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { initializeRun, inspectOrchestrator, labelOwnedPane, retireOrchestratorSession, startOrchestrator } from "../io.github.edgar-min.herdr-delegator/extensions/lib/track";
-import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, loadDelegatorConfig, newestEntryAnchor, readRunIndex, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
+import { MAX_ANCHOR_BYTES, classifyOwnershipDeclarations, inboundChannelEntries, isAuditableOwnershipDeclaration, loadDelegatorConfig, newestEntryAnchor, readRunIndex, storageRootFromConfig, writeAtomic, type InboundChannelObservation, type RunIndexRow } from "../io.github.edgar-min.herdr-delegator/extensions/lib/config";
 import { readRegistry } from "../io.github.edgar-min.herdr-delegator/extensions/lib/runtime";
 import { closeWorker, ensureWorker, inspectWorker, verifyPromptedWorker } from "../io.github.edgar-min.herdr-delegator/extensions/lib/worker";
-import { ContractError as LegacyContractError, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
+import { ContractError as LegacyContractError, type TrackResult, type WorkerResult } from "../io.github.edgar-min.herdr-delegator/extensions/lib/contracts";
 import { BOOTSTRAP_METADATA_TTL_MS, BOOTSTRAP_TOKEN_PREFIX, BOOTSTRAP_TOKENS } from "../io.github.edgar-min.herdr-delegator/extensions/lib/bridge";
 import { HerdrAdapter } from "./herdr-adapter";
 import { DelegationStore, mountedBuild } from "./registry";
@@ -45,7 +45,7 @@ function orchIdentityError(registry: Pick<DelegationRegistry, "orch_births" | "o
   const births = registry.orch_births ?? [];
   const latest = births[births.length - 1];
   if (!latest) {
-    return new McpContractError("orch_birth_missing", "This run was opened but its ORCH was never born, so nothing commands it yet.", "attest", "Re-run herdr_track open from the opening session with the identical mandate; it is idempotent and completes the birth.");
+    return new McpContractError("orch_birth_missing", "This run was opened but its ORCH was never born, so nothing commands it yet.", "attest", "A server older than 4.0.2 could leave this record missing after a first-prompt stall. Re-running the identical herdr_track open from the opening session records it; if that session is gone, report the run to the user rather than claiming it.");
   }
   if (registry.orch_creator?.session_id === sessionId) {
     return new McpContractError("creator_session_retired", `The session that opened this track died for it at birth; generation ${latest.generation} commands this run.`, "attest", "Stop working this track here and converse with the named ORCH pane; refuse to accumulate more context on it.");
@@ -859,6 +859,22 @@ async function runAlreadyInitialized(trackId: string, runId: string, cwd: string
   }
 }
 
+/**
+ * True when Herdr answered `agent get <caller pane>` with `agent_not_found`: the
+ * caller is a plain shell pane with no agent (CLI open). The adapter surfaces
+ * the CLI's stderr body verbatim as the message of `herdr_command_failed`, so
+ * the Herdr code is read from that JSON, never guessed from free text. Only
+ * `agent get` answers `agent_not_found`; a missing pane is `pane_not_found`.
+ */
+function callerAgentAbsent(error: McpContractError): boolean {
+  if (error.code === "agent_not_found") return true;
+  if (error.code !== "herdr_command_failed") return false;
+  try {
+    const parsed: unknown = JSON.parse(error.message);
+    return isObject(parsed) && isObject(parsed.error) && parsed.error.code === "agent_not_found";
+  } catch { return false; }
+}
+
 async function loadOpenCreator(
   adapter: HerdrAdapter,
   allowDegraded: boolean,
@@ -867,7 +883,7 @@ async function loadOpenCreator(
     const { facts } = await loadFacts(adapter);
     return { identity: { session_id: facts.session_id, pane_id: facts.pane_id, verified: true } };
   } catch (error) {
-    if (!allowDegraded || !(error instanceof McpContractError) || error.code !== "omp_fact_bridge_mismatch") throw error;
+    if (!allowDegraded || !(error instanceof McpContractError) || (error.code !== "omp_fact_bridge_mismatch" && !callerAgentAbsent(error))) throw error;
     const paneId = process.env.HERDR_PANE_ID;
     if (!paneId || paneId.length > 80 || !BOUNDED_TOKEN_RE.test(paneId)) throw error;
     return { identity: { pane_id: paneId, verified: false }, mismatch: error };
@@ -977,6 +993,23 @@ function resultError(tool: ToolName, action: string, run: RunRef, error: unknown
   if (error instanceof McpContractError) return failure(error.code, error.phase, error.message, error.recovery, error.ambiguousEffect, error.retryable);
   if (error instanceof LegacyContractError) return failure(error.code, normalizeLegacyPhase(error.phase), error.message, error.recovery, error.ambiguousEffect, error.retryable);
   return failure("internal_error", "validate", error instanceof Error ? error.message : String(error), "Inspect stderr and canonical registries; do not repeat a mutation blindly.", false, false);
+}
+
+/**
+ * An `open` that failed after its birth was recorded: the ORCH exists, so the
+ * effect is ambiguous and the identical retry reconciles through `already_open`
+ * instead of the recovery the underlying error names.
+ */
+function bornOpenFailure(run: RunRef, error: unknown, birth: OrchBirthRecord): McpResult {
+  const failed = resultError("herdr_track", "open", run, error);
+  const recovery = `The ORCH is born in pane ${birth.pane_id} and its birth (generation ${birth.generation}) is recorded. Re-run the identical herdr_track open: it reconciles against the recorded birth without replaying the prompt.`;
+  return {
+    ...failed,
+    effect: "ambiguous",
+    retryable: true,
+    ...(failed.error ? { error: { ...failed.error, recovery, ambiguous_effect: true } } : {}),
+    data: { ...(isObject(failed.data) ? failed.data : {}), orch_birth: birth, orch_pane_id: birth.pane_id },
+  };
 }
 
 async function updateLaneFromWorker(store: DelegationStore, workerId: string, result: Pick<WorkerResult, "state" | "worker">): Promise<DelegationRegistry> {
@@ -1091,6 +1124,20 @@ export function completionExample(assignmentId: string, status: CompletionStatus
 }
 
 /**
+ * The settling status a lane report carries for an assignment: the status of
+ * its LAST valid completion block, when that is `completed` or `failed`. An
+ * unreadable report reads as none.
+ */
+async function reportedTerminalStatus(runPath: string, workerId: string, assignmentId: string): Promise<"completed" | "failed" | undefined> {
+  let report: string;
+  try { report = await readFile(path.join(runPath, "a2a", `${workerId}-report.md`), "utf8"); }
+  catch { return undefined; }
+  const settleable = scanCompletionBlocks(report, assignmentId).filter((candidate) => !candidate.heading && candidate.status !== undefined);
+  const status = settleable[settleable.length - 1]?.status;
+  return status === "completed" || status === "failed" ? status : undefined;
+}
+
+/**
  * Re-decides, INSIDE the write transaction, the three facts every assignment
  * writer in this file read outside it: that the record still exists, that it is
  * still bound to this lane, and that the lane still holds it as active.
@@ -1117,6 +1164,28 @@ function assignmentWriterConflict(next: DelegationRegistry, workerId: string, as
 }
 
 /**
+ * Records a lane report's byte length at each observation and warns when it
+ * shrank since the previous one (friction e0816499). A lane report is
+ * append-only, so a smaller file means a whole-file write replaced part of its
+ * history. A warning, never a refusal; the smaller length is then recorded so
+ * the warning fires once. Writes only when the length moved.
+ */
+async function observeReportLength(store: DelegationStore, registry: DelegationRegistry, workerId: string, warnings?: string[]): Promise<DelegationRegistry> {
+  let bytes: number;
+  try {
+    const found = await lstat(path.join(store.runPath, "a2a", `${workerId}-report.md`));
+    if (!found.isFile()) return registry;
+    bytes = found.size;
+  } catch { return registry; }
+  const recorded = registry.lanes[workerId]?.report_bytes;
+  if (recorded === bytes) return registry;
+  if (recorded !== undefined && bytes < recorded) {
+    warnings?.push(`report_clobbered: a2a/${workerId}-report.md is ${bytes} bytes, smaller than the ${recorded} bytes recorded at its previous observation. A lane report is append-only, so a whole-file write replaced part of its history — an [ORCH Response] or an earlier block may be gone. Read the report and restore what is missing by appending; nothing was refused.`);
+  }
+  return store.mutate(DEFAULT_TIMEOUT_MS, (next) => { if (next.lanes[workerId]) next.lanes[workerId].report_bytes = bytes; });
+}
+
+/**
  * Settles one assignment from its own durable evidence, or leaves it untouched.
  *
  * The predicate is otherwise unchanged: the lane is observed idle or failed AND
@@ -1128,6 +1197,7 @@ function assignmentWriterConflict(next: DelegationRegistry, workerId: string, as
  * bbc360a158e3a3bf, 55bd11394cc1553a, 0b2c5548cb73bf25, ffd8390346e69cae).
  */
 export async function settleIfReported(store: DelegationStore, registry: DelegationRegistry, lane: WorkerLaneRecord, assignment: AssignmentRecord, warnings?: string[]): Promise<DelegationRegistry> {
+  registry = await observeReportLength(store, registry, lane.worker_id, warnings);
   if (lane.state !== "idle" && lane.state !== "failed") return registry;
   const reportPath = path.join(store.runPath, "a2a", `${lane.worker_id}-report.md`);
   let report: Buffer;
@@ -1438,13 +1508,36 @@ export function assertReferencesPinned(assignmentId: string, observations: reado
 }
 
 /**
+ * Refuses a `# Write ownership` bullet the settlement audit cannot compare —
+ * a glob, a directory, or prose leaves that part of the lane unaudited — before
+ * the assignment ID is consumed.
+ */
+function assertOwnershipAuditable(assignmentId: string, declarations: readonly string[]): void {
+  const unauditable = declarations.filter((declaration) => !isAuditableOwnershipDeclaration(declaration));
+  if (!unauditable.length) return;
+  const quoted = unauditable.slice(0, 8).map((declaration) => JSON.stringify(`- ${declaration}`)).join(", ");
+  throw new McpContractError(
+    "ownership_unauditable",
+    `Section "# Write ownership" of ${assignmentId} has ${unauditable.length} bullet(s) that are not file paths: ${quoted}${unauditable.length > 8 ? ", …" : ""}.`,
+    "validate",
+    `Write one file path per bullet, relative to the project directory, for each file the lane may change — no glob ("*", "?", "{"), no directory ("dir/" or "dir/**"), no prose. Nothing was registered: the assignment ID is still free, and the edit changes the artifact's hash, so pass the new instructions_sha256 on the next add.`,
+  );
+}
+
+/**
  * Post-dispatch drift, as an observation. The dispatch stands (Q13): the worker
  * holds the pinned hashes, so the honest thing is to say which document moved,
  * not to invent a refusal for work already delivered.
+ *
+ * The run's own `plan.md` is verified at preflight and add like any pin, but it
+ * is a living document the ORCH keeps editing, so its later change is never
+ * drift (frictions d65cca55, 72ac984f); a frozen spec section is pinned as its
+ * own copy instead.
  */
 export async function observeReferenceDrift(store: DelegationStore, registry: DelegationRegistry, assignment: AssignmentRecord | undefined): Promise<string | undefined> {
-  if (!assignment?.references?.length) return undefined;
-  const observations = await observeReferences(store.runPath, assignment.references);
+  const pinned = assignment?.references?.filter((reference) => reference.path !== "plan.md");
+  if (!assignment || !pinned?.length) return undefined;
+  const observations = await observeReferences(store.runPath, pinned);
   const problems = observations.filter((observation) => observation.problem !== undefined);
   if (!problems.length) return undefined;
   return `reference_drift: ${problems.length} of ${observations.length} document(s) ${assignment.assignment_id} pinned in "# ${ASSIGNMENT_REFERENCES_SECTION}" no longer match: ${problems.map((observation) => `${observation.path} ${observation.problem}`).join("; ")}. The dispatch is not recalled and cannot be — the worker already holds the assignment and its pinned hashes, and can verify each document itself. Treat this as evidence about the documents, and reflect any correction in a NEW assignment rather than by editing the immutable one.`;
@@ -1720,7 +1813,7 @@ export class CompositeTools {
         // owned by `open`, so allowing it here would hand any attested session a
         // generation bump around the creator lockout.
         if ((await store.read()).orch_creator) throw new McpContractError("track_opened_atomically", "This run was opened with herdr_track open, which owns its ORCH spawn.", "attest", "Re-run herdr_track open with the identical mandate to reconcile the ORCH; start_orchestrator remains only for runs created by init.");
-        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id });
+        const result = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id }, undefined, { onBootstrapVerified: (orchestrator) => this.recordSpawnBirth(store, orchestrator) });
         const birth = await this.recordSpawnBirth(store, result.orchestrator);
         return { ok: true, tool: "herdr_track", action: input.action, run, effect: "confirmed", retryable: false, data: { ...result, ...(birth ? { orch_birth: birth } : { orch_birth_warning: "Spawned ORCH identity incomplete; birth not recorded — its first guarded command claims this run." }) } };
       }
@@ -1968,6 +2061,9 @@ export class CompositeTools {
    *    re-running the identical open, can finish the birth.
    *  - birth and retirement are the same record write: the creator is retired
    *    exactly when an ORCH exists to replace it, never before.
+   *  - the birth is recorded once the spawned session is verified and before
+   *    the first-prompt wait, so a later failure returns `ambiguous` with the
+   *    birth and the identical retry returns `already_open`.
    * Residue a failure can leave — the run directory, the mandate, the track
    * space, and (past the spawn) the ORCH pane — is named in the failure's
    * recovery text and reused by the retry; nothing is orphaned silently.
@@ -2050,7 +2146,16 @@ export class CompositeTools {
     ]).catch(() => undefined);
 
 
-    const spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd });
+    const early: { birth?: OrchBirthRecord } = {};
+    let spawned: TrackResult;
+    try {
+      spawned = await startOrchestrator({ operation: "start_orch", track_id: input.track_id, run_id: input.run_id, cwd: input.cwd }, undefined, {
+        onBootstrapVerified: async (orchestrator) => { early.birth = await this.recordSpawnBirth(store, orchestrator); },
+      });
+    } catch (error) {
+      if (early.birth) return bornOpenFailure(run, error, early.birth);
+      throw error;
+    }
     const birth = await this.recordSpawnBirth(store, spawned.orchestrator);
     if (!birth) {
       throw new McpContractError("orch_birth_incomplete", "The ORCH pane started but did not report a bounded official session identity, so no birth was recorded.", "attest", `Re-run the identical herdr_track open: the spawned pane is preserved, its first prompt is not replayed, and the retry records the birth once Herdr reports the session. The creator still owns this run until then.`);
@@ -2132,7 +2237,7 @@ export class CompositeTools {
     const before = await store.read();
     const born = latestBirth(before);
     if (!born) {
-      throw new McpContractError("orch_birth_missing", "This run has no ORCH birth record, so there is nothing to revive.", "resume", "Open the track (or start its ORCH on a legacy run); revival restores a birth that already happened.");
+      throw new McpContractError("orch_birth_missing", "This run has no ORCH birth record, so there is nothing to revive.", "resume", "Revival restores a birth that already happened. A server older than 4.0.2 could leave the record missing after a first-prompt stall; re-running the identical herdr_track open from the opening session records it (start_orchestrator on a legacy run).");
     }
     const priorGeneration = (before.orch_births ?? []).some((birth) => birth.generation !== born.generation && birth.official_session_id === runtime.facts.session_id);
     if (priorGeneration) {
@@ -2150,7 +2255,14 @@ export class CompositeTools {
       retired = retirement.observation;
     }
 
-    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id });
+    // Recorded at the birth boundary so a failed prompt wait on a rebirth keeps
+    // its generation; a resume that came back as another session records nothing.
+    const recordBirth = (orchestrator: unknown): Promise<OrchBirthRecord | undefined> => {
+      const observed = stringField(orchestrator, ["session_id"]);
+      if (mode === "resume" && observed && observed !== born.official_session_id) return Promise.resolve(undefined);
+      return this.recordSpawnBirth(store, orchestrator, mode === "rebirth" ? "rebirth" : "spawn", approval?.sha256);
+    };
+    const started = await startOrchestrator({ operation: "start_orch", track_id: run.track_id, run_id: run.run_id }, undefined, { onBootstrapVerified: recordBirth });
     const observedSession = stringField(started.orchestrator, ["session_id"]);
     if (mode === "resume" && observedSession && observedSession !== born.official_session_id) {
       // Fail closed: a resume that came back as a different session is a context
@@ -2163,7 +2275,7 @@ export class CompositeTools {
         true,
       );
     }
-    const birth = await this.recordSpawnBirth(store, started.orchestrator, mode === "rebirth" ? "rebirth" : "spawn", approval?.sha256);
+    const birth = await recordBirth(started.orchestrator);
     const after = await store.read();
     // A parked run is revivable — that is the point of parking rather than dying
     // — but the spawn just relabelled the pane to its plain name, so the budget
@@ -3272,6 +3384,7 @@ export class CompositeTools {
           return { ok: true, tool: "herdr_assignment", action: input.action, run, effect: "none", retryable: false, registry_revision: registry.revision, assignment: { assignment_id: input.assignment_id, state: existing.state }, data: { already_registered: true, instructions_sha256: existing.instructions_sha256, ...bound, ...routing } };
         }
         const artifact = await store.preflight(input.assignment_id, input.responsibility_key);
+        assertOwnershipAuditable(input.assignment_id, artifact.assignment.write_ownership);
         // Both authoring-time refusals, before anything is registered: the
         // profile a live lane cannot run (friction 17b7fd5328871a88) and a
         // `# References` bullet whose document is unpinnable or has moved on.
@@ -3313,7 +3426,10 @@ export class CompositeTools {
         // the assignment ID unconsumed and the artifact re-authorable in place.
         const addArtifact = await store.assignmentFile(input.assignment_id, input.responsibility_key, input.instructions_sha256);
         const preAdd = await store.read();
-        if (!preAdd.assignments[input.assignment_id]) await assertLaneProfile(store, preAdd, addArtifact.assignment, input.separation);
+        if (!preAdd.assignments[input.assignment_id]) {
+          assertOwnershipAuditable(input.assignment_id, addArtifact.assignment.write_ownership);
+          await assertLaneProfile(store, preAdd, addArtifact.assignment, input.separation);
+        }
         const addReferences = addArtifact.assignment.references ?? [];
         assertReferencesPinned(input.assignment_id, await observeReferences(store.runPath, addReferences));
         const gateData = { ...(sweepWarnings.length ? { settlement_sweep: sweepWarnings } : {}), ...(succession ? { succession } : {}), ...(budgetJudgment.emergency ? { emergency: budgetJudgment.emergency } : {}) };
@@ -3484,6 +3600,7 @@ export class CompositeTools {
         // The inspected lane is `fresh`, so its live state is not re-read.
         const sweepWarnings: string[] = [];
         registry = await sweepSettlements(store, run, registry, sweepWarnings, input.worker_id);
+        registry = await observeReportLength(store, registry, input.worker_id, sweepWarnings);
         // The pinned documents of whatever this lane is holding, re-read at the
         // one surface an ORCH uses to supervise (C8). Observation only.
         const inspectDrift = await observeReferenceDrift(store, registry, registry.assignments[registry.lanes[input.worker_id].active_assignment_id ?? ""]);
@@ -3563,6 +3680,9 @@ export class CompositeTools {
       let text = "";
       let unresolvedReason: string | undefined;
       let channelObservation: { path: string; sha256: string; bytes: number; entry_line?: number; lines: number } | undefined;
+      // A wake_worker whose subject assignment already reported completed or
+      // failed (friction 130947ee): still delivered, but named for what it is.
+      let atCompletion = false;
       if (input.action === "wake_orch") {
         const birth = latestBirth(registry);
         if (!birth) unresolvedReason = "Run has no ORCH birth record; birth is recorded at ORCH spawn or by its first guarded command.";
@@ -3639,6 +3759,13 @@ export class CompositeTools {
           const subject = workerWakeSubject(registry, registry.lanes[input.to_worker_id], input.assignment_id);
           const anchor = await anchorClause(path.join(store.runPath, "a2a", `${input.to_worker_id}-report.md`));
           text = `wake: ORCH appended to a2a/${input.to_worker_id}-report.md (run ${input.track_id}/${input.run_id}); ${subject} — read the report${anchor}; wake text carries no authority.`;
+          const lane = registry.lanes[input.to_worker_id];
+          const axis = input.assignment_id ?? lane.active_assignment_id ?? lane.last_completed_assignment_id;
+          const reported = axis ? await reportedTerminalStatus(store.runPath, input.to_worker_id, axis) : undefined;
+          if (axis && reported) {
+            atCompletion = true;
+            warnings.push(`after_completion: a2a/${input.to_worker_id}-report.md already carries a valid "status: ${reported}" block as its last [Assignment Completion: ${axis}] block, so ${axis} is at a completion boundary. The bell is still sent, but a directive after completion belongs in a NEW assignment (herdr_assignment add), not in an [ORCH Response] to the finished one.`);
+          }
         }
       } else {
         // notify_run is a pure bell (decision 12): the conversation itself lives
@@ -3674,7 +3801,7 @@ export class CompositeTools {
             tickPlan = dispatch.tick_plan;
             deliveryId = nextMessageDeliveryId();
           } else {
-            delivery = "delivered";
+            delivery = atCompletion ? "after_completion" : "delivered";
           }
         } catch (error) {
           const detail = `${error instanceof McpContractError ? error.code : ""} ${error instanceof Error ? error.message : String(error)}`;
@@ -3714,7 +3841,7 @@ export class CompositeTools {
           }),
         );
       }
-      const confirmed = delivery === "delivered" || delivery === "deferred";
+      const confirmed = delivery === "delivered" || delivery === "after_completion" || delivery === "deferred";
       return {
         ok: true,
         tool: "herdr_message",

@@ -938,10 +938,16 @@ async function inspectOrchestrator(
  * Spawns and first-prompts the run's target ORCH. Every ORCH is born pre-aligned
  * here, so a caller's own model is never a precondition of a spawn: there is no
  * alignment step left for any session to perform (decisions 1, 3 and 6).
+ *
+ * `onBootstrapVerified` runs once the pane's session identity is verified and
+ * its prompt fingerprint is claimed, before the prompt-delivery wait, so a
+ * caller can record the birth even when that wait fails (Herdr's fixed 5000 ms
+ * `agent_prompt_stalled` window). A throw from it aborts the start.
  */
 async function startOrchestrator(
   params: TrackParams,
   signal?: AbortSignal,
+  hooks: { onBootstrapVerified?: (orchestrator: Record<string, unknown>) => Promise<unknown> } = {},
 ): Promise<TrackResult> {
   const timeoutMs = normalizeTimeout(params.timeout_ms);
   const coordinate = await resolveRunCoordinate(params.track_id, params.run_id, params.cwd);
@@ -1204,6 +1210,9 @@ async function startOrchestrator(
       await writeRegistryAtomic(targetRegistryPath, registry);
       return current;
     });
+    // Birth boundary: identity verified and the fingerprint claimed, so the
+    // no-replay rule already covers the prompt below whether or not it lands.
+    await hooks.onBootstrapVerified?.(publicTargetOrchestrator(target));
 
     if (!duplicatePrompt) {
       // Advisory read at a birth boundary: a failed observation must cost the

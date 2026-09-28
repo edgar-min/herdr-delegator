@@ -71,7 +71,8 @@ export function mountedBuild(): MountedBuild {
 // OBSERVATIONS of what the child session reported, not predictions
 // (221abf10d2280b47); `onlyKeys` tolerates their absence on a lane that has not
 // reported yet, and their presence on records written before the change.
-const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "created_at", "updated_at"] as const;
+// `report_bytes` is additive optional (friction e0816499): no schema version bump.
+const LANE_KEYS = ["worker_id", "responsibility_key", "lane_generation", "separation", "active_assignment_id", "queued_assignment_ids", "last_completed_assignment_id", "state", "state_change_seq", "official_session_id", "official_session_path", "expected_provider", "expected_model", "effective_thinking", "report_bytes", "created_at", "updated_at"] as const;
 const ASSIGNMENT_KEYS = ["assignment_id", "responsibility_key", "worker_id", "state", "instructions_sha256", "prompted_at", "report_sha256", "completed_at", "elapsed_ms", "token_usage", "advisory_unowned_changes", "ambiguous_operation", "ambiguous_state_change_seq", "references", "reported_boundary", "created_at", "updated_at"] as const;
 const BIRTH_KEYS = ["generation", "official_session_id", "official_session_path", "pane_id", "origin", "approval_sha256", "born_at"] as const;
 
@@ -519,7 +520,7 @@ function validateRegistry(value: unknown, runPath: string): asserts value is Del
     if (!RESPONSIBILITY_RE.test(key) || !isRecord(responsibility) || !exactKeys(responsibility, ["key", "worker_ids"]) || responsibility.key !== key || !Array.isArray(responsibility.worker_ids) || responsibility.worker_ids.some((id) => typeof id !== "string" || !WORKER_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A responsibility route is malformed.", "storage", "Repair routing from verified worker identities.");
   }
   for (const [workerId, lane] of Object.entries(value.lanes)) {
-    if (!WORKER_RE.test(workerId) || !isRecord(lane) || !onlyKeys(lane, LANE_KEYS) || lane.worker_id !== workerId || lane.lane_generation !== 1 || !RESPONSIBILITY_RE.test(String(lane.responsibility_key)) || !validSeparation(lane.separation) || !Array.isArray(lane.queued_assignment_ids) || lane.queued_assignment_ids.some((id) => typeof id !== "string" || !ASSIGNMENT_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A worker lane is malformed.", "storage", "Repair the lane from verified lifecycle facts.");
+    if (!WORKER_RE.test(workerId) || !isRecord(lane) || !onlyKeys(lane, LANE_KEYS) || lane.worker_id !== workerId || lane.lane_generation !== 1 || !RESPONSIBILITY_RE.test(String(lane.responsibility_key)) || !validSeparation(lane.separation) || !validOptionalSafeInteger(lane.report_bytes) || !Array.isArray(lane.queued_assignment_ids) || lane.queued_assignment_ids.some((id) => typeof id !== "string" || !ASSIGNMENT_RE.test(id))) throw new McpContractError("delegation_registry_invalid", "A worker lane is malformed.", "storage", "Repair the lane from verified lifecycle facts.");
   }
   for (const [assignmentId, assignment] of Object.entries(value.assignments)) {
     const validIdentity = ASSIGNMENT_RE.test(assignmentId) &&

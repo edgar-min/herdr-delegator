@@ -24,4 +24,13 @@ else
   exit 127
 fi
 
+# `check` and `open` are the command-line track subcommands (mcp/cli.ts), run
+# from a shell pane inside Herdr. A shell invocation carries no PLUGIN_ROOT, so
+# the plugin root falls back to this script's parent directory.
+case "${1:-}" in
+  check|open)
+    exec "$bun_path" run "${PLUGIN_ROOT:-$(dirname "$0")/..}/mcp/cli.ts" "$@"
+    ;;
+esac
+
 exec "$bun_path" run "${PLUGIN_ROOT}/mcp/server.ts"

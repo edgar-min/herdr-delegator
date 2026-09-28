@@ -120,6 +120,23 @@ Configuration layers carrying retired routing or profile guidance keys load with
 
 The session you invoke the skill in distills the conversation into a bounded mandate and calls `herdr_track open` once; that call creates the track's Herdr space and run, spawns the ORCH into its own pane pre-aligned, records the birth that is the run's only command identity, and retires the opening session for that track. From there the ORCH — not you — writes `plan.md`, chooses responsibilities, authors immutable assignments, dispatches them through MCP, verifies results, and performs recovery, budget justification, or closure. The user converses with the ORCH pane.
 
+## Opening a track from the command line
+
+The bundled launcher also opens a track without an OMP session, from a plain shell pane inside Herdr:
+
+```sh
+bin/herdr-delegator-mcp check --mandate mandate.json [--cwd <project-dir>]
+bin/herdr-delegator-mcp open  --mandate mandate.json --track <track_id> [--cwd <project-dir>] [--run r1]
+```
+
+- `check` runs the same mandate check as `herdr_track check` and prints one line per rule, then `verdict: PASSED` or `verdict: FAILED`; it exits 0 on PASSED and 1 on FAILED.
+- `open` runs the server's own `herdr_track open` — the identical check first, then the run layout, the ORCH spawn and its birth — and prints the result JSON to stdout with exit 0; a failure prints the failure JSON to stderr and exits 1.
+- `--cwd` defaults to the current directory and is resolved to its canonical absolute path; `--run` defaults to `r1`. Options are long-only.
+- Both subcommands must run in a Herdr shell pane: `HERDR_ENV=1` and `HERDR_PANE_ID` must be set, and `herdr` must be on `PATH`. Outside Herdr, an unknown option, or a mandate file that is unreadable or not JSON is refused with one stderr line and exit 2, before anything is written; a refusal never quotes the file.
+- No OMP session exists in a shell pane, so the creator stamp is `verified: false` with `pane_id` set to `HERDR_PANE_ID`, and the result carries `creator_verified: false`. The run layout and the ORCH birth are the same as an `open` from an OMP session.
+
+With no arguments, `bin/herdr-delegator-mcp` still starts the MCP stdio server exactly as `mcp.json` launches it.
+
 ## Responsibility lanes
 
 A worker is a persistent responsibility lane. An assignment is one unit of work routed to that lane.
