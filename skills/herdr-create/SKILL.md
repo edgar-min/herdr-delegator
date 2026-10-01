@@ -2,7 +2,7 @@
 name: herdr-create
 description: Create a Herdr track from a session outside it by writing a mandate — the invocation of one planning protocol — and handing it to the born orchestrator. Creator-only; not an ORCH or worker operating guide.
 license: Apache-2.0
-compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2, Bun, and an OMP-managed Herdr integration.
+compatibility: Requires Oh My Pi 18.0.5 or later, Herdr 0.8.2 or later, Bun, and an OMP-managed Herdr integration.
 metadata:
   author: edgar-min
   version: "4.0.2"

@@ -126,7 +126,7 @@ export class HerdrAdapter {
       catch {
         // Some bounded Herdr commands (e.g. `pane report-metadata`) report success
         // with a zero exit code and no JSON body; accept that shape explicitly.
-        if (!tolerateNonJson) throw new McpContractError("invalid_herdr_response", "Herdr stdout was not JSON.", mutating ? "prompt" : "wait", "Verify the installed Herdr 0.8.2 schema and binary selection.", mutating, false);
+        if (!tolerateNonJson) throw new McpContractError("invalid_herdr_response", "Herdr stdout was not JSON.", mutating ? "prompt" : "wait", "Verify the installed Herdr binary selection and its CLI output.", mutating, false);
         return { data: undefined, stdout, warning: stdout.trim() ? `Herdr returned a non-JSON success body: ${bounded(stdout.trim())}` : undefined };
       }
       return { data, stdout };
@@ -136,15 +136,18 @@ export class HerdrAdapter {
     } finally { clearTimeout(timer); }
   }
 
+  /**
+   * Gates on the capabilities this adapter calls, never on Herdr's protocol or
+   * schema version numbers: a Herdr release that still exposes every required
+   * capability is accepted, so a routine Herdr upgrade does not brick the server.
+   */
   async verifySchema(): Promise<void> {
     let result: HerdrCommandResult;
     try { result = await this.execute(["api", "schema", "--json"], 10_000, false); }
-    catch (error) { throw new McpContractError("herdr_schema_incompatible", `Unable to read Herdr API schema: ${error instanceof Error ? error.message : String(error)}`, "attest", "Install Herdr 0.8.2 with protocol 20 and schema version 1."); }
-    const protocol = valuesForKey(result.data, "protocol").find((v) => typeof v === "number");
-    const version = valuesForKey(result.data, "schema_version").find((v) => typeof v === "number");
+    catch (error) { throw new McpContractError("herdr_schema_incompatible", `Unable to read Herdr API schema: ${error instanceof Error ? error.message : String(error)}`, "attest", "Verify that `herdr api schema --json` succeeds for the selected Herdr binary."); }
     const serialized = JSON.stringify(result.data);
     const missing = REQUIRED_CAPABILITIES.filter((capability) => !serialized.includes(capability));
-    if (protocol !== 20 || version !== 1 || missing.length) throw new McpContractError("herdr_schema_incompatible", `Herdr schema mismatch${missing.length ? `; missing ${missing.join(", ")}` : ""}.`, "attest", "Install the supported Herdr 0.8.2 capability set.");
+    if (missing.length) throw new McpContractError("herdr_schema_incompatible", `Herdr schema is missing required capabilities: ${missing.join(", ")}.`, "attest", `Install a Herdr release that exposes ${REQUIRED_CAPABILITIES.join(", ")}.`);
   }
 
   getAgent(target: string, timeoutMs: number): Promise<HerdrCommandResult> { return this.execute(["agent", "get", target], timeoutMs, false); }
